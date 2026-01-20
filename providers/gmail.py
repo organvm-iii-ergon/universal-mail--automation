@@ -330,8 +330,8 @@ class GmailProvider(EmailProvider):
         """Archive a message (remove from INBOX)."""
         return self.remove_label(message_id, "INBOX")
 
-    def star(self, message_id: str) -> bool:
-        """Star a message."""
+    def star(self, message_id: str, due_date: Any = None) -> bool:
+        """Star a message. due_date is ignored (Gmail doesn't support it)."""
         return self.apply_label(message_id, "STARRED")
 
     def unstar(self, message_id: str) -> bool:
