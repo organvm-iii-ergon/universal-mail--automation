@@ -72,6 +72,15 @@ LABEL_RULES: Dict[str, Dict[str, Union[List[str], int]]] = {
         ],
         "priority": 3,
     },
+    "Work/Dev/Security": {
+        "patterns": [
+            r"gitguardian",
+            r"snyk",
+            r"dependabot",
+            r"security.*advisory",
+        ],
+        "priority": 3,
+    },
     # Real Estate / Projects
     "Work/RealEstate": {
         "patterns": [
@@ -140,6 +149,9 @@ LABEL_RULES: Dict[str, Dict[str, Union[List[str], int]]] = {
             r"settle",
             r"settlement",
             r"debt",
+            r"upstart",
+            r"jefferson.?capital",
+            r"myjcap",
         ],
         "priority": 7,
     },
@@ -244,6 +256,10 @@ LABEL_RULES: Dict[str, Dict[str, Union[List[str], int]]] = {
             r"shipped",
             r"tracking",
             r"flash sale",
+            r"barnesandnoble",
+            r"ulta\.com",
+            r"ulta.*beauty",
+            r"papersource",
         ],
         "priority": 10,
     },
@@ -289,6 +305,19 @@ LABEL_RULES: Dict[str, Dict[str, Union[List[str], int]]] = {
             r"warprecords",
             r"pluto",
             r"rotten.?tomato",
+            r"amctheatres",
+            r"amc.*order",
+        ],
+        "priority": 12,
+    },
+    # Government
+    "Government": {
+        "patterns": [
+            r"state\.gov",
+            r"passport",
+            r"irs\.gov",
+            r"ssa\.gov",
+            r"dmv",
         ],
         "priority": 12,
     },
@@ -332,6 +361,32 @@ LABEL_RULES: Dict[str, Dict[str, Union[List[str], int]]] = {
     # Domain Services
     "Services/Domain": {
         "patterns": [r"namecheap", r"godaddy", r"domain.*renew", r"dns", r"e\\.godaddy\\.com"],
+        "priority": 15,
+    },
+    "Services/Mail": {
+        "patterns": [
+            r"usps",
+            r"informeddelivery",
+            r"ups\.com",
+            r"fedex",
+        ],
+        "priority": 15,
+    },
+    "Services/Insurance": {
+        "patterns": [
+            r"asurion",
+            r"warranty",
+            r"protection.*plan",
+        ],
+        "priority": 15,
+    },
+    "Tech/Services": {
+        "patterns": [
+            r"airtable",
+            r"zapier",
+            r"ifttt",
+            r"make\.com",
+        ],
         "priority": 15,
     },
     # Notifications (catch-all for services)
