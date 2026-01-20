@@ -1,0 +1,58 @@
+version: 1
+
+project:
+  name: "mail_automation"
+  codename: "gmail-agent"
+  description: "Automated email organization and labeling using Gmail API."
+  owners:
+    - handle: "4444JPP"
+      role: "automation-engineer"
+  repo:
+    monorepo: false
+    package_manager: "pip"
+    type: "automation-script"
+
+domain:
+  problem_statement: >
+    Exhaustively label and organize high-volume email inboxes based on 
+    semantic categories and sender patterns.
+  personas:
+    - id: "user"
+      description: "The mailbox owner requiring organization."
+    - id: "sorter"
+      description: "The automated script applying rules."
+
+architecture:
+  style: "script-collection"
+  tech_stack:
+    language: "Python 3"
+    libs:
+      - "google-api-python-client"
+      - "google-auth"
+    local:
+      - "AppleScript (macOS Mail integration)"
+
+coding_standards:
+  language: "Python"
+  style:
+    formatter: "black"
+    linter: "pylint"
+
+growth_objectives:
+  roadmap_epics:
+    - id: "rules-v2"
+      title: "Semantic Rule Expansion"
+      description: "Refine regex patterns for higher accuracy."
+      modules: ["gmail_labeler.py"]
+    - id: "security-v1"
+      title: "Credential Safety"
+      description: "Ensure secrets are never logged or committed."
+      modules: [".gitignore"]
+
+automation_contract:
+  ai_access:
+    read_paths: ["*.py", "*.applescript", "*.md"]
+    write_paths: ["gmail_labeler.py", "AGENTS.md"]
+    disallowed_writes: ["credentials.json", "token.pickle", "*.log"]
+  task_labels:
+    auto_managed_labels: ["ai-refactor"]

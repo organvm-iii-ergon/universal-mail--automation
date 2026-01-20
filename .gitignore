@@ -1,0 +1,16 @@
+# Secrets
+credentials.json
+token.pickle
+client_secret_*.json
+
+# Logs
+*.log
+gmail_labeler.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+.DS_Store

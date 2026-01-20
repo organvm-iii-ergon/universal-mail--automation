@@ -1,0 +1,15 @@
+{
+  "next_page_token": null,
+  "total_processed": 36470,
+  "history": {
+    "Personal": 13,
+    "Entertainment": 13,
+    "Finance/Payments": 302,
+    "Misc/Other": 35521,
+    "Work/Dev/Infrastructure": 9,
+    "Finance/Banking": 151,
+    "Tech/Security": 372,
+    "Professional/Jobs": 79,
+    "Marketing": 10
+  }
+}
