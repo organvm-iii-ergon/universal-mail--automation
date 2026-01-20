@@ -94,9 +94,16 @@ LABEL_RULES: Dict[str, Dict[str, Any]] = {
             r"render\.com",
             r"newrelic",
             r"pieces\.app",
+            r"hashicorp",
         ],
         "priority": 3,
         "tier": 3,  # Delegate/Monitor - alerts can be checked later
+        "time_sensitive": False,
+    },
+    "Dev/GameDev": {
+        "patterns": [r"unity3d\.com", r"unity\.com", r"unrealengine", r"godotengine"],
+        "priority": 3,
+        "tier": 3,
         "time_sensitive": False,
     },
     # AI Services
@@ -111,6 +118,7 @@ LABEL_RULES: Dict[str, Dict[str, Any]] = {
             r"perplexity",
             r"meta\.com",
             r"ollama",
+            r"sudowrite",
         ],
         "priority": 4,
         "tier": 3,  # Delegate - informational
@@ -183,6 +191,20 @@ LABEL_RULES: Dict[str, Dict[str, Any]] = {
         "tier": 2,  # Important - bills and payments
         "time_sensitive": True,
     },
+    "Finance/Tax": {
+        "patterns": [
+            r"intuit",
+            r"turbotax",
+            r"hrblock",
+            r"taxact",
+            r"taxslayer",
+            r"irs\.gov",
+            r"taxrise",
+        ],
+        "priority": 8,
+        "tier": 2,  # Important - tax deadlines
+        "time_sensitive": True,
+    },
     # Subscriptions & Services
     "Tech/Security": {
         "patterns": [
@@ -194,9 +216,23 @@ LABEL_RULES: Dict[str, Dict[str, Any]] = {
             r"verification.*code",
             r"dropbox",
             r"todoist",
+            r"login\.gov",
         ],
         "priority": 9,
         "tier": 1,  # Critical - security alerts
+        "time_sensitive": True,
+    },
+    "Tech/Google": {
+        "patterns": [
+            r"@google\.com",
+            r"cloudsupport@",
+            r"google.*cloud",
+            r"gcp",
+            r"workspace",
+            r"payments\.google\.com",
+        ],
+        "priority": 9,
+        "tier": 2,  # Important - support cases
         "time_sensitive": True,
     },
     # Commerce & Shopping
@@ -228,9 +264,36 @@ LABEL_RULES: Dict[str, Dict[str, Any]] = {
             r"order.*confirm",
             r"shipped",
             r"tracking",
+            r"fjallraven",
         ],
         "priority": 10,
         "tier": 4,  # Reference - order confirmations
+        "time_sensitive": False,
+    },
+    # Health & Pharmacy
+    "Personal/Health": {
+        "patterns": [
+            r"walgreens",
+            r"cvs",
+            r"pharmacy",
+            r"prescription",
+            r"health\.nyc\.gov",
+            r"trinity-health",
+            r"myhealth",
+        ],
+        "priority": 10,
+        "tier": 2,  # Important - health matters
+        "time_sensitive": True,
+    },
+    # Social Networks
+    "Social/LinkedIn": {
+        "patterns": [
+            r"linkedin\.com",
+            r"linkedin.*network",
+            r"linkedin.*job",
+        ],
+        "priority": 11,
+        "tier": 3,  # Delegate - social can wait
         "time_sensitive": False,
     },
     # Travel
@@ -275,6 +338,10 @@ LABEL_RULES: Dict[str, Dict[str, Any]] = {
             r"letterboxd",
             r"popcorn.?frights",
             r"warprecords",
+            r"musescore",
+            r"justwatch",
+            r"thefilmjunkies",
+            r"louisck",
         ],
         "priority": 12,
         "tier": 4,  # Reference
@@ -293,6 +360,7 @@ LABEL_RULES: Dict[str, Dict[str, Any]] = {
             r"arxiv",
             r"academia\.edu",
             r"learning",
+            r"orcid\.org",
         ],
         "priority": 13,
         "tier": 3,  # Delegate - can be reviewed later
@@ -309,9 +377,22 @@ LABEL_RULES: Dict[str, Dict[str, Any]] = {
             r"builtin\.com",
             r"ziprecruiter",
             r"monster",
+            r"recruiterflow",
         ],
         "priority": 14,
         "tier": 2,  # Important - job opportunities
+        "time_sensitive": True,
+    },
+    "Professional/Legal": {
+        "patterns": [
+            r"legalzoom",
+            r"longofirm",
+            r"law\.com",
+            r"attorney",
+            r"legal.*notice",
+        ],
+        "priority": 14,
+        "tier": 2,  # Important - legal matters
         "time_sensitive": True,
     },
     # Domain Services
@@ -357,10 +438,42 @@ LABEL_RULES: Dict[str, Dict[str, Any]] = {
             r"jupitrr",
             r"myhumandesign",
             r"ibo\.org",
+            r"sendfox",
         ],
         "priority": 17,
         "tier": 4,  # Reference - archive
         "time_sensitive": False,
+    },
+    # Cloud Storage & Files
+    "Tech/Storage": {
+        "patterns": [
+            r"filerev",
+            r"box\.com",
+            r"onedrive",
+            r"gdrive",
+            r"icloud",
+            r"sync\.com",
+        ],
+        "priority": 17,
+        "tier": 3,  # Delegate
+        "time_sensitive": False,
+    },
+    # Government & Official
+    "Personal/Government": {
+        "patterns": [
+            r"\.gov$",
+            r"@.*\.gov",
+            r"flhsmv",
+            r"passport",
+            r"social.*security",
+            r"ssa\.gov",
+            r"irs\.gov",
+            r"dmv",
+            r"state\.fl\.us",
+        ],
+        "priority": 17,
+        "tier": 1,  # Critical - government matters
+        "time_sensitive": True,
     },
     # Personal
     "Personal": {
