@@ -56,7 +56,7 @@ CATEGORY_COLORS = {
 }
 
 # Default OAuth scopes for Outlook
-DEFAULT_SCOPES = ["Mail.ReadWrite"]
+DEFAULT_SCOPES = ["Mail.ReadWrite", "MailboxSettings.ReadWrite"]
 
 # Default client ID for personal Microsoft accounts
 # Users should register their own app at portal.azure.com
