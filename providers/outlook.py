@@ -538,8 +538,17 @@ class OutlookProvider(EmailProvider):
         return False
 
     def archive(self, message_id: str) -> bool:
-        """Move message to Archive folder."""
-        return self.apply_label(message_id, "Archive")
+        """Move message to Archive folder (Outlook well-known folder)."""
+        url = f"{GRAPH_API_BASE}/me/messages/{message_id}/move"
+        # Use well-known folder name 'archive' directly
+        data = {"destinationId": "archive"}
+
+        try:
+            self._api_post(url, data)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to move message to Archive: {e}")
+            return False
 
     def star(self, message_id: str, due_date: Optional[datetime] = None) -> bool:
         """
