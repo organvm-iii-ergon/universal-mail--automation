@@ -45,11 +45,36 @@ python3 cli.py label --provider outlook
 # Dry run (don't apply changes)
 python3 cli.py label --provider gmail --dry-run
 
+# Tier-based routing (Eisenhower matrix with categories + Action folders)
+python3 cli.py label --provider outlook --tier-routing
+
+# Process only VIP sender emails
+python3 cli.py label --provider gmail --vip-only
+
 # Health check
 python3 cli.py health --provider gmail
 
 # Report (label counts)
 python3 cli.py report --provider gmail
+```
+
+### Triage & Reporting Commands
+```bash
+# Summary by priority tier
+python3 cli.py summary --provider outlook
+python3 cli.py summary --provider gmail --format json
+
+# List pending/flagged items needing action
+python3 cli.py pending --provider gmail
+python3 cli.py pending --format markdown
+
+# Show VIP sender activity
+python3 cli.py vip --provider outlook
+python3 cli.py vip --format json
+
+# Escalate stale emails (re-triage based on age)
+python3 cli.py escalate --provider outlook --dry-run
+python3 cli.py escalate --provider gmail --limit 500
 ```
 
 ### Legacy Commands (Backward Compatible)
@@ -105,12 +130,12 @@ mail_automation/
 
 ### Provider Capabilities
 
-| Provider | Labels | Folders | Star | Archive | Batch API | Search |
-|----------|--------|---------|------|---------|-----------|--------|
-| Gmail    | ✓      |         | ✓    | ✓       | ✓         | ✓      |
-| IMAP     | ✓*     | ✓       | ✓    | ✓       |           | ✓      |
-| Mail.app |        | ✓       | ✓    | ✓       |           |        |
-| Outlook  |        | ✓       | ✓    | ✓       |           | ✓      |
+| Provider | Labels | Folders | Star | Archive | Batch API | Search | Categories |
+|----------|--------|---------|------|---------|-----------|--------|------------|
+| Gmail    | ✓      |         | ✓    | ✓       | ✓         | ✓      |            |
+| IMAP     | ✓*     | ✓       | ✓    | ✓       |           | ✓      |            |
+| Mail.app |        | ✓       | ✓    | ✓       |           |        |            |
+| Outlook  |        | ✓       | ✓    | ✓       |           | ✓      | ✓          |
 
 *IMAP with `--gmail-extensions` flag
 
@@ -126,8 +151,12 @@ core/state.py        Progress persistence for resumption
 ### Key Components
 
 **core/rules.py** - Shared categorization
-- `LABEL_RULES` dict: regex patterns with priority ordering (lower = higher priority)
+- `LABEL_RULES` dict: regex patterns with priority, tier, and time_sensitive fields
+- `PRIORITY_TIERS`: Eisenhower matrix (1=Critical, 2=Important, 3=Delegate, 4=Reference)
+- `VIP_SENDERS`: High-priority senders that override normal categorization
 - `categorize_message()`: matches sender+subject against rules
+- `categorize_with_tier()`: returns full tier info with `CategorizationResult`
+- `escalate_by_age()`: determines if email should be escalated based on age
 - `PRIORITY_LABELS`: labels that trigger starring
 - `KEEP_IN_INBOX`: labels that remain in inbox (not archived)
 
@@ -202,6 +231,20 @@ mailapp:
 
 outlook:
   client_id: "your-app-id"
+
+# VIP senders - always get priority treatment
+vip_senders:
+  "ceo@company.com":
+    pattern: "ceo@company\\.com"
+    tier: 1  # Critical
+    star: true
+    note: "CEO"
+  "important-client":
+    pattern: ".*@important-client\\.com"
+    tier: 1
+    star: true
+    label_override: "Personal"  # Optional: override categorization
+    note: "Important client domain"
 ```
 
 ### Adding New Rules
@@ -210,10 +253,25 @@ Edit `core/rules.py` or add to config file:
 "NewCategory/Subcategory": {
     "patterns": [r"sender\.com", r"keyword.*pattern"],
     "priority": 10,  # Lower = higher priority
+    "tier": 2,       # 1=Critical, 2=Important, 3=Delegate, 4=Reference
+    "time_sensitive": True,  # Escalate if email gets old
 }
 ```
 
 For bulk corrections of existing `Misc/Other` items, add to `SWEEP_RULES` in `bulk_sweeper.py`.
+
+### Priority Tier System (Eisenhower Matrix)
+| Tier | Name | Color | Behavior |
+|------|------|-------|----------|
+| 1 | Critical | Red | Star, keep in inbox, Action/Critical folder |
+| 2 | Important | Yellow | Keep in inbox, Action/Important folder |
+| 3 | Delegate | Blue | Archive, Action/Delegate folder |
+| 4 | Reference | Green | Archive, categorize only |
+
+### Time-Based Escalation Rules
+- < 24 hours: No escalation
+- 24-72 hours: Tier 3-4 → Tier 2 (if time_sensitive=True)
+- > 72 hours: Tier 2-4 → Tier 1 (always escalate)
 
 ## Coding Conventions
 
@@ -234,12 +292,23 @@ For bulk corrections of existing `Misc/Other` items, add to `SWEEP_RULES` in `bu
 
 ```bash
 # Verify imports
-python3 -c "from core import LABEL_RULES, categorize_message"
+python3 -c "from core import LABEL_RULES, categorize_message, PRIORITY_TIERS"
+python3 -c "from core import categorize_with_tier, escalate_by_age"
 python3 -c "from providers.gmail import GmailProvider"
+python3 -c "from providers.outlook import OutlookProvider, CATEGORY_COLORS"
 
 # Dry run test
 python3 cli.py label --provider gmail --dry-run --limit 10
 
+# Test tier routing (Outlook)
+python3 cli.py label --provider outlook --tier-routing --dry-run --limit 5
+
+# Test escalation
+python3 cli.py escalate --provider gmail --dry-run --limit 10
+
 # Health check
 python3 cli.py health --provider gmail
+
+# Generate summary
+python3 cli.py summary --provider gmail --limit 100
 ```
