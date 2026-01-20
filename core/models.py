@@ -39,6 +39,8 @@ class EmailMessage:
         labels: Current labels/folders on the message
         is_read: Whether the message has been read
         is_starred: Whether the message is starred/flagged
+        priority_tier: Eisenhower matrix tier (1=Critical, 2=Important, 3=Delegate, 4=Reference)
+        categories: Color categories (Outlook)
     """
     id: str
     sender: str
@@ -47,6 +49,8 @@ class EmailMessage:
     labels: Set[str] = field(default_factory=set)
     is_read: bool = False
     is_starred: bool = False
+    priority_tier: Optional[int] = None
+    categories: Set[str] = field(default_factory=set)
 
     @property
     def combined_text(self) -> str:
@@ -69,6 +73,9 @@ class LabelAction:
         archive: Whether to remove from inbox (archive)
         star: Whether to star/flag the message
         target_folder: For folder-based systems, the destination folder
+        category: Color category name (Outlook)
+        category_color: Color preset for the category (Outlook)
+        due_date: Due date for flagged items (Outlook To Do integration)
     """
     message_id: str
     add_labels: List[str] = field(default_factory=list)
@@ -76,6 +83,9 @@ class LabelAction:
     archive: bool = False
     star: bool = False
     target_folder: Optional[str] = None
+    category: Optional[str] = None
+    category_color: Optional[str] = None
+    due_date: Optional[datetime] = None
 
     def merge(self, other: "LabelAction") -> "LabelAction":
         """Merge another action into this one (same message_id assumed)."""
@@ -86,6 +96,9 @@ class LabelAction:
             archive=self.archive or other.archive,
             star=self.star or other.star,
             target_folder=other.target_folder or self.target_folder,
+            category=other.category or self.category,
+            category_color=other.category_color or self.category_color,
+            due_date=other.due_date or self.due_date,
         )
 
 

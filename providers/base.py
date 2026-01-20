@@ -28,6 +28,7 @@ class ProviderCapabilities(Flag):
     BATCH_OPERATIONS = auto()     # Supports batch API calls
     SEARCH_QUERY = auto()         # Supports server-side search queries
     GMAIL_EXTENSIONS = auto()     # Supports Gmail IMAP extensions (X-GM-LABELS)
+    CATEGORIES = auto()           # Supports color categories (Outlook)
 
 
 @dataclass
@@ -200,12 +201,13 @@ class EmailProvider(ABC):
         """
         return self.remove_label(message_id, "INBOX")
 
-    def star(self, message_id: str) -> bool:
+    def star(self, message_id: str, due_date: Any = None) -> bool:
         """
         Star/flag a message for priority handling.
 
         Args:
             message_id: Message to star
+            due_date: Optional due date for task integration (provider-specific)
 
         Returns:
             True if successful, False otherwise
@@ -227,6 +229,30 @@ class EmailProvider(ABC):
         if not (self.capabilities & ProviderCapabilities.STAR):
             return False
         return self.remove_label(message_id, "STARRED")
+
+    def apply_category(
+        self,
+        message_id: str,
+        category: str,
+        color: str = "blue",
+    ) -> bool:
+        """
+        Apply a color category to a message.
+
+        Only supported by providers with CATEGORIES capability.
+        Default implementation returns False.
+
+        Args:
+            message_id: Message to categorize
+            category: Category name to apply
+            color: Color for category (provider-specific)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not (self.capabilities & ProviderCapabilities.CATEGORIES):
+            return False
+        return False  # Subclasses override
 
     @abstractmethod
     def ensure_label_exists(self, label: str) -> str:
@@ -269,7 +295,13 @@ class EmailProvider(ABC):
                 if action.archive:
                     self.archive(action.message_id)
                 if action.star:
-                    self.star(action.message_id)
+                    self.star(action.message_id, due_date=action.due_date)
+                if action.category:
+                    self.apply_category(
+                        action.message_id,
+                        action.category,
+                        action.category_color or "blue",
+                    )
                 result.success_count += 1
             except Exception as e:
                 result.error_count += 1

@@ -24,6 +24,36 @@ logger = logging.getLogger(__name__)
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 GRAPH_API_MESSAGES = f"{GRAPH_API_BASE}/me/mailFolders/inbox/messages"
 GRAPH_API_FOLDERS = f"{GRAPH_API_BASE}/me/mailFolders"
+GRAPH_API_CATEGORIES = f"{GRAPH_API_BASE}/me/outlook/masterCategories"
+
+# Outlook category color presets (Graph API enum values)
+CATEGORY_COLORS = {
+    "red": "preset0",
+    "orange": "preset1",
+    "brown": "preset2",
+    "yellow": "preset3",
+    "green": "preset4",
+    "teal": "preset5",
+    "olive": "preset6",
+    "blue": "preset7",
+    "purple": "preset8",
+    "cranberry": "preset9",
+    "steel": "preset10",
+    "darkSteel": "preset11",
+    "gray": "preset12",
+    "darkGray": "preset13",
+    "black": "preset14",
+    "darkRed": "preset15",
+    "darkOrange": "preset16",
+    "darkBrown": "preset17",
+    "darkYellow": "preset18",
+    "darkGreen": "preset19",
+    "darkTeal": "preset20",
+    "darkOlive": "preset21",
+    "darkBlue": "preset22",
+    "darkPurple": "preset23",
+    "darkCranberry": "preset24",
+}
 
 # Default OAuth scopes for Outlook
 DEFAULT_SCOPES = ["Mail.ReadWrite"]
@@ -63,7 +93,8 @@ class OutlookProvider(EmailProvider):
         ProviderCapabilities.FOLDERS |
         ProviderCapabilities.SEARCH_QUERY |
         ProviderCapabilities.STAR |
-        ProviderCapabilities.ARCHIVE
+        ProviderCapabilities.ARCHIVE |
+        ProviderCapabilities.CATEGORIES
     )
 
     def __init__(
@@ -90,6 +121,7 @@ class OutlookProvider(EmailProvider):
         self.scopes = scopes or DEFAULT_SCOPES
         self._access_token: Optional[str] = None
         self._folder_cache: Dict[str, str] = {}
+        self._category_cache: Dict[str, str] = {}  # name -> id
         self._msal_app = None
         self._session = None
 
@@ -199,6 +231,7 @@ class OutlookProvider(EmailProvider):
         """Establish connection via OAuth."""
         self._access_token = self._acquire_token()
         self._init_folder_cache()
+        self._init_category_cache()
         logger.info("Outlook provider connected")
 
     def disconnect(self) -> None:
@@ -235,6 +268,128 @@ class OutlookProvider(EmailProvider):
                 self._fetch_child_folders(folder["id"], full_name)
         except Exception:
             pass  # Ignore errors for child folders
+
+    def _init_category_cache(self) -> None:
+        """Pre-fetch master categories."""
+        logger.info("Initializing Outlook category cache...")
+        try:
+            result = self._api_get(GRAPH_API_CATEGORIES)
+            for cat in result.get("value", []):
+                self._category_cache[cat["displayName"]] = cat["id"]
+            logger.debug(f"Cached {len(self._category_cache)} categories")
+        except Exception as e:
+            logger.warning(f"Failed to cache categories: {e}")
+
+    def ensure_category_exists(self, name: str, color: str = "blue") -> str:
+        """
+        Ensure a category exists, creating if necessary.
+
+        Args:
+            name: Category display name (e.g., "Critical", "Important")
+            color: Color name from CATEGORY_COLORS (default: blue)
+
+        Returns:
+            The category ID
+        """
+        if name in self._category_cache:
+            return self._category_cache[name]
+
+        # Resolve color preset
+        color_preset = CATEGORY_COLORS.get(color.lower(), "preset7")  # default blue
+
+        data = {
+            "displayName": name,
+            "color": color_preset,
+        }
+
+        try:
+            result = self._api_post(GRAPH_API_CATEGORIES, data)
+            self._category_cache[name] = result["id"]
+            logger.info(f"Created category: {name} ({color})")
+            return result["id"]
+        except Exception as e:
+            # Category might already exist (race condition)
+            logger.debug(f"Category create for {name}: {e}")
+            # Refresh cache and check again
+            self._init_category_cache()
+            if name in self._category_cache:
+                return self._category_cache[name]
+            raise RuntimeError(f"Failed to create category: {name}")
+
+    def apply_category(
+        self,
+        message_id: str,
+        category: str,
+        color: str = "blue",
+    ) -> bool:
+        """
+        Apply a color category to a message.
+
+        Args:
+            message_id: Message to categorize
+            category: Category name to apply
+            color: Color for category (if creating new)
+
+        Returns:
+            True if successful
+        """
+        # Ensure category exists
+        self.ensure_category_exists(category, color)
+
+        url = f"{GRAPH_API_BASE}/me/messages/{message_id}"
+
+        # Get current categories first
+        try:
+            msg = self._api_get(url, params={"$select": "categories"})
+            current_cats = msg.get("categories", [])
+        except Exception:
+            current_cats = []
+
+        # Add new category if not already present
+        if category not in current_cats:
+            current_cats.append(category)
+
+        data = {"categories": current_cats}
+
+        try:
+            self._api_patch(url, data)
+            logger.debug(f"Applied category '{category}' to message {message_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to apply category: {e}")
+            return False
+
+    def remove_category(self, message_id: str, category: str) -> bool:
+        """
+        Remove a category from a message.
+
+        Args:
+            message_id: Message to modify
+            category: Category name to remove
+
+        Returns:
+            True if successful
+        """
+        url = f"{GRAPH_API_BASE}/me/messages/{message_id}"
+
+        try:
+            msg = self._api_get(url, params={"$select": "categories"})
+            current_cats = msg.get("categories", [])
+
+            if category in current_cats:
+                current_cats.remove(category)
+                data = {"categories": current_cats}
+                self._api_patch(url, data)
+                logger.debug(f"Removed category '{category}' from message {message_id}")
+
+            return True
+        except Exception as e:
+            logger.error(f"Failed to remove category: {e}")
+            return False
+
+    def get_category_cache(self) -> Dict[str, str]:
+        """Return the category name -> ID cache."""
+        return self._category_cache.copy()
 
     def list_messages(
         self,
@@ -386,10 +541,30 @@ class OutlookProvider(EmailProvider):
         """Move message to Archive folder."""
         return self.apply_label(message_id, "Archive")
 
-    def star(self, message_id: str) -> bool:
-        """Flag a message."""
+    def star(self, message_id: str, due_date: Optional[datetime] = None) -> bool:
+        """
+        Flag a message, optionally with a due date for Microsoft To Do.
+
+        Args:
+            message_id: Message to flag
+            due_date: Optional due date (syncs to Microsoft To Do)
+
+        Returns:
+            True if successful
+        """
         url = f"{GRAPH_API_BASE}/me/messages/{message_id}"
-        data = {"flag": {"flagStatus": "flagged"}}
+
+        flag_data: Dict[str, Any] = {"flagStatus": "flagged"}
+
+        if due_date:
+            # Format as ISO 8601 date for Graph API
+            due_str = due_date.strftime("%Y-%m-%dT00:00:00Z")
+            flag_data["dueDateTime"] = {
+                "dateTime": due_str,
+                "timeZone": "UTC",
+            }
+
+        data = {"flag": flag_data}
 
         try:
             self._api_patch(url, data)

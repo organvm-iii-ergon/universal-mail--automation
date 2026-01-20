@@ -101,6 +101,9 @@ class Config:
     # Keep in inbox (additions to default)
     extra_keep_in_inbox: List[str] = field(default_factory=list)
 
+    # VIP senders configuration
+    vip_senders: Dict[str, Dict] = field(default_factory=dict)
+
 
 def load_yaml_config(path: Path) -> Dict[str, Any]:
     """Load configuration from a YAML file."""
@@ -252,6 +255,10 @@ def _apply_yaml_config(config: Config, data: Dict[str, Any]) -> None:
     if "extra_keep_in_inbox" in data:
         config.extra_keep_in_inbox = data["extra_keep_in_inbox"]
 
+    # VIP senders
+    if "vip_senders" in data:
+        config.vip_senders = data["vip_senders"]
+
 
 def _apply_env_config(config: Config, prefix: str) -> None:
     """Apply environment variable overrides to config object."""
@@ -288,6 +295,38 @@ def _apply_env_config(config: Config, prefix: str) -> None:
         config.outlook.client_id = os.getenv("OUTLOOK_CLIENT_ID")
     if os.getenv("OUTLOOK_TOKEN_CACHE"):
         config.outlook.token_cache_path = os.getenv("OUTLOOK_TOKEN_CACHE")
+
+
+def apply_vip_senders_from_config(config: Config) -> int:
+    """
+    Apply VIP senders from config to the rules module.
+
+    Args:
+        config: Loaded configuration
+
+    Returns:
+        Number of VIP senders added
+    """
+    from core.rules import add_vip_sender
+
+    count = 0
+    for key, vip_data in config.vip_senders.items():
+        if isinstance(vip_data, dict) and "pattern" in vip_data:
+            add_vip_sender(
+                key=key,
+                pattern=vip_data["pattern"],
+                tier=vip_data.get("tier", 1),
+                star=vip_data.get("star", True),
+                label_override=vip_data.get("label_override"),
+                note=vip_data.get("note", ""),
+            )
+            count += 1
+            logger.debug(f"Added VIP sender: {key}")
+
+    if count > 0:
+        logger.info(f"Loaded {count} VIP senders from config")
+
+    return count
 
 
 def create_sample_config(path: Optional[Path] = None) -> str:
@@ -361,6 +400,20 @@ outlook:
 # Additional labels to keep in inbox (not archive)
 # extra_keep_in_inbox:
 #   - "Urgent/Category"
+
+# VIP senders - always get priority treatment
+# vip_senders:
+#   "ceo@company.com":
+#     pattern: "ceo@company\\.com"
+#     tier: 1  # Critical
+#     star: true
+#     note: "CEO"
+#   "important-client":
+#     pattern: ".*@important-client\\.com"
+#     tier: 1
+#     star: true
+#     label_override: "Personal"  # Optional: override categorization
+#     note: "Important client domain"
 '''
 
     if path:
