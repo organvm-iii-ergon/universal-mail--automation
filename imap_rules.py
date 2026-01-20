@@ -1,5 +1,5 @@
 """
-Lightweight IMAP rules engine to apply Gmail-style labels/folders using existing LABEL_RULES.
+Lightweight IMAP rules engine to apply Gmail-style labels/folders using shared LABEL_RULES.
 
 Usage:
   DRY_RUN=1 IMAP_HOST=imap.gmail.com IMAP_USER="padavano.anthony@gmail.com" IMAP_PASS="app-password" python imap_rules.py --limit 200
@@ -8,7 +8,7 @@ Usage:
 Notes:
   - Uses IMAP with STARTTLS/SSL.
   - For Gmail, labels are applied via IMAP folders. Ensure the IMAP label exists (create via Gmail/IMAP if missing).
-  - Uses regexes from gmail_labeler.py (must be in the same directory).
+  - Uses shared rules from core.rules module.
   - Default query pulls INBOX unseen; you can override with --mailbox.
 """
 
@@ -23,7 +23,7 @@ from typing import List, Tuple, Dict
 import subprocess
 import getpass
 
-import gmail_labeler
+from core.rules import LABEL_RULES, categorize_from_strings
 
 
 def decode_str(s: str) -> str:
@@ -84,17 +84,8 @@ def fetch_headers(imap: imaplib.IMAP4_SSL, uid: str) -> Tuple[str, str]:
 
 
 def categorize(frm: str, subj: str) -> str:
-    combined = f"{frm} {subj}".lower()
-    best = None
-    best_priority = 9999
-    for label_name, rule in gmail_labeler.LABEL_RULES.items():
-        for pattern in rule["patterns"]:
-            if re.search(pattern, combined, re.IGNORECASE):
-                if rule["priority"] < best_priority:
-                    best = label_name
-                    best_priority = rule["priority"]
-                    break
-    return best or "Misc/Other"
+    """Categorize using shared core rules."""
+    return categorize_from_strings(frm, subj)
 
 
 def ensure_label(imap: imaplib.IMAP4_SSL, label: str, created_cache: set):

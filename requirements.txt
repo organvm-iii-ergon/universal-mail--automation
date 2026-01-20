@@ -1,0 +1,15 @@
+# Core dependencies (Gmail API)
+google-api-python-client>=2.0.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=0.5.0
+
+# Optional: Outlook.com support (Microsoft Graph API)
+msal>=1.25.0
+requests>=2.28.0
+
+# Optional: YAML configuration file support
+pyyaml>=6.0
+
+# Optional: Type checking (development)
+# mypy>=1.0.0
+# types-requests>=2.28.0

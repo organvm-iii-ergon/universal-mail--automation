@@ -1,7 +1,10 @@
 """
-Gmail Archive Labeling Automation v2.1 (Argparse & Robustness)
+Gmail Archive Labeling Automation v2.2 (Multi-Provider Refactor)
 Author: Comprehensive Email Organization System
 Purpose: Exhaustively label all emails in Gmail using Batch APIs and State Persistence.
+
+This module now imports shared rules and state from the core module, enabling
+consistent categorization across multiple email providers.
 """
 
 import os
@@ -16,9 +19,18 @@ from googleapiclient.errors import HttpError
 
 import gmail_auth
 
-# ============================================================================ 
+# Import shared rules and state from core module
+from core.rules import (
+    LABEL_RULES,
+    PRIORITY_LABELS,
+    KEEP_IN_INBOX,
+    categorize_message as _core_categorize,
+)
+from core.state import StateManager
+
+# ============================================================================
 # CONFIGURATION
-# ============================================================================ 
+# ============================================================================
 
 # Gmail API scopes
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
@@ -34,27 +46,6 @@ LIST_PAGE_SIZE = 500    # Max messages to list per page (API max 500)
 BASE_BACKOFF_SECONDS = 10  # Initial delay when backing off rate limits
 SYSTEM_LABELS = ["STARRED"]  # System labels we may apply (flags)
 
-# Labels that should also be flagged/starred for priority handling in clients.
-PRIORITY_LABELS = {
-    "Work/Dev/GitHub",
-    "Work/Dev/Code-Review",
-    "Work/Dev/Infrastructure",
-    "Tech/Security",
-    "Finance/Payments",
-    "Finance/Banking",
-    "Awaiting Reply",
-    "Personal",
-}
-
-# Labels that should REMAIN in the Inbox (High Priority / Human)
-# Everything else will be Archived (removed from INBOX).
-KEEP_IN_INBOX = {
-    "Personal",
-    "Awaiting Reply",
-    "To Do",
-    "To Respond"
-}
-
 # Setup Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -66,393 +57,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================================ 
-# LABEL TAXONOMY
-# ============================================================================ 
-
-LABEL_RULES = {
-    # Work / Development
-    "Work/Dev/GitHub": {
-        "patterns": [
-            r"github\.com",
-            r"notifications@github",
-            r"@reply\.github\.com",
-            r"copilot",
-            r"ivi374forivi",
-        ],
-        "priority": 1,
-    },
-    "Work/Dev/Code-Review": {
-        "patterns": [r"coderabb", r"sourcery", r"qodo", r"codacy", r"copilot", r"llamapre", r"pieces"],
-        "priority": 2,
-    },
-    "Work/Dev/Infrastructure": {
-        "patterns": [
-            r"cloudflare",
-            r"vercel",
-            r"netlify",
-            r"digitalocean",
-            r"railway",
-            r"render\\.com",
-            r"newrelic",
-            r"pieces\\.app",
-            r"render",
-            r"gitkraken",
-            r"notion\\.so",
-            r"backblaze",
-            r"termius",
-        ],
-        "priority": 3,
-    },
-    # Real Estate / Projects (New Cluster)
-    "Work/RealEstate": {
-        "patterns": [
-            r"permit application",
-            r"majesticbuilds",
-            r"unit s",
-            r"elv fr",
-            r"tenant",
-            r"lease",
-        ],
-        "priority": 3,
-    },
-    # AI Services
-    "AI/Services": {
-        "patterns": [
-            r"openai",
-            r"anthropic",
-            r"claude",
-            r"x\.ai",
-            r"xai\.com",
-            r"xAI LLC",
-            r"perplexity",
-            r"meta\\.com",
-            r"ollama",
-        ],
-        "priority": 4,
-    },
-    "AI/Grok": {"patterns": [r"grok", r"x\.ai.*grok"], "priority": 5},
-    "AI/Data Exports": {"patterns": [r"data export", r"export is ready", r"download.*data"], "priority": 6},
-    # Finance & Payments
-    "Finance/Banking": {
-        "patterns": [
-            r"chase",
-            r"capital.?one",
-            r"verizon",
-            r"gemini",
-            r"experian",
-            r"chime",
-            r"kikoff",
-            r"self\\.inc",
-            r"nav\.com",
-            r"bankofamerica",
-            r"wellsfargo",
-            r"citi",
-            r"usbank",
-            r"ally",
-            r"marcus",
-            r"regions",
-            r"pnc",
-            r"lendingtree",
-            r"trueaccord",
-            r"moneylion",
-            r"dave\\.com",
-            r"nelnet",
-            r"studentaid",
-            r"loan",
-            r"credit score",
-            r"credit card",
-            r"apr",
-            r"refinance",
-            r"overdraft",
-            r"missionlane",
-            r"lenme",
-            r"credit report",
-            r"collections",
-            r"settle",
-            r"settlement",
-            r"debt",
-        ],
-        "priority": 7,
-    },
-    "Finance/Payments": {
-        "patterns": [
-            r"paypal",
-            r"stripe",
-            r"kovo",
-            r"cash.?app",
-            r"true.?finance",
-            r"square",
-            r"braintree",
-            r"plaid",
-            r"capitalone",
-            r"joingerald",
-            r"vola",
-            r"venmo",
-            r"zelle",
-            r"att",
-            r"xfinity",
-            r"spectrum",
-            r"conedison",
-            r"discover",
-            r"american.?express",
-            r"barclaycard",
-            r"statement",
-            r"invoice",
-            r"payment.*due",
-            r"floatme",
-            r"taxrise",
-            r"beem",
-            r"onepay",
-            r"facebook.*receipt",
-            r"meta.*receipt",
-            r"ads receipt",
-            r"billing issue",
-            r"adobe",
-            r"past due",
-            r"overdue",
-            r"declined",
-            r"failed payment",
-            r"autopay",
-            r"renewal",
-            r"subscription",
-            r"paid",
-        ],
-        "priority": 8,
-    },
-    # Subscriptions & Services
-    "Tech/Security": {
-        "patterns": [
-            r"1password",
-            r"security.*alert",
-            r"login.*detected",
-            r"new.*device",
-            r"password.*reset",
-            r"verification.*code",
-            r"dropbox",
-            r"todoist",
-            r"geico",
-            r"facebook",
-            r"support\\.facebook\\.com",
-            r"business-updates\\.facebook\\.com",
-            r"confirming.*login",
-            r"google data.*download",
-            r"security",
-            r"sign in",
-            r"unusual activity",
-            r"suspicious",
-            r"two[- ]factor",
-            r"2fa",
-        ],
-        "priority": 9,
-    },
-    # Commerce & Shopping
-    "Shopping": {
-        "patterns": [
-            r"uber",
-            r"amazon",
-            r"ebay",
-            r"etsy",
-            r"walmart",
-            r"target",
-            r"deepview",
-            r"squarespace",
-            r"lafitness",
-            r"bestbuy",
-            r"costco",
-            r"wayfair",
-            r"chewy",
-            r"zara",
-            r"hm\.com",
-            r"gap\.com",
-            r"oldnavy",
-            r"nike",
-            r"adidas",
-            r"nordstrom",
-            r"macys",
-            r"uniqlo",
-            r"lululemon",
-            r"order.*confirm",
-            r"shipped",
-            r"tracking",
-            r"flash sale",
-        ],
-        "priority": 10,
-    },
-    # Travel
-    "Travel": {
-        "patterns": [
-            r"united\.com",
-            r"aa\.com",
-            r"delta\.com",
-            r"southwest",
-            r"jetblue",
-            r"alaskaair",
-            r"spirit",
-            r"flyfrontier",
-            r"marriott",
-            r"hilton",
-            r"hyatt",
-            r"ihg",
-            r"airbnb",
-            r"vrbo",
-            r"booking\.com",
-            r"hotels\.com",
-            r"expedia",
-            r"kayak",
-            r"priceline",
-            r"orbitz",
-            r"hotwire",
-            r"itinerary",
-            r"boarding.*pass",
-            r"flight.*confirm",
-        ],
-        "priority": 11,
-    },
-    # Entertainment & Media
-    "Entertainment": {"patterns": [r"fandango", r"audible", r"netflix", r"spotify", r"letterboxd", r"popcorn.?frights", r"warprecords", r"pluto", r"rotten.?tomato"], "priority": 12},
-    # Education
-    "Education/Research": {
-        "patterns": [
-            r"coursera",
-            r"udemy",
-            r"skillshare",
-            r"edx",
-            r"khanacademy",
-            r"scholar\.google",
-            r"researchgate",
-            r"arxiv",
-            r"academia\.edu",
-            r"learning",
-            r"ibo\\.org",
-        ],
-        "priority": 13,
-    },
-    # Professional Services
-    "Professional/Jobs": {
-        "patterns": [
-            r"higheredjobs",
-            r"indeed",
-            r"linkedin.*jobs",
-            r"glassdoor",
-            r"jobot",
-            r"builtin\.com",
-            r"ziprecruiter",
-            r"monster",
-            r"justinwelsh",
-            r"training overdue",
-            r"compliance",
-            r"training",
-            r"ppe",
-            r"course",
-        ],
-        "priority": 14,
-    },
-    # Domain Services
-    "Services/Domain": {"patterns": [r"namecheap", r"godaddy", r"domain.*renew", r"dns", r"e\\.godaddy\\.com"], "priority": 15},
-    # Notifications (catch-all for services)
-    "Notification": {
-        "patterns": [
-            r"notification",
-            r"alert",
-            r"reminder",
-            r"automatic.?appointment",
-            r"udemy.*instructor",
-            r"google.*workspace",
-            r"trinity-health",
-            r"deepview",
-            r"todoist",
-            r"automatic reply",
-            r"auto-reply",
-        ],
-        "priority": 16,
-    },
-    # Marketing
-    "Marketing": {
-        "patterns": [
-            r"unsubscribe",
-            r"newsletter",
-            r"promo",
-            r"special.*offer",
-            r"offer",
-            r"discount",
-            r"sale",
-            r"hims",
-            r"substack",
-            r"scaleclients",
-            r"collabwriting",
-            r"beehiiv",
-            r"coursera",
-            r"jupitrr",
-            r"myhumandesign",
-            r"ibo\\.org",
-            r"personal loan",
-            r"credit card.*waiting",
-            r"deal",
-            r"last chance",
-            r"save",
-            r"coupon",
-            r"offer ends",
-            r"free shipping",
-            r"clearance",
-        ],
-        "priority": 17,
-    },
-    # Personal
-    "Personal": {
-        "patterns": [
-            r"padavano\.anthony",
-            r"a\.j\.?\.?padavano@outlook\.com",
-            r"a\.j\.?\.?padavano@icloud\.com",
-            r"family",
-            r"mom",
-            r"dad",
-        ],
-        "priority": 18,
-    },
-    # Awaiting Action
-    "Awaiting Reply": {"patterns": [r"awaiting.*reply", r"pending.*response"], "priority": 19},
-    # Default catch-all routed to a generic folder
-    "Misc/Other": {"patterns": [r".*"], "priority": 999},
-}
-
-# ============================================================================ 
-# UTILITIES
-# ============================================================================ 
-
-class StateManager:
-    """Handles persistence of the processing state."""
-    def __init__(self, filename):
-        self.filename = filename
-        self.state = self._load()
-
-    def _load(self):
-        if os.path.exists(self.filename):
-            try:
-                with open(self.filename, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load state file: {e}")
-        return {"next_page_token": None, "total_processed": 0, "history": {}}
-
-    def save(self, page_token, processed_count, history):
-        self.state["next_page_token"] = page_token
-        self.state["total_processed"] = processed_count
-        self.state["history"] = history # Simple label count
-        try:
-            with open(self.filename, 'w') as f:
-                json.dump(self.state, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save state: {e}")
-
-    def get_token(self):
-        return self.state.get("next_page_token")
-
-    def get_total(self):
-        return self.state.get("total_processed", 0)
-
-    def get_history(self):
-        return defaultdict(int, self.state.get("history", {}))
+# Note: LABEL_RULES, PRIORITY_LABELS, KEEP_IN_INBOX, and StateManager are now
+# imported from core module for shared use across providers.
 
 # ============================================================================ 
 # CORE ENGINE
@@ -520,26 +126,8 @@ class GmailLabeler:
                  self.label_cache[self.remove_source_label] = existing_labels.get(self.remove_source_label)
 
     def categorize_message(self, headers):
-        """Pure logic: categorize based on headers."""
-        sender = ""
-        subject = ""
-        for h in headers:
-            if h['name'].lower() == 'from': sender = h['value']
-            if h['name'].lower() == 'subject': subject = h['value']
-        
-        combined_text = f"{sender} {subject}".lower()
-        
-        best_match = None
-        best_priority = 9999
-        
-        for label_name, rule in LABEL_RULES.items():
-            for pattern in rule["patterns"]:
-                if re.search(pattern, combined_text, re.IGNORECASE):
-                    if rule["priority"] < best_priority:
-                        best_match = label_name
-                        best_priority = rule["priority"]
-                        break
-        return best_match or "Misc/Other"
+        """Categorize based on headers using shared core rules."""
+        return _core_categorize(headers)
 
     def process_batch(self, messages):
         """
