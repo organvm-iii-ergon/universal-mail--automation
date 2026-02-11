@@ -565,7 +565,7 @@ Universal Mail Automation sits within **ORGAN-III (Ergon)** — the Commerce org
 
 - [`organvm-iii-ergon/tab-bookmark-manager`](https://github.com/organvm-iii-ergon/tab-bookmark-manager) — Browser tab and bookmark organization (parallel information-triage problem in a different domain)
 - [`organvm-iv-taxis/agentic-titan`](https://github.com/organvm-iv-taxis/agentic-titan) — AI agent orchestration framework (shares the abstract-provider + state-recovery architectural pattern)
-- [`organvm-i-theoria/recursive-engine`](https://github.com/organvm-i-theoria/recursive-engine) — Recursive systems theory (the compositional interface pattern in `providers/base.py` is a direct descendant)
+- [`organvm-i-theoria/recursive-engine`](https://github.com/organvm-i-theoria/recursive-engine--generative-entity) — Recursive systems theory (the compositional interface pattern in `providers/base.py` is a direct descendant)
 
 ---
 
