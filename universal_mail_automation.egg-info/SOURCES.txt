@@ -22,6 +22,8 @@ icloud_triage.py
 imap_rules.py
 inbox_sweep.py
 inspect_remaining.py
+mail_send.py
+mail_send_safety.py
 mark_rot_read.py
 obligations_build.py
 organize_labels.py
@@ -30,6 +32,7 @@ recount.py
 requirements-api.txt
 requirements-mcp.txt
 requirements.txt
+send_drafts.py
 setup.py
 acp/__init__.py
 acp/feed.py

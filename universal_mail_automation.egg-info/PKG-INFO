@@ -22,6 +22,7 @@ Classifier: Topic :: Utilities
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 License-File: LICENSE
+Requires-Dist: cryptography<50,>=42
 Requires-Dist: pydantic>=2.13.4
 Requires-Dist: pyyaml<7,>=6.0.3
 Requires-Dist: google-api-python-client<3,>=2.197.0

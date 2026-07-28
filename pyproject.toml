@@ -25,6 +25,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "cryptography>=42,<50",
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3,<7",
     "google-api-python-client>=2.197.0,<3",
@@ -89,4 +90,4 @@ pythonpath = ["."]
 include = ["api*", "acp*", "audit*", "auth*", "config*", "core*", "mcp_server*", "platform*", "providers*"]
 
 [tool.setuptools]
-py-modules = ["analyze_strategic_value", "archive_sorted", "auto_drain", "bulk_sweeper", "check_health", "cli", "configure_smart_mailboxes", "draft_writer", "final_sweep", "gmail_auth", "gmail_imap_sweep", "gmail_labeler", "gmail_labeler_legacy", "icloud_triage", "imap_rules", "inbox_sweep", "inspect_remaining", "mail_send", "mark_rot_read", "obligations_build", "organize_labels", "recount"]
+py-modules = ["analyze_strategic_value", "archive_sorted", "auto_drain", "bulk_sweeper", "check_health", "cli", "configure_smart_mailboxes", "draft_writer", "final_sweep", "gmail_auth", "gmail_imap_sweep", "gmail_labeler", "gmail_labeler_legacy", "icloud_triage", "imap_rules", "inbox_sweep", "inspect_remaining", "mail_send", "mail_send_safety", "mark_rot_read", "obligations_build", "organize_labels", "recount", "send_drafts"]

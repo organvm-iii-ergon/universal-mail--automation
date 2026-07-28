@@ -29,18 +29,39 @@ python3 -m venv .venv
 `mail_send.py` is the INTERACTIVE, headless send CLI (keyed Gmail SMTP + built-in
 [Gmail]/Sent Mail verification; loud VERIFIED/UNVERIFIED, non-zero exit if unverified).
 It is a SEPARATE lane from `send_drafts.py` (the autonomic beat sender, which stays
-tier-locked behind LIMEN_MAIL_SEND): mail_send has no tier gate because the human
-invocation IS the authorization. Never wire mail_send into the beat.
+tier-locked behind LIMEN_MAIL_SEND). `mail_send` is zero-write by default. Invocation
+is not authorization: every transmission requires explicit `--apply` plus an unexpired
+`uma.mail_send_authorization.v1` receipt bound to the attempt ID, sender, normalized
+To/Cc/Bcc recipients, SMTP envelope, subject, Message-ID, thread/source UID, body
+digest, and attachment digests. The receipt must be authenticated with the separately
+custodied Ed25519 private key, may live for at most 15 minutes, and each attempt ID
+is durably one-shot against process retries even after an SMTP/verification failure.
+The invoking OS user owns the claim store and remains inside the local trust boundary;
+resisting deliberate deletion by that same principal would require a separately
+privileged service, which this on-demand CLI intentionally does not introduce. The sender only reads
+the fixed public key at `/etc/universal-mail-automation/mail-send-authorization.pub`;
+neither the verifier path nor the attempt store is caller-selectable. Never wire
+`mail_send` into the beat.
 
 ```bash
-# creds: GMAIL_USER/GMAIL_APP_PASSWORD (limen creds-hydrate) or
-set -a; source ~/.config/mail_automation/credentials.env; set +a
+# creds: GMAIL_USER/GMAIL_APP_PASSWORD (limen creds-hydrate), or use
+# --credentials-file ~/.config/mail_automation/credentials.env (parsed as data;
+# never source/eval the file)
 
-python3 mail_send.py --self-test                       # end-to-end predicate (exit 0 = lane works)
-python3 mail_send.py --to a@b.c --subject "Hi" --body-file body.txt [--cc x@y.z --attach f.pdf]
-python3 mail_send.py --reply-to-search "subject fragment" --body-file body.txt   # true In-Reply-To threading
-python3 mail_send.py --from-draft "subject fragment"   # send existing Gmail draft VERBATIM, then trash the draft copy
-python3 mail_send.py ... --dry-run                     # print the RFC822, transmit nothing
+python3 mail_send.py --self-test --attempt-id selftest-20260716-a  # deterministic zero-write request
+python3 mail_send.py --attempt-id send-20260716-a --to a@b.c --subject "Hi" --body-file body.txt
+python3 mail_send.py --attempt-id reply-20260716-a --reply-to-search "subject fragment" --body-file body.txt
+python3 mail_send.py --attempt-id draft-20260716-a --from-draft "subject fragment"
+
+# Only after an independent authority copies the preview binding into an
+# authorized=true, authorized_by, issued_at/expires_at (<=15m) JSON receipt,
+# adds key_id/signature_algorithm, and Ed25519-signs the canonical receipt using
+# private key material unavailable to the mail-send process:
+python3 mail_send.py ... --apply \
+  --authorization-receipt /private/path/authorization.json
+
+# Never retry an apply with the same attempt ID. Its durable claim is consumed
+# before SMTP; use a fresh preview, receipt, and attempt ID after any ambiguity.
 ```
 
 ### Running (Unified CLI)

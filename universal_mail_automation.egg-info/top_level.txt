@@ -21,6 +21,8 @@ icloud_triage
 imap_rules
 inbox_sweep
 inspect_remaining
+mail_send
+mail_send_safety
 mark_rot_read
 mcp_server
 obligations_build
@@ -28,3 +30,4 @@ organize_labels
 platform
 providers
 recount
+send_drafts
