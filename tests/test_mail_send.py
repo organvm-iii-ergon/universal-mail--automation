@@ -9,6 +9,8 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 import mail_send
 from mail_send import (
@@ -36,7 +38,12 @@ from mail_send_safety import (
 
 CREDS = ("me@example.com", "app-password")
 ATTEMPT = "attempt-20260716-a"
-AUTHORIZATION_KEY = b"test-independent-authorization-key-32-bytes"
+AUTHORIZATION_PRIVATE_KEY = bytes(range(1, 33))
+AUTHORIZATION_PUBLIC_KEY = (
+    Ed25519PrivateKey.from_private_bytes(AUTHORIZATION_PRIVATE_KEY)
+    .public_key()
+    .public_bytes(Encoding.Raw, PublicFormat.Raw)
+)
 
 
 class _FakeSMTP:
@@ -167,15 +174,19 @@ def _isolated_effectors(monkeypatch, tmp_path):
     monkeypatch.setattr(
         mail_send,
         "DEFAULT_AUTHORIZATION_KEY_FILE",
-        str(tmp_path / "absent-authorization.key"),
+        str(tmp_path / "authorization.pub"),
     )
-    monkeypatch.setenv("UMA_MAIL_SEND_ATTEMPT_STORE", str(tmp_path / "attempts"))
+    monkeypatch.setattr(
+        mail_send,
+        "DEFAULT_ATTEMPT_STORE",
+        str(tmp_path / "attempts"),
+    )
     for var in ("GMAIL_USER", "GMAIL_APP_PASSWORD", "IMAP_USER", "IMAP_PASS"):
         monkeypatch.delenv(var, raising=False)
 
 
-def _authorization_key_file(tmp_path, key=AUTHORIZATION_KEY):
-    path = tmp_path / "authorization.key"
+def _authorization_key_file(tmp_path, key=AUTHORIZATION_PUBLIC_KEY):
+    path = tmp_path / "authorization.pub"
     if not path.exists():
         path.write_bytes(key)
         path.chmod(0o600)
@@ -192,6 +203,7 @@ def _write_receipt(
     expired=False,
     effect_context=None,
 ):
+    _authorization_key_file(tmp_path)
     binding = authorization_binding(
         msg,
         envelope_sender=CREDS[0],
@@ -209,10 +221,12 @@ def _write_receipt(
             now + (-timedelta(minutes=1) if expired else timedelta(minutes=10))
         ).isoformat(),
         "signature_algorithm": AUTHORIZATION_SIGNATURE_ALGORITHM,
-        "key_id": authorization_key_id(AUTHORIZATION_KEY),
+        "key_id": authorization_key_id(AUTHORIZATION_PUBLIC_KEY),
     }
     receipt.update(overrides or {})
-    receipt["signature"] = authorization_signature(receipt, AUTHORIZATION_KEY)
+    receipt["signature"] = authorization_signature(
+        receipt, AUTHORIZATION_PRIVATE_KEY
+    )
     path = (
         tmp_path
         / f"authorization-{len(list(tmp_path.glob('authorization-*.json')))}.json"
@@ -349,6 +363,26 @@ def test_any_smtp_recipient_refusal_is_failure_and_skips_verification(tmp_path):
     assert imap.sent_calls == 0
 
 
+def test_smtp_envelope_preserves_recipient_local_part_case(tmp_path):
+    msg = build_message(CREDS, ["CaseSensitive@Example.COM"], "s", "b")
+    grant = _validated_grant(tmp_path, msg)
+
+    assert (
+        send_and_verify(
+            msg,
+            CREDS,
+            _FakeImap(),
+            1,
+            grant,
+            "compose",
+            ATTEMPT,
+            to_addrs=["CaseSensitive@Example.COM"],
+        )
+        == EXIT_OK
+    )
+    assert _FakeSMTP.rcpt_calls == ["CaseSensitive@example.com"]
+
+
 def test_same_authorized_attempt_is_one_shot(tmp_path):
     msg = build_message(CREDS, ["a@b.c"], "s", "b")
     grant = _validated_grant(tmp_path, msg)
@@ -361,6 +395,25 @@ def test_same_authorized_attempt_is_one_shot(tmp_path):
         == EXIT_FAIL_CLOSED
     )
     assert _FakeSMTP.data_calls == 1
+
+
+def test_attempt_store_environment_cannot_redirect_replay_claim(
+    monkeypatch, tmp_path
+):
+    msg = build_message(CREDS, ["a@b.c"], "s", "b")
+    grant = _validated_grant(tmp_path, msg)
+    caller_store = tmp_path / "caller-selected-store"
+    monkeypatch.setenv("UMA_MAIL_SEND_ATTEMPT_STORE", str(caller_store))
+
+    assert (
+        send_and_verify(msg, CREDS, _FakeImap(), 1, grant, "compose", ATTEMPT)
+        == EXIT_OK
+    )
+    assert not caller_store.exists()
+    assert (
+        send_and_verify(msg, CREDS, _FakeImap(), 1, grant, "compose", ATTEMPT)
+        == EXIT_FAIL_CLOSED
+    )
 
 
 def test_receipt_change_after_validation_blocks_before_smtp(tmp_path):
@@ -380,10 +433,10 @@ def test_receipt_change_after_validation_blocks_before_smtp(tmp_path):
 def test_authorization_key_rotation_after_validation_blocks_before_smtp(tmp_path):
     msg = build_message(CREDS, ["a@b.c"], "s", "b")
     grant = _validated_grant(tmp_path, msg)
-    grant.authorization_key_path.write_bytes(
+    grant.authorization_public_key_path.write_bytes(
         b"rotated-independent-key-material-32-bytes"
     )
-    grant.authorization_key_path.chmod(0o600)
+    grant.authorization_public_key_path.chmod(0o600)
     assert (
         send_and_verify(msg, CREDS, _FakeImap(), 1, grant, "compose", ATTEMPT)
         == EXIT_FAIL_CLOSED
@@ -676,9 +729,22 @@ def test_self_test_preview_is_deterministic_and_zero_write(monkeypatch, capsys):
     second = capsys.readouterr().out
     assert first == second
     expected_suffix = hashlib.sha256(ATTEMPT.encode()).hexdigest()[:32]
-    assert f"<uma-self-test-{expected_suffix}@local.invalid>" in first
+    assert f"<uma-self-test-{expected_suffix}@example.com>" in first
     assert '"authorized": false' in first
     assert _FakeSMTP.send_calls == 0
+
+
+def test_cli_rejects_caller_selected_attempt_store():
+    with pytest.raises(SystemExit):
+        mail_send.main(
+            [
+                "--self-test",
+                "--attempt-id",
+                ATTEMPT,
+                "--attempt-store",
+                "/tmp/caller-selected-store",
+            ]
+        )
 
 
 def test_self_test_exact_authorization_is_one_shot(monkeypatch, tmp_path):
@@ -694,8 +760,6 @@ def test_self_test_exact_authorization_is_one_shot(monkeypatch, tmp_path):
         "--apply",
         "--authorization-receipt",
         str(receipt),
-        "--authorization-key-file",
-        str(_authorization_key_file(tmp_path)),
     ]
     assert mail_send.main(args) == EXIT_OK
     assert _FakeSMTP.envelope == (CREDS[0], [CREDS[0]])
@@ -730,8 +794,6 @@ def test_compose_apply_with_exact_receipt(monkeypatch, tmp_path):
             "--apply",
             "--authorization-receipt",
             str(receipt),
-            "--authorization-key-file",
-            str(_authorization_key_file(tmp_path)),
         ]
     )
     assert rc == EXIT_OK
@@ -764,8 +826,6 @@ def test_receipt_subject_mismatch_blocks_before_smtp(monkeypatch, tmp_path):
             "--apply",
             "--authorization-receipt",
             str(receipt),
-            "--authorization-key-file",
-            str(_authorization_key_file(tmp_path)),
         ]
     )
     assert rc == EXIT_FAIL_CLOSED
@@ -850,6 +910,24 @@ def test_receipt_requires_authentic_signature_and_bounded_lifetime(tmp_path):
             authorization_key_file=_authorization_key_file(tmp_path),
         )
 
+
+def test_public_verification_key_cannot_authorize_a_forged_receipt(tmp_path):
+    msg = build_message(CREDS, ["a@b.c"], "s", "body")
+    path, binding = _write_receipt(tmp_path, msg)
+    receipt = json.loads(path.read_text())
+    receipt["authorized_by"] = "forged:sender"
+    receipt["signature"] = authorization_signature(
+        receipt, AUTHORIZATION_PUBLIC_KEY
+    )
+    path.write_text(json.dumps(receipt))
+
+    with pytest.raises(AuthorizationError, match="signature verification"):
+        validate_authorization_receipt(
+            path,
+            binding,
+            authorization_key_file=_authorization_key_file(tmp_path),
+        )
+
     now = datetime.now(timezone.utc)
     path, binding = _write_receipt(
         tmp_path,
@@ -881,8 +959,8 @@ def test_authorization_control_files_refuse_symlinks_and_open_permissions(tmp_pa
         )
 
     key_path = _authorization_key_file(tmp_path)
-    key_path.chmod(0o644)
-    with pytest.raises(AuthorizationError, match="permissions"):
+    key_path.chmod(0o666)
+    with pytest.raises(AuthorizationError, match="group/world writable"):
         validate_authorization_receipt(
             path,
             binding,
@@ -924,19 +1002,19 @@ def test_binding_normalizes_recipient_roles_and_hashes_attachments(tmp_path):
     binding = authorization_binding(
         msg, envelope_sender="ME@EXAMPLE.COM", action="compose", attempt_id=ATTEMPT
     )
-    assert binding["sender"] == "me@example.com"
+    assert binding["sender"] == "ME@example.com"
     assert binding["recipients"] == {
-        "to": ["alpha@example.com"],
-        "cc": ["beta@example.com"],
-        "bcc": ["hidden@example.com"],
+        "to": ["Alpha@example.com", "alpha@example.com"],
+        "cc": ["BETA@example.com"],
+        "bcc": ["Hidden@example.com"],
     }
-    assert binding["attachments"] == [
-        {
-            "filename": "proof.bin",
-            "size": len(b"proof bytes"),
-            "sha256": hashlib.sha256(b"proof bytes").hexdigest(),
-        }
-    ]
+    assert len(binding["attachments"]) == 1
+    assert binding["attachments"][0]["filename"] == "proof.bin"
+    assert binding["attachments"][0]["size"] == len(b"proof bytes")
+    assert binding["attachments"][0]["sha256"] == hashlib.sha256(
+        b"proof bytes"
+    ).hexdigest()
+    assert binding["attachments"][0]["content_type"] == "application/octet-stream"
 
 
 def test_binding_covers_thread_and_selected_remote_source():
@@ -971,6 +1049,41 @@ def test_binding_covers_thread_and_selected_remote_source():
     assert first_binding["thread"]["in_reply_to"] == "<first@x>"
     assert first_binding["effect_context"]["source_uid"] == "1"
     assert first_binding["binding_sha256"] != second_binding["binding_sha256"]
+
+
+def test_binding_covers_mime_rendering_metadata_and_structure():
+    plain = email.message.EmailMessage()
+    plain["From"] = CREDS[0]
+    plain["To"] = "a@b.c"
+    plain["Subject"] = "same"
+    plain.set_content("same body")
+
+    flowed = email.message.EmailMessage()
+    flowed["From"] = CREDS[0]
+    flowed["To"] = "a@b.c"
+    flowed["Subject"] = "same"
+    flowed.set_content("same body")
+    flowed.set_param("format", "flowed", header="Content-Type")
+
+    alternative = email.message.EmailMessage()
+    alternative["From"] = CREDS[0]
+    alternative["To"] = "a@b.c"
+    alternative["Subject"] = "same"
+    alternative.set_content("same body")
+    alternative.add_alternative("<p>same body</p>", subtype="html")
+
+    bindings = [
+        authorization_binding(
+            message,
+            envelope_sender=CREDS[0],
+            action="from_draft",
+            attempt_id=ATTEMPT,
+        )
+        for message in (plain, flowed, alternative)
+    ]
+
+    assert len({binding["binding_sha256"] for binding in bindings}) == 3
+    assert len({binding["mime_structure_sha256"] for binding in bindings}) == 2
 
 
 def test_missing_attachment_fails_closed(monkeypatch, tmp_path):
@@ -1028,9 +1141,35 @@ def test_credential_file_rejects_unmatched_allowed_value_quote(tmp_path):
         parse_credential_env_file(credentials)
 
 
+def test_credential_file_refuses_symlink_and_writable_control_file(tmp_path):
+    credentials = tmp_path / "credentials.env"
+    credentials.write_text("GMAIL_USER=me@example.com\nGMAIL_APP_PASSWORD=secret\n")
+    link = tmp_path / "credentials-link.env"
+    link.symlink_to(credentials)
+    with pytest.raises(CredentialFileError, match="symlink"):
+        parse_credential_env_file(link)
+
+    credentials.chmod(0o666)
+    with pytest.raises(CredentialFileError, match="group/world writable"):
+        parse_credential_env_file(credentials)
+
+
 def test_complete_process_environment_pair_outranks_other_file_alias(tmp_path):
     credentials = tmp_path / "credentials.env"
     credentials.write_text("IMAP_USER=file@example.com\nIMAP_PASS=file-secret\n")
+    assert resolve_smtp_credentials(
+        [credentials],
+        {
+            "GMAIL_USER": "env@example.com",
+            "GMAIL_APP_PASSWORD": "env-secret",
+        },
+    ) == ("env@example.com", "env-secret")
+
+
+def test_complete_environment_pair_skips_malformed_credential_file(tmp_path):
+    credentials = tmp_path / "credentials.env"
+    credentials.write_text("GMAIL_USER='unterminated\n")
+
     assert resolve_smtp_credentials(
         [credentials],
         {

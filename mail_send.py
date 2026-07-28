@@ -30,7 +30,7 @@ Modes
          exit 0 ⟺ the whole lane works)
     (default)                                                          print, send nothing
     --apply --attempt-id ID --authorization-receipt PATH               authorize one send
-      --authorization-key-file PATH                                    authenticate receipt
+      (receipt is verified by the fixed, public Ed25519 authority key)
 
 Credentials come from the env the credential organ hydrates (GMAIL_USER/GMAIL_APP_PASSWORD
 or IMAP_USER/IMAP_PASS), or from a credential env file parsed strictly as data — never
@@ -82,7 +82,7 @@ SENT = os.environ.get("LIMEN_MAIL_SENT_MAILBOX", "[Gmail]/Sent Mail")
 TRASH = "[Gmail]/Trash"
 HEADER_SCAN_WINDOW = 100  # newest N messages scanned per mailbox for a match
 DEFAULT_CREDENTIAL_FILE = "~/.config/mail_automation/credentials.env"
-DEFAULT_AUTHORIZATION_KEY_FILE = "~/.config/mail_automation/mail-send-authorization.key"
+DEFAULT_AUTHORIZATION_KEY_FILE = "/etc/universal-mail-automation/mail-send-authorization.pub"
 DEFAULT_ATTEMPT_STORE = "~/.local/state/universal-mail-automation/mail-send-attempts"
 
 EXIT_OK = 0
@@ -260,6 +260,13 @@ def _normalize_addrs(values: list[str]) -> list[str]:
     return sorted({addr for value in values if (addr := normalize_address(value))})
 
 
+def _message_id_domain(sender: str) -> str:
+    address = normalize_address(sender)
+    if "@" not in address:
+        raise AuthorizationError("authenticated sender has no Message-ID domain")
+    return address.rsplit("@", 1)[1]
+
+
 def build_message(
     creds: tuple[str, str],
     to: list[str],
@@ -298,9 +305,11 @@ def build_message(
     else:
         validate_attempt_id(attempt_id)
         deterministic_id = hashlib.sha256(
-            f"mail-send\0{attempt_id}".encode("utf-8")
+            f"mail-send\0{attempt_id}".encode()
         ).hexdigest()[:32]
-        msg["Message-ID"] = f"<uma-send-{deterministic_id}@local.invalid>"
+        msg["Message-ID"] = (
+            f"<uma-send-{deterministic_id}@{_message_id_domain(user)}>"
+        )
     msg.set_content(body)
     _attach(msg, attachments)
     return msg
@@ -319,7 +328,8 @@ def build_self_test_message(creds: tuple[str, str], attempt_id: str) -> EmailMes
     msg = build_message(creds, to, subject, body, attempt_id=attempt_id)
     deterministic_id = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest()[:32]
     msg.replace_header(
-        "Message-ID", f"<uma-self-test-{deterministic_id}@local.invalid>"
+        "Message-ID",
+        f"<uma-self-test-{deterministic_id}@{_message_id_domain(creds[0])}>",
     )
     return msg
 
@@ -405,7 +415,6 @@ def send_and_verify(
     action: str,
     attempt_id: str,
     to_addrs: list[str] | None = None,
-    attempt_store: str | None = None,
     effect_context: dict[str, str] | None = None,
 ) -> int:
     """Claim a one-shot attempt, send, then verify server-side custody."""
@@ -432,8 +441,7 @@ def send_and_verify(
         claim = claim_authorized_attempt(
             grant,
             binding,
-            attempt_store
-            or os.environ.get("UMA_MAIL_SEND_ATTEMPT_STORE", DEFAULT_ATTEMPT_STORE),
+            DEFAULT_ATTEMPT_STORE,
         )
     except AuthorizationError as exc:
         print(f"mail-send: authorization refused before SMTP: {exc}", file=sys.stderr)
@@ -496,7 +504,7 @@ def _preview_or_authorize(
     if not authorization_receipt:
         raise AuthorizationError("--apply requires --authorization-receipt")
     if not authorization_key_file:
-        raise AuthorizationError("--apply requires --authorization-key-file")
+        raise AuthorizationError("fixed authorization public key is unavailable")
     return validate_authorization_receipt(
         authorization_receipt,
         binding,
@@ -514,7 +522,6 @@ def run_from_draft(
     attempt_id: str,
     authorization_receipt: str | None,
     authorization_key_file: str | None,
-    attempt_store: str | None = None,
 ) -> int:
     hit = imap.newest_matching(DRAFTS, fragment)
     if not hit:
@@ -553,7 +560,9 @@ def run_from_draft(
         deterministic_id = hashlib.sha256(
             attempt_id.encode("utf-8") + b"\0" + raw
         ).hexdigest()[:32]
-        msg["Message-ID"] = f"<uma-draft-{deterministic_id}@local.invalid>"
+        msg["Message-ID"] = (
+            f"<uma-draft-{deterministic_id}@{_message_id_domain(creds[0])}>"
+        )
     try:
         source_uid = uid.decode("ascii", errors="strict")
     except (AttributeError, UnicodeDecodeError):
@@ -592,7 +601,6 @@ def run_from_draft(
         "from_draft",
         attempt_id,
         to_addrs=rcpts,
-        attempt_store=attempt_store,
         effect_context=effect_context,
     )
     if rc == EXIT_OK:
@@ -657,15 +665,6 @@ def main(argv=None) -> int:
         help="path to an unexpired uma.mail_send_authorization.v1 JSON receipt (required with --apply)",
     )
     ap.add_argument(
-        "--authorization-key-file",
-        help="private HMAC key file used to authenticate the authorization receipt (required with --apply)",
-    )
-    ap.add_argument(
-        "--attempt-store",
-        default=os.environ.get("UMA_MAIL_SEND_ATTEMPT_STORE", DEFAULT_ATTEMPT_STORE),
-        help="private directory for durable one-shot attempt claims",
-    )
-    ap.add_argument(
         "--credentials-file",
         action="append",
         help="credential env file parsed as literal data, never sourced (repeatable)",
@@ -706,29 +705,19 @@ def main(argv=None) -> int:
     if args.apply and not args.authorization_receipt:
         print("mail-send: --apply requires --authorization-receipt", file=sys.stderr)
         return EXIT_FAIL_CLOSED
-    if args.apply and not args.authorization_key_file:
-        default_key = Path(DEFAULT_AUTHORIZATION_KEY_FILE).expanduser()
-        if default_key.is_file():
-            args.authorization_key_file = str(default_key)
-        else:
-            print(
-                "mail-send: --apply requires --authorization-key-file",
-                file=sys.stderr,
-            )
-            return EXIT_FAIL_CLOSED
+    authorization_key_file = str(Path(DEFAULT_AUTHORIZATION_KEY_FILE).expanduser())
+    if args.apply and not Path(authorization_key_file).is_file():
+        print(
+            "mail-send: fixed authorization public key is not installed",
+            file=sys.stderr,
+        )
+        return EXIT_FAIL_CLOSED
     if not args.apply and args.authorization_receipt:
         print(
             "mail-send: --authorization-receipt is only valid with --apply",
             file=sys.stderr,
         )
         return EXIT_FAIL_CLOSED
-    if not args.apply and args.authorization_key_file:
-        print(
-            "mail-send: --authorization-key-file is only valid with --apply",
-            file=sys.stderr,
-        )
-        return EXIT_FAIL_CLOSED
-
     credential_files = args.credentials_file
     if credential_files is None:
         default_credential_file = Path(DEFAULT_CREDENTIAL_FILE).expanduser()
@@ -764,8 +753,7 @@ def main(argv=None) -> int:
                 apply=args.apply,
                 attempt_id=attempt_id,
                 authorization_receipt=args.authorization_receipt,
-                authorization_key_file=args.authorization_key_file,
-                attempt_store=args.attempt_store,
+                authorization_key_file=authorization_key_file,
             )
 
         if args.self_test:
@@ -779,7 +767,7 @@ def main(argv=None) -> int:
                     attempt_id=attempt_id,
                     apply=args.apply,
                     authorization_receipt=args.authorization_receipt,
-                    authorization_key_file=args.authorization_key_file,
+                    authorization_key_file=authorization_key_file,
                 )
             except AuthorizationError as exc:
                 print(f"mail-send: authorization refused: {exc}", file=sys.stderr)
@@ -797,7 +785,6 @@ def main(argv=None) -> int:
                 "self_test",
                 attempt_id,
                 to_addrs=_normalize_addrs(to),
-                attempt_store=args.attempt_store,
             )
 
         to = _split_addrs(args.to)
@@ -876,7 +863,7 @@ def main(argv=None) -> int:
                 attempt_id=attempt_id,
                 apply=args.apply,
                 authorization_receipt=args.authorization_receipt,
-                authorization_key_file=args.authorization_key_file,
+                authorization_key_file=authorization_key_file,
                 effect_context=effect_context,
             )
         except AuthorizationError as exc:
@@ -895,7 +882,6 @@ def main(argv=None) -> int:
             action,
             attempt_id,
             to_addrs=(to + cc + bcc) or None,
-            attempt_store=args.attempt_store,
             effect_context=effect_context,
         )
     finally:

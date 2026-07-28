@@ -34,8 +34,11 @@ is not authorization: every transmission requires explicit `--apply` plus an une
 `uma.mail_send_authorization.v1` receipt bound to the attempt ID, sender, normalized
 To/Cc/Bcc recipients, SMTP envelope, subject, Message-ID, thread/source UID, body
 digest, and attachment digests. The receipt must be authenticated with the separately
-custodied HMAC key, may live for at most 15 minutes, and each attempt ID is durably
-one-shot even after an SMTP/verification failure. Never wire `mail_send` into the beat.
+custodied Ed25519 private key, may live for at most 15 minutes, and each attempt ID
+is durably one-shot even after an SMTP/verification failure. The sender only reads
+the fixed public key at `/etc/universal-mail-automation/mail-send-authorization.pub`;
+neither the verifier path nor the attempt store is caller-selectable. Never wire
+`mail_send` into the beat.
 
 ```bash
 # creds: GMAIL_USER/GMAIL_APP_PASSWORD (limen creds-hydrate), or use
@@ -49,11 +52,10 @@ python3 mail_send.py --attempt-id draft-20260716-a --from-draft "subject fragmen
 
 # Only after an independent authority copies the preview binding into an
 # authorized=true, authorized_by, issued_at/expires_at (<=15m) JSON receipt,
-# adds key_id/signature_algorithm, and HMAC-signs the canonical receipt using
-# the private 0600 authorization key:
+# adds key_id/signature_algorithm, and Ed25519-signs the canonical receipt using
+# private key material unavailable to the mail-send process:
 python3 mail_send.py ... --apply \
-  --authorization-receipt /private/path/authorization.json \
-  --authorization-key-file /private/path/mail-send-authorization.key
+  --authorization-receipt /private/path/authorization.json
 
 # Never retry an apply with the same attempt ID. Its durable claim is consumed
 # before SMTP; use a fresh preview, receipt, and attempt ID after any ambiguity.

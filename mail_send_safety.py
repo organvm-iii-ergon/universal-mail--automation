@@ -10,31 +10,41 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import hmac
 import json
 import os
 import re
 import stat
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage, Message
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
-from typing import Mapping, Sequence
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+    load_pem_private_key,
+    load_pem_public_key,
+)
 
 AUTHORIZATION_SCHEMA = "uma.mail_send_authorization.v1"
-AUTHORIZATION_SIGNATURE_ALGORITHM = "HMAC-SHA256"
+AUTHORIZATION_SIGNATURE_ALGORITHM = "Ed25519"
 ATTEMPT_CLAIM_SCHEMA = "uma.mail_send_attempt_claim.v1"
 AUTHORIZATION_ACTIONS = frozenset({"compose", "reply", "from_draft", "self_test"})
 ATTEMPT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+ED25519_SIGNATURE_RE = re.compile(r"^[0-9a-f]{128}$")
 _CREDENTIAL_KEYS = frozenset(
     {"GMAIL_USER", "GMAIL_APP_PASSWORD", "IMAP_USER", "IMAP_PASS"}
 )
 _ASSIGNMENT_RE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 _MAX_RECEIPT_BYTES = 64 * 1024
 _MAX_AUTHORIZATION_KEY_BYTES = 4 * 1024
-_MIN_AUTHORIZATION_KEY_BYTES = 32
 MAX_AUTHORIZATION_TTL = timedelta(minutes=15)
 
 
@@ -56,8 +66,8 @@ class AuthorizationGrant:
     expires_at: datetime
     receipt_path: Path
     receipt_sha256: str
-    authorization_key_path: Path
-    authorization_key_sha256: str
+    authorization_public_key_path: Path
+    authorization_public_key_sha256: str
     authorized_by: str
 
 
@@ -101,12 +111,16 @@ def parse_credential_env_file(path: str | Path) -> dict[str, str]:
     Only the four SMTP/IMAP credential keys are returned.  Other assignments and
     shell-looking lines are ignored, so a credential file cannot execute code.
     """
-    resolved = Path(path).expanduser()
     try:
-        text = resolved.read_text(encoding="utf-8")
-    except OSError as exc:
+        resolved, raw = _read_regular_file(
+            path,
+            label="credential file",
+            max_bytes=_MAX_RECEIPT_BYTES,
+        )
+        text = raw.decode("utf-8")
+    except (AuthorizationError, UnicodeDecodeError) as exc:
         raise CredentialFileError(
-            f"cannot read credential file {resolved}: {exc}"
+            f"cannot read credential file {Path(path).expanduser()}: {exc}"
         ) from exc
 
     values: dict[str, str] = {}
@@ -131,9 +145,6 @@ def resolve_smtp_credentials(
     environ: Mapping[str, str],
 ) -> tuple[str, str] | None:
     """Resolve one complete credential pair, with process env taking precedence."""
-    values: dict[str, str] = {}
-    for path in credential_files or ():
-        values.update(parse_credential_env_file(path))
     environment_values = {
         key: environ[key] for key in _CREDENTIAL_KEYS if environ.get(key)
     }
@@ -145,6 +156,10 @@ def resolve_smtp_credentials(
     ):
         if environment_values.get(user_key) and environment_values.get(password_key):
             return environment_values[user_key], environment_values[password_key]
+
+    values: dict[str, str] = {}
+    for path in credential_files or ():
+        values.update(parse_credential_env_file(path))
     values.update(environment_values)
 
     for user_key, password_key in (
@@ -160,7 +175,11 @@ def resolve_smtp_credentials(
 
 def normalize_address(value: str) -> str:
     """Normalize an RFC address for receipt and SMTP-envelope comparison."""
-    return parseaddr(value or "")[1].strip().casefold()
+    address = parseaddr(value or "")[1].strip()
+    if "@" not in address:
+        return address
+    local, domain = address.rsplit("@", 1)
+    return f"{local}@{domain.casefold()}"
 
 
 def _header_addresses(msg: Message, header: str) -> list[str]:
@@ -193,35 +212,75 @@ def _decoded_payload(part: Message) -> bytes:
     return b""
 
 
-def _message_parts(msg: Message) -> tuple[list[dict], list[dict]]:
+def _header_parameters(part: Message, header: str) -> list[list[str]]:
+    """Return semantic MIME parameters while excluding random wire boundaries."""
+    params = part.get_params(header=header, failobj=[]) or []
+    return sorted(
+        [[str(name).casefold(), str(value)] for name, value in params[1:] if str(name).casefold() != "boundary"]
+    )
+
+
+def _message_parts(msg: Message) -> tuple[list[dict], list[dict], list[dict]]:
     bodies: list[dict] = []
     attachments: list[dict] = []
-    for part in msg.walk():
+    structure: list[dict] = []
+
+    def visit(part: Message, path: tuple[int, ...]) -> None:
+        content_type = part.get_content_type().casefold()
         if part.is_multipart():
-            continue
+            children = list(part.iter_parts())
+            structure.append(
+                {
+                    "path": list(path),
+                    "kind": "multipart",
+                    "content_type": content_type,
+                    "content_type_parameters": _header_parameters(part, "Content-Type"),
+                    "children": len(children),
+                }
+            )
+            for index, child in enumerate(children):
+                visit(child, (*path, index))
+            return
         payload = _decoded_payload(part)
         filename = part.get_filename()
         disposition = part.get_content_disposition()
         digest = hashlib.sha256(payload).hexdigest()
+        metadata = {
+            "path": list(path),
+            "content_type": content_type,
+            "content_type_parameters": _header_parameters(part, "Content-Type"),
+            "content_disposition": str(part.get("Content-Disposition") or ""),
+            "content_disposition_parameters": _header_parameters(
+                part, "Content-Disposition"
+            ),
+            "content_id": str(part.get("Content-ID") or ""),
+            "content_transfer_encoding": str(
+                part.get("Content-Transfer-Encoding") or ""
+            ).casefold(),
+            "size": len(payload),
+            "sha256": digest,
+        }
+        structure.append(
+            {
+                "path": list(path),
+                "kind": "attachment"
+                if disposition == "attachment" or filename is not None
+                else "body",
+                "content_type": content_type,
+            }
+        )
         if disposition == "attachment" or filename is not None:
             attachments.append(
                 {
+                    **metadata,
                     "filename": str(filename or ""),
-                    "size": len(payload),
-                    "sha256": digest,
                 }
             )
         else:
-            bodies.append(
-                {
-                    "content_type": part.get_content_type().casefold(),
-                    "size": len(payload),
-                    "sha256": digest,
-                }
-            )
-    bodies.sort(key=lambda item: (item["content_type"], item["sha256"], item["size"]))
-    attachments.sort(key=lambda item: (item["filename"], item["sha256"], item["size"]))
-    return bodies, attachments
+            bodies.append(metadata)
+
+    visit(msg, ())
+    return bodies, attachments, structure
 
 
 def _canonical_sha256(value: object) -> str:
@@ -276,7 +335,7 @@ def authorization_binding(
         raise AuthorizationError(
             "authorization effect context must contain text fields"
         )
-    bodies, attachments = _message_parts(msg)
+    bodies, attachments, structure = _message_parts(msg)
     core = {
         "schema": AUTHORIZATION_SCHEMA,
         "action": action,
@@ -294,6 +353,7 @@ def authorization_binding(
         # body part, so text/html alternatives cannot change without invalidation.
         "body_sha256": _canonical_sha256(bodies),
         "attachments": attachments,
+        "mime_structure_sha256": _canonical_sha256(structure),
         # Bind the selected remote source as well as the outgoing content.  A
         # previewed reply/draft cannot silently retarget a different IMAP UID.
         "effect_context": context,
@@ -309,7 +369,7 @@ def authorization_request(binding: Mapping[str, object]) -> dict:
         "authorized_by": "",
         "signature_algorithm": AUTHORIZATION_SIGNATURE_ALGORITHM,
         "key_id": "<authorization key id>",
-        "signature": "<HMAC-SHA256 over the canonical receipt without signature>",
+        "signature": "<Ed25519 signature over the canonical receipt without signature>",
         "issued_at": "<RFC3339 UTC>",
         "expires_at": "<RFC3339 UTC>",
     }
@@ -390,31 +450,45 @@ def _signature_payload(receipt: Mapping[str, object]) -> bytes:
 
 
 def authorization_key_id(key: bytes) -> str:
-    """Return the non-secret fingerprint recorded in signed receipts."""
+    """Return the fingerprint of the independently-custodied public key."""
     return hashlib.sha256(key).hexdigest()[:16]
 
 
 def authorization_signature(receipt: Mapping[str, object], key: bytes) -> str:
-    """Sign an authorization receipt for an independent authority tool."""
-    if len(key) < _MIN_AUTHORIZATION_KEY_BYTES:
-        raise AuthorizationError(
-            f"authorization key must contain at least {_MIN_AUTHORIZATION_KEY_BYTES} bytes"
+    """Sign a receipt with an Ed25519 private key held outside the sender."""
+    try:
+        signer = (
+            Ed25519PrivateKey.from_private_bytes(key)
+            if len(key) == 32
+            else load_pem_private_key(key, password=None)  # allow-secret
         )
-    return hmac.new(key, _signature_payload(receipt), hashlib.sha256).hexdigest()
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationError("authorization private key is invalid") from exc
+    if not isinstance(signer, Ed25519PrivateKey):
+        raise AuthorizationError("authorization private key must be Ed25519")
+    return signer.sign(_signature_payload(receipt)).hex()
 
 
-def _load_authorization_key(path: str | Path) -> tuple[Path, bytes]:
+def _load_authorization_key(
+    path: str | Path,
+) -> tuple[Path, bytes, Ed25519PublicKey]:
     key_path, key = _read_regular_file(
         path,
-        label="authorization key file",
+        label="authorization public key file",
         max_bytes=_MAX_AUTHORIZATION_KEY_BYTES,
-        private=True,
     )
-    if len(key) < _MIN_AUTHORIZATION_KEY_BYTES:
-        raise AuthorizationError(
-            f"authorization key must contain at least {_MIN_AUTHORIZATION_KEY_BYTES} bytes"
+    try:
+        verifier = (
+            Ed25519PublicKey.from_public_bytes(key)
+            if len(key) == 32
+            else load_pem_public_key(key)
         )
-    return key_path, key
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationError("authorization public key is invalid") from exc
+    if not isinstance(verifier, Ed25519PublicKey):
+        raise AuthorizationError("authorization public key must be Ed25519")
+    canonical = verifier.public_bytes(Encoding.Raw, PublicFormat.Raw)
+    return key_path, canonical, verifier
 
 
 def _parse_timestamp(value: object, field: str) -> datetime:
@@ -466,7 +540,9 @@ def validate_authorization_receipt(
     ):
         raise AuthorizationError("authorization receipt must name authorized_by")
 
-    key_path, authorization_key = _load_authorization_key(authorization_key_file)
+    key_path, authorization_key, verifier = _load_authorization_key(
+        authorization_key_file
+    )
     if receipt.get("signature_algorithm") != AUTHORIZATION_SIGNATURE_ALGORITHM:
         raise AuthorizationError(
             f"authorization receipt signature_algorithm must be {AUTHORIZATION_SIGNATURE_ALGORITHM}"
@@ -474,10 +550,11 @@ def validate_authorization_receipt(
     if receipt.get("key_id") != authorization_key_id(authorization_key):
         raise AuthorizationError("authorization receipt key_id does not match the key")
     signature = receipt.get("signature")
-    if not isinstance(signature, str) or not SHA256_RE.fullmatch(signature):
+    if not isinstance(signature, str) or not ED25519_SIGNATURE_RE.fullmatch(signature):
         raise AuthorizationError("authorization receipt signature is invalid")
-    expected_signature = authorization_signature(receipt, authorization_key)
-    if not hmac.compare_digest(signature, expected_signature):
+    try:
+        verifier.verify(bytes.fromhex(signature), _signature_payload(receipt))
+    except InvalidSignature:
         raise AuthorizationError("authorization receipt signature verification failed")
 
     for field, expected in expected_binding.items():
@@ -508,8 +585,8 @@ def validate_authorization_receipt(
         expires_at=expires_at,
         receipt_path=receipt_path,
         receipt_sha256=hashlib.sha256(raw).hexdigest(),
-        authorization_key_path=key_path,
-        authorization_key_sha256=hashlib.sha256(authorization_key).hexdigest(),
+        authorization_public_key_path=key_path,
+        authorization_public_key_sha256=hashlib.sha256(authorization_key).hexdigest(),
         authorized_by=receipt["authorized_by"].strip(),
     )
 
@@ -526,14 +603,14 @@ def assert_grant_current(
         label="authorization receipt",
         max_bytes=_MAX_RECEIPT_BYTES,
     )
-    if not hmac.compare_digest(
-        hashlib.sha256(receipt_raw).hexdigest(), grant.receipt_sha256
-    ):
+    if hashlib.sha256(receipt_raw).hexdigest() != grant.receipt_sha256:
         raise AuthorizationError("authorization receipt changed before SMTP send")
-    _key_path, authorization_key = _load_authorization_key(grant.authorization_key_path)
-    if not hmac.compare_digest(
-        hashlib.sha256(authorization_key).hexdigest(),
-        grant.authorization_key_sha256,
+    _key_path, authorization_key, _verifier = _load_authorization_key(
+        grant.authorization_public_key_path
+    )
+    if (
+        hashlib.sha256(authorization_key).hexdigest()
+        != grant.authorization_public_key_sha256
     ):
         raise AuthorizationError("authorization key changed before SMTP send")
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
