@@ -22,7 +22,7 @@ from email.message import EmailMessage, Message
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
@@ -498,7 +498,7 @@ def authorization_signature(receipt: Mapping[str, object], key: bytes) -> str:
             if len(key) == 32
             else load_pem_private_key(key, password=None)  # allow-secret
         )
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, UnsupportedAlgorithm) as exc:
         raise AuthorizationError("authorization private key is invalid") from exc
     if not isinstance(signer, Ed25519PrivateKey):
         raise AuthorizationError("authorization private key must be Ed25519")
@@ -519,7 +519,7 @@ def _load_authorization_key(
             if len(key) == 32
             else load_pem_public_key(key)
         )
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, UnsupportedAlgorithm) as exc:
         raise AuthorizationError("authorization public key is invalid") from exc
     if not isinstance(verifier, Ed25519PublicKey):
         raise AuthorizationError("authorization public key must be Ed25519")

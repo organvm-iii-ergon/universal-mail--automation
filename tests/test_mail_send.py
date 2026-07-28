@@ -44,6 +44,11 @@ AUTHORIZATION_PUBLIC_KEY = (
     .public_key()
     .public_bytes(Encoding.Raw, PublicFormat.Raw)
 )
+ROTATED_AUTHORIZATION_PUBLIC_KEY = (
+    Ed25519PrivateKey.from_private_bytes(bytes(range(33, 65)))
+    .public_key()
+    .public_bytes(Encoding.Raw, PublicFormat.Raw)
+)
 
 
 class _FakeSMTP:
@@ -195,9 +200,9 @@ def _isolated_effectors(monkeypatch, tmp_path):
 
 def _authorization_key_file(tmp_path, key=AUTHORIZATION_PUBLIC_KEY):
     path = tmp_path / "authorization.pub"
-    if not path.exists():
+    if not path.exists() or path.read_bytes() != key:
         path.write_bytes(key)
-        path.chmod(0o600)
+    path.chmod(0o600)
     return path
 
 
@@ -482,9 +487,7 @@ def test_receipt_change_after_validation_blocks_before_smtp(tmp_path):
 def test_authorization_key_rotation_after_validation_blocks_before_smtp(tmp_path):
     msg = build_message(CREDS, ["a@b.c"], "s", "b")
     grant = _validated_grant(tmp_path, msg)
-    grant.authorization_public_key_path.write_bytes(
-        b"rotated-independent-key-material-32-bytes"
-    )
+    grant.authorization_public_key_path.write_bytes(ROTATED_AUTHORIZATION_PUBLIC_KEY)
     grant.authorization_public_key_path.chmod(0o600)
     assert (
         send_and_verify(msg, CREDS, _FakeImap(), 1, grant, "compose", ATTEMPT)
