@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -68,7 +69,7 @@ class AuthorizationGrant:
     receipt_path: Path
     receipt_sha256: str
     authorization_public_key_path: Path
-    authorization_public_key_fingerprint: str
+    authorization_public_key: bytes
     authorized_by: str
 
 
@@ -450,14 +451,9 @@ def _signature_payload(receipt: Mapping[str, object]) -> bytes:
     ).encode("utf-8")
 
 
-def _public_key_fingerprint(public_key: bytes) -> str:
-    """Fingerprint a public verification key without treating it as a secret."""
-    return hashlib.sha3_256(public_key).hexdigest()
-
-
 def authorization_key_id(key: bytes) -> str:
-    """Return the fingerprint of the independently-custodied public key."""
-    return _public_key_fingerprint(key)[:16]
+    """Return a short identifier from the canonical public verification key."""
+    return key.hex()[:16]
 
 
 def authorization_signature(receipt: Mapping[str, object], key: bytes) -> str:
@@ -592,9 +588,7 @@ def validate_authorization_receipt(
         receipt_path=receipt_path,
         receipt_sha256=hashlib.sha256(raw).hexdigest(),
         authorization_public_key_path=key_path,
-        authorization_public_key_fingerprint=_public_key_fingerprint(
-            authorization_key
-        ),
+        authorization_public_key=authorization_key,
         authorized_by=receipt["authorized_by"].strip(),
     )
 
@@ -616,9 +610,8 @@ def assert_grant_current(
     _key_path, authorization_key, _verifier = _load_authorization_key(
         grant.authorization_public_key_path
     )
-    if (
-        _public_key_fingerprint(authorization_key)
-        != grant.authorization_public_key_fingerprint
+    if not secrets.compare_digest(
+        authorization_key, grant.authorization_public_key
     ):
         raise AuthorizationError("authorization key changed before SMTP send")
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
