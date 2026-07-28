@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage, Message
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
+
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -67,7 +68,7 @@ class AuthorizationGrant:
     receipt_path: Path
     receipt_sha256: str
     authorization_public_key_path: Path
-    authorization_public_key_sha256: str
+    authorization_public_key_fingerprint: str
     authorized_by: str
 
 
@@ -449,9 +450,14 @@ def _signature_payload(receipt: Mapping[str, object]) -> bytes:
     ).encode("utf-8")
 
 
+def _public_key_fingerprint(public_key: bytes) -> str:
+    """Fingerprint a public verification key without treating it as a secret."""
+    return hashlib.sha3_256(public_key).hexdigest()
+
+
 def authorization_key_id(key: bytes) -> str:
     """Return the fingerprint of the independently-custodied public key."""
-    return hashlib.sha256(key).hexdigest()[:16]
+    return _public_key_fingerprint(key)[:16]
 
 
 def authorization_signature(receipt: Mapping[str, object], key: bytes) -> str:
@@ -586,7 +592,9 @@ def validate_authorization_receipt(
         receipt_path=receipt_path,
         receipt_sha256=hashlib.sha256(raw).hexdigest(),
         authorization_public_key_path=key_path,
-        authorization_public_key_sha256=hashlib.sha256(authorization_key).hexdigest(),
+        authorization_public_key_fingerprint=_public_key_fingerprint(
+            authorization_key
+        ),
         authorized_by=receipt["authorized_by"].strip(),
     )
 
@@ -609,8 +617,8 @@ def assert_grant_current(
         grant.authorization_public_key_path
     )
     if (
-        hashlib.sha256(authorization_key).hexdigest()
-        != grant.authorization_public_key_sha256
+        _public_key_fingerprint(authorization_key)
+        != grant.authorization_public_key_fingerprint
     ):
         raise AuthorizationError("authorization key changed before SMTP send")
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
