@@ -314,6 +314,34 @@ def _semantic_headers(msg: Message) -> list[list[str]]:
     ]
 
 
+_SINGLETON_HEADERS = frozenset(
+    {
+        "date",
+        "from",
+        "in-reply-to",
+        "message-id",
+        "references",
+        "reply-to",
+        "sender",
+        "subject",
+    }
+)
+
+
+def _reject_duplicate_singleton_headers(msg: Message) -> None:
+    """Reject ambiguous drafts before an authorization binding is computed."""
+    counts: dict[str, int] = {}
+    for name, _value in msg.raw_items():
+        normalized = name.casefold()
+        if normalized in _SINGLETON_HEADERS:
+            counts[normalized] = counts.get(normalized, 0) + 1
+    duplicates = sorted(name for name, count in counts.items() if count > 1)
+    if duplicates:
+        raise AuthorizationError(
+            "message contains duplicate singleton headers: " + ", ".join(duplicates)
+        )
+
+
 def authorization_binding(
     msg: EmailMessage,
     *,
@@ -329,6 +357,7 @@ def authorization_binding(
     sender = normalize_address(envelope_sender)
     if not sender:
         raise AuthorizationError("authorization sender is not a valid address")
+    _reject_duplicate_singleton_headers(msg)
     context = dict(effect_context or {})
     if any(
         not isinstance(key, str) or not isinstance(value, str)
@@ -344,6 +373,11 @@ def authorization_binding(
         "attempt_id": attempt_id,
         "sender": sender,
         "recipients": normalized_recipients(msg),
+        "recipient_headers": [
+            [name.casefold(), str(value)]
+            for name, value in msg.raw_items()
+            if name.casefold() in {"to", "cc", "bcc"}
+        ],
         "subject": str(msg.get("Subject") or ""),
         "message_id": str(msg.get("Message-ID") or ""),
         "thread": {
@@ -667,11 +701,14 @@ def claim_authorized_attempt(
     *,
     now: datetime | None = None,
 ) -> Path:
-    """Durably claim one attempt before SMTP, refusing every replay.
+    """Durably claim one attempt before SMTP, refusing process-level replay.
 
     The marker is created with ``O_EXCL`` under a non-symlink directory and is
     fsynced before this function returns.  A crash or ambiguous SMTP outcome keeps
     the marker, deliberately forcing a fresh attempt ID instead of a duplicate send.
+    The invoking OS user owns this store and is inside the local trust boundary;
+    preventing that same principal from deliberately deleting its state would
+    require a separately privileged service, which this on-demand CLI does not use.
     """
     assert_grant_current(grant, expected_binding, now=now)
     root, directory_fd, root_stat = _open_attempt_store(attempt_store)

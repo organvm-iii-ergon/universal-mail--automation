@@ -2107,6 +2107,7 @@ name = "universal-mail-automation"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "google-api-python-client" },
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
@@ -2155,6 +2156,7 @@ yaml = [
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'" },
+    { name = "cryptography", specifier = ">=42,<50" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.137.1" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.137.1" },
     { name = "google-api-python-client", specifier = ">=2.197.0,<3" },

@@ -59,6 +59,8 @@ class _FakeSMTP:
     rset_calls = 0
     mail_response = (250, b"sender ok")
     data_response = (250, b"queued")
+    mail_options = []
+    supports_smtputf8 = True
 
     def __init__(self, host, port, timeout=None):
         pass
@@ -72,7 +74,11 @@ class _FakeSMTP:
     def login(self, user, pw):
         _FakeSMTP.logged_in = (user, pw)
 
-    def mail(self, from_addr):
+    def has_extn(self, extension):
+        return extension.casefold() == "smtputf8" and _FakeSMTP.supports_smtputf8
+
+    def mail(self, from_addr, options=()):
+        _FakeSMTP.mail_options = list(options)
         _FakeSMTP.envelope = (from_addr, [])
         return _FakeSMTP.mail_response
 
@@ -167,6 +173,8 @@ def _isolated_effectors(monkeypatch, tmp_path):
     _FakeSMTP.rset_calls = 0
     _FakeSMTP.mail_response = (250, b"sender ok")
     _FakeSMTP.data_response = (250, b"queued")
+    _FakeSMTP.mail_options = []
+    _FakeSMTP.supports_smtputf8 = True
     monkeypatch.setattr(mail_send.smtplib, "SMTP_SSL", _FakeSMTP)
     monkeypatch.setattr(
         mail_send, "DEFAULT_CREDENTIAL_FILE", str(tmp_path / "absent-credentials.env")
@@ -381,6 +389,47 @@ def test_smtp_envelope_preserves_recipient_local_part_case(tmp_path):
         == EXIT_OK
     )
     assert _FakeSMTP.rcpt_calls == ["CaseSensitive@example.com"]
+
+
+def test_smtp_negotiates_smtputf8_for_internationalized_envelope(tmp_path):
+    msg = build_message(CREDS, ["tést@example.com"], "s", "b")
+    grant = _validated_grant(tmp_path, msg)
+
+    assert (
+        send_and_verify(
+            msg,
+            CREDS,
+            _FakeImap(),
+            1,
+            grant,
+            "compose",
+            ATTEMPT,
+            to_addrs=["tést@example.com"],
+        )
+        == EXIT_OK
+    )
+    assert _FakeSMTP.mail_options == ["SMTPUTF8", "BODY=8BITMIME"]
+
+
+def test_smtp_fails_closed_when_smtputf8_is_unavailable(tmp_path):
+    msg = build_message(CREDS, ["tést@example.com"], "s", "b")
+    grant = _validated_grant(tmp_path, msg)
+    _FakeSMTP.supports_smtputf8 = False
+
+    assert (
+        send_and_verify(
+            msg,
+            CREDS,
+            _FakeImap(),
+            1,
+            grant,
+            "compose",
+            ATTEMPT,
+            to_addrs=["tést@example.com"],
+        )
+        == EXIT_FAIL_CLOSED
+    )
+    assert _FakeSMTP.data_calls == 0
 
 
 def test_same_authorized_attempt_is_one_shot(tmp_path):
@@ -1015,6 +1064,27 @@ def test_binding_normalizes_recipient_roles_and_hashes_attachments(tmp_path):
         b"proof bytes"
     ).hexdigest()
     assert binding["attachments"][0]["content_type"] == "application/octet-stream"
+
+
+def test_binding_rejects_duplicate_singleton_headers():
+    msg = email.message_from_bytes(
+        b"From: me@example.com\r\n"
+        b"To: a@example.com\r\n"
+        b"Subject: First\r\n"
+        b"Subject: Changed\r\n"
+        b"Message-ID: <draft@example.com>\r\n"
+        b"\r\n"
+        b"body\r\n",
+        policy=email.policy.default,
+    )
+
+    with pytest.raises(AuthorizationError, match="duplicate singleton.*subject"):
+        authorization_binding(
+            msg,
+            envelope_sender=CREDS[0],
+            action="from_draft",
+            attempt_id=ATTEMPT,
+        )
 
 
 def test_binding_covers_thread_and_selected_remote_source():

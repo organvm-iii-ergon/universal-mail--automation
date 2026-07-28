@@ -35,7 +35,10 @@ is not authorization: every transmission requires explicit `--apply` plus an une
 To/Cc/Bcc recipients, SMTP envelope, subject, Message-ID, thread/source UID, body
 digest, and attachment digests. The receipt must be authenticated with the separately
 custodied Ed25519 private key, may live for at most 15 minutes, and each attempt ID
-is durably one-shot even after an SMTP/verification failure. The sender only reads
+is durably one-shot against process retries even after an SMTP/verification failure.
+The invoking OS user owns the claim store and remains inside the local trust boundary;
+resisting deliberate deletion by that same principal would require a separately
+privileged service, which this on-demand CLI intentionally does not introduce. The sender only reads
 the fixed public key at `/etc/universal-mail-automation/mail-send-authorization.pub`;
 neither the verifier path nor the attempt store is caller-selectable. Never wire
 `mail_send` into the beat.

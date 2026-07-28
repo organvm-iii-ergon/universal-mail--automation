@@ -8,8 +8,10 @@ acting on a human's explicit ask) invokes it with.  Invocation alone is never au
 the default is a zero-write preview, while a send requires ``--apply`` and an unexpired
 ``uma.mail_send_authorization.v1`` receipt bound to the exact outgoing message and
 authenticated by a separately-custodied key.  Each apply claims its attempt ID durably
-before SMTP, so retries require a fresh attempt and receipt.  It is never wired into the
-beat.
+before SMTP, so process retries require a fresh attempt and receipt.  The invoking OS
+principal owns the claim store and is inside the local trust boundary; this on-demand
+CLI does not claim to resist that same principal deliberately deleting local state.  It
+is never wired into the beat.
 
 Every send is server-verified: after SMTP accepts, the tool polls [Gmail]/Sent Mail for
 the outgoing Message-ID and prints a loud VERIFIED/UNVERIFIED verdict (non-zero exit if
@@ -367,7 +369,20 @@ def _smtp_send(
     try:
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as s:
             s.login(user, pw)
-            code, response = s.mail(envelope_sender)
+            requires_smtputf8 = any(
+                not address.isascii()
+                for address in [envelope_sender, *recipients]
+            )
+            mail_options: list[str] = []
+            wire_policy = email.policy.SMTP
+            if requires_smtputf8:
+                if not s.has_extn("smtputf8"):
+                    raise smtplib.SMTPNotSupportedError(
+                        "server does not advertise SMTPUTF8"
+                    )
+                mail_options.extend(("SMTPUTF8", "BODY=8BITMIME"))
+                wire_policy = email.policy.SMTPUTF8
+            code, response = s.mail(envelope_sender, options=mail_options)
             if not 200 <= code < 300:
                 print(
                     f"mail-send: SMTP MAIL FROM refused ({code}): {response!r}",
@@ -393,7 +408,7 @@ def _smtp_send(
                 return False
             if before_data is not None:
                 before_data()
-            code, response = s.data(wire.as_bytes(policy=email.policy.SMTP))
+            code, response = s.data(wire.as_bytes(policy=wire_policy))
             if not 200 <= code < 300:
                 print(
                     f"mail-send: SMTP DATA refused ({code}): {response!r}",

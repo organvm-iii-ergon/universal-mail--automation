@@ -1,3 +1,4 @@
+cryptography<50,>=42
 pydantic>=2.13.4
 pyyaml<7,>=6.0.3
 google-api-python-client<3,>=2.197.0
