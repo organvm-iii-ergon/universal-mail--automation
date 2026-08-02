@@ -62,20 +62,71 @@ NOISE_SIGNALS = re.compile(r"""(?ix)
     (week(ly)?\s*(performance|financial)) | (monthly\s*(account\s*)?statement) | (dive\s*deeper)
 """)
 
-ROLE_LOCALPARTS = ("noreply", "no-reply", "donotreply", "do-not-reply", "notification",
-                   "notifications", "alert", "alerts", "support", "info", "hello", "team",
-                   "deals", "news", "marketing", "auto", "mailer", "updates", "account",
-                   "billing", "service", "services", "member", "reply", "sales", "contact",
-                   "admin", "shop", "express", "store", "order", "payments", "securityalert")
+ROLE_LOCALPARTS = (
+    "noreply",
+    "no-reply",
+    "donotreply",
+    "do-not-reply",
+    "notification",
+    "notifications",
+    "alert",
+    "alerts",
+    "support",
+    "info",
+    "hello",
+    "team",
+    "deals",
+    "news",
+    "marketing",
+    "auto",
+    "mailer",
+    "updates",
+    "account",
+    "billing",
+    "service",
+    "services",
+    "member",
+    "reply",
+    "sales",
+    "contact",
+    "admin",
+    "shop",
+    "express",
+    "store",
+    "order",
+    "payments",
+    "securityalert",
+)
 
 # Brand/dept/ESP tokens — if any appear in the FULL address (local+domain) the sender
 # is a role mailbox, not a person (e.g. dxl@reviews.dxl.com, questfeedback@…, invoice+…).
 ROLE_TOKENS = ROLE_LOCALPARTS + (
-    "reviews", "feedback", "survey", "invoice", "statement", "medallia", "mystore",
-    "satisfaction", "notify", "campaign", "questfeedback", "customersat", "mailchimp")
+    "reviews",
+    "feedback",
+    "survey",
+    "invoice",
+    "statement",
+    "medallia",
+    "mystore",
+    "satisfaction",
+    "notify",
+    "campaign",
+    "questfeedback",
+    "customersat",
+    "mailchimp",
+)
 
-IMPORTANT_DOMAINS = ("studentaid.gov", ".gov", "legalzoom.com", "docusign", "irs.gov",
-                     "ssa.gov", "court", "nysenate", "nysenate.gov")
+IMPORTANT_DOMAINS = (
+    "studentaid.gov",
+    ".gov",
+    "legalzoom.com",
+    "docusign",
+    "irs.gov",
+    "ssa.gov",
+    "court",
+    "nysenate",
+    "nysenate.gov",
+)
 
 # Bulk / newsletter mailboxes. A sender is bulk if its EXACT local-part is a role
 # address (welcome@/offers@/referrals@/news@…) OR its domain leads with a bulk-ESP
@@ -84,26 +135,95 @@ IMPORTANT_DOMAINS = ("studentaid.gov", ".gov", "legalzoom.com", "docusign", "irs
 # from Warp", "OpenRouter Team") otherwise tricked looks_human() into firing — the root
 # cause of the flagged-newsletter storm. Matched on the EXACT local-part / leading
 # domain label (never a raw substring), so a genuine personal address is never swept in.
-BULK_LOCALPARTS = frozenset({
-    "welcome", "offers", "offer", "referrals", "referral", "newsletter", "newsletters",
-    "digest", "news", "press", "hello", "hi", "hey", "team", "post", "posts",
-    "community", "growth", "product", "education", "learn", "announce", "announcements",
-    "greetings", "connect", "social", "join", "discover", "explore", "insights",
-    "updates", "update", "notify", "notification", "notifications", "noreply",
-    "no-reply", "donotreply", "do-not-reply", "mailer", "marketing", "deals", "promo",
-    "promotions", "email", "members", "member", "story", "stories", "info",
-})
-BULK_SUBDOMAINS = frozenset({
-    "mail", "email", "e", "em", "news", "mktg", "marketing", "members", "member",
-    "go", "send", "click", "links", "link", "updates", "newsletter", "mailer",
-    "info", "reply", "notify", "notifications", "message", "messaging", "campaign",
-    "t", "cp", "engage",
-})
+BULK_LOCALPARTS = frozenset(
+    {
+        "welcome",
+        "offers",
+        "offer",
+        "referrals",
+        "referral",
+        "newsletter",
+        "newsletters",
+        "digest",
+        "news",
+        "press",
+        "hello",
+        "hi",
+        "hey",
+        "team",
+        "post",
+        "posts",
+        "community",
+        "growth",
+        "product",
+        "education",
+        "learn",
+        "announce",
+        "announcements",
+        "greetings",
+        "connect",
+        "social",
+        "join",
+        "discover",
+        "explore",
+        "insights",
+        "updates",
+        "update",
+        "notify",
+        "notification",
+        "notifications",
+        "noreply",
+        "no-reply",
+        "donotreply",
+        "do-not-reply",
+        "mailer",
+        "marketing",
+        "deals",
+        "promo",
+        "promotions",
+        "email",
+        "members",
+        "member",
+        "story",
+        "stories",
+        "info",
+    }
+)
+BULK_SUBDOMAINS = frozenset(
+    {
+        "mail",
+        "email",
+        "e",
+        "em",
+        "news",
+        "mktg",
+        "marketing",
+        "members",
+        "member",
+        "go",
+        "send",
+        "click",
+        "links",
+        "link",
+        "updates",
+        "newsletter",
+        "mailer",
+        "info",
+        "reply",
+        "notify",
+        "notifications",
+        "message",
+        "messaging",
+        "campaign",
+        "t",
+        "cp",
+        "engage",
+    }
+)
 
 
 def _addr(sender):
-    return (sender.split("<")[-1].rstrip(">").strip().lower()
-            if "<" in sender else sender.strip().lower())
+    return sender.split("<")[-1].rstrip(">").strip().lower() if "<" in sender else sender.strip().lower()
 
 
 def looks_human(sender):
@@ -112,11 +232,31 @@ def looks_human(sender):
         return False
     name = sender.split("<")[0].strip().strip('"')
     parts = [p for p in re.split(r"\s+", name) if p]
-    brandish = any(b in name.lower() for b in
-                   ("via", "inc", "llc", "bank", "card", "health", "pharmacy",
-                    "deals", "store", "cinema", "finance", "co.", "labs", "group",
-                    "diagnostics", "edison", "platform", "pbc", "big +"))
-    return (len(parts) >= 2 and not name.isupper() and "@" not in name and not brandish)
+    brandish = any(
+        b in name.lower()
+        for b in (
+            "via",
+            "inc",
+            "llc",
+            "bank",
+            "card",
+            "health",
+            "pharmacy",
+            "deals",
+            "store",
+            "cinema",
+            "finance",
+            "co.",
+            "labs",
+            "group",
+            "diagnostics",
+            "edison",
+            "platform",
+            "pbc",
+            "big +",
+        )
+    )
+    return len(parts) >= 2 and not name.isupper() and "@" not in name and not brandish
 
 
 def important_sender(sender):
@@ -145,8 +285,7 @@ def decide(sender, subject, tier, protected, label=""):
     text = f"{subject}"
     # "Promotional" = a bulk/newsletter mailbox, a definitively-promotional category the
     # vetted classifier already assigned (Marketing/Entertainment), or a noise subject.
-    promotional = (is_bulk_sender(sender) or label in ("Marketing", "Entertainment")
-                   or bool(NOISE_SIGNALS.search(text)))
+    promotional = is_bulk_sender(sender) or label in ("Marketing", "Entertainment") or bool(NOISE_SIGNALS.search(text))
     # 1. A genuine, consequential action ALWAYS surfaces first — preserves every real
     #    obligation (billing/default/fraud/security/verify/expiry) regardless of sender.
     if ACTION_SIGNALS.search(text):
@@ -173,8 +312,8 @@ def decide(sender, subject, tier, protected, label=""):
     if looks_human(sender):
         return "fire"
     if protected:
-        return "keep"          # HARD fail-closed never-archive gate: a protected sender is
-                               # NEVER archived. Must precede the tier fall-through below.
+        return "keep"  # HARD fail-closed never-archive gate: a protected sender is
+        # NEVER archived. Must precede the tier fall-through below.
     if tier <= 2:
         return "keep"
     return "archive"
@@ -187,8 +326,9 @@ def classify_inbox(provider, inbox_name, limit, since_days=None):
     extra = {"since_days": since_days} if since_days is not None else {}
     rows, page_token, fetched = [], None, 0
     while fetched < limit:
-        res = provider.list_messages(query="", limit=min(limit - fetched, 50),
-                                     page_token=page_token, mailbox=inbox_name, **extra)
+        res = provider.list_messages(
+            query="", limit=min(limit - fetched, 50), page_token=page_token, mailbox=inbox_name, **extra
+        )
         if not res.messages:
             break
         for m in res.messages:
@@ -196,9 +336,14 @@ def classify_inbox(provider, inbox_name, limit, since_days=None):
             protected = is_protected_sender(sender)
             cat = categorize_with_tier(sender, subject)
             row = {
-                "id": m.id, "sender": sender, "subject": subject,
-                "is_read": m.is_read, "is_flagged": m.is_starred,
-                "label": cat.label, "tier": cat.tier, "protected": protected,
+                "id": m.id,
+                "sender": sender,
+                "subject": subject,
+                "is_read": m.is_read,
+                "is_flagged": m.is_starred,
+                "label": cat.label,
+                "tier": cat.tier,
+                "protected": protected,
                 "action": decide(sender, subject, cat.tier, protected, cat.label),
             }
             # Persist the bulk-signal headers (List-Unsubscribe / List-Id / Precedence …)
@@ -224,8 +369,7 @@ def classify_inbox(provider, inbox_name, limit, since_days=None):
 def report(account, inbox_name, rows):
     acts = Counter(r["action"] for r in rows)
     print(f"\n=== {account}  (mailbox: {inbox_name})  — {len(rows)} messages ===")
-    print(f"  plan : FIRE(flag+keep)={acts['fire']}   KEEP(leave)={acts['keep']}   "
-          f"ARCHIVE→noise={acts['archive']}")
+    print(f"  plan : FIRE(flag+keep)={acts['fire']}   KEEP(leave)={acts['keep']}   ARCHIVE→noise={acts['archive']}")
     fires = [r for r in rows if r["action"] == "fire"]
     print(f"\n  --- FIRES → flag + keep in inbox + ledger ({len(fires)}) ---")
     for r in fires:
@@ -246,25 +390,27 @@ def report(account, inbox_name, rows):
 
 
 def _osa(script, timeout=900):
-    r = subprocess.run(["osascript", "-e", script], capture_output=True,
-                       text=True, timeout=timeout)
+    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
 def _account_is_gmail(account):
     """Gmail accounts expose an 'All Mail' archive mailbox; folder stores don't."""
-    _, out, _ = _osa(f'''tell application "Mail"
+    _, out, _ = _osa(
+        f'''tell application "Mail"
       set acc to account "{account}"
       repeat with mb in (every mailbox of acc)
         if name of mb is "All Mail" then return "yes"
       end repeat
       return "no"
-    end tell''', timeout=120)
+    end tell''',
+        timeout=120,
+    )
     return out.strip() == "yes"
 
 
-GMAIL_BATCH = 10          # archive this many per sync cycle
-GMAIL_SETTLE = 20         # seconds to let each batch commit server-side
+GMAIL_BATCH = 10  # archive this many per sync cycle
+GMAIL_SETTLE = 20  # seconds to let each batch commit server-side
 
 
 def _flag_fires(account, inbox, fire_ids):
@@ -273,7 +419,8 @@ def _flag_fires(account, inbox, fire_ids):
     if not fire_ids:
         return 0, 0
     flist = "{" + ", ".join(fire_ids) + "}"
-    _, out, _ = _osa(f'''tell application "Mail"
+    _, out, _ = _osa(
+        f'''tell application "Mail"
       set mb to mailbox "{inbox}" of account "{account}"
       set fc to 0
       set ec to 0
@@ -286,7 +433,9 @@ def _flag_fires(account, inbox, fire_ids):
         end try
       end repeat
       return (fc as string) & "," & (ec as string)
-    end tell''', timeout=300)
+    end tell''',
+        timeout=300,
+    )
     try:
         fc, ec = (int(x) for x in out.split(","))
     except ValueError:
@@ -302,7 +451,8 @@ def _unflag_noise(account, inbox, unflag_ids):
     if not unflag_ids:
         return 0, 0
     ulist = "{" + ", ".join(unflag_ids) + "}"
-    _, out, _ = _osa(f'''tell application "Mail"
+    _, out, _ = _osa(
+        f'''tell application "Mail"
       set mb to mailbox "{inbox}" of account "{account}"
       set uc to 0
       set ec to 0
@@ -315,7 +465,9 @@ def _unflag_noise(account, inbox, unflag_ids):
         end try
       end repeat
       return (uc as string) & "," & (ec as string)
-    end tell''', timeout=300)
+    end tell''',
+        timeout=300,
+    )
     try:
         uc, ec = (int(x) for x in out.split(","))
     except ValueError:
@@ -328,7 +480,8 @@ def _list_flagged(account, inbox):
     filter (fast — returns the ~dozens flagged, not the whole inbox), as
     id\\tsender\\tsubject rows. Used by the one-time backlog un-flag so stars deeper
     than the bounded --limit inbox slice are still cleaned."""
-    _, out, _ = _osa(f'''tell application "Mail"
+    _, out, _ = _osa(
+        f'''tell application "Mail"
       set mb to mailbox "{inbox}" of account "{account}"
       set outp to ""
       repeat with m in (messages of mb whose flagged status is true)
@@ -337,7 +490,9 @@ def _list_flagged(account, inbox):
         end try
       end repeat
       return outp
-    end tell''', timeout=600)
+    end tell''',
+        timeout=600,
+    )
     rows = []
     for line in out.split("\n"):
         if not line.strip():
@@ -352,15 +507,19 @@ def _archive_folder(account, inbox, arch_ids, noise_mailbox):
     """Folder store (iCloud/IMAP): a single move out of INBOX archives. Sticks."""
     if not arch_ids:
         return 0, 0
-    _osa(f'''tell application "Mail"
+    _osa(
+        f'''tell application "Mail"
       try
         set mb to mailbox "{noise_mailbox}" of account "{account}"
       on error
         make new mailbox at end of mailboxes of account "{account}" with properties {{name:"{noise_mailbox}"}}
       end try
-    end tell''', timeout=60)
+    end tell''',
+        timeout=60,
+    )
     alist = "{" + ", ".join(arch_ids) + "}"
-    _, out, _ = _osa(f'''tell application "Mail"
+    _, out, _ = _osa(
+        f'''tell application "Mail"
       set mb to mailbox "{inbox}" of account "{account}"
       set noiseMb to mailbox "{noise_mailbox}" of account "{account}"
       set mc to 0
@@ -376,7 +535,9 @@ def _archive_folder(account, inbox, arch_ids, noise_mailbox):
         end try
       end repeat
       return (mc as string) & "," & (ec as string)
-    end tell''', timeout=900)
+    end tell''',
+        timeout=900,
+    )
     try:
         mc, ec = (int(x) for x in out.split(","))
     except ValueError:
@@ -470,11 +631,18 @@ def apply(account, inbox, rows, noise_mailbox, flag_only_gmail=False):
     else:
         mc, me = _archive_folder(account, inbox, arch_ids, noise_mailbox)
 
-    return {"flag_requested": len(fire_ids), "unflag_requested": len(unflag_ids),
-            "archive_requested": len(arch_ids),
-            "is_gmail": is_gmail, "flag_only_gmail": flag_only_gmail,
-            "flagged": fc, "unflagged": uc, "archived": mc, "errors": fe + ue + me,
-            "applescript": f"flagged={fc} unflagged={uc} archived={mc} err={fe + ue + me}"}
+    return {
+        "flag_requested": len(fire_ids),
+        "unflag_requested": len(unflag_ids),
+        "archive_requested": len(arch_ids),
+        "is_gmail": is_gmail,
+        "flag_only_gmail": flag_only_gmail,
+        "flagged": fc,
+        "unflagged": uc,
+        "archived": mc,
+        "errors": fe + ue + me,
+        "applescript": f"flagged={fc} unflagged={uc} archived={mc} err={fe + ue + me}",
+    }
 
 
 def unflag_backlog_run(account, inbox, do_apply, receipt_path=None):
@@ -491,8 +659,7 @@ def unflag_backlog_run(account, inbox, do_apply, receipt_path=None):
         protected = is_protected_sender(sender)
         cat = categorize_with_tier(sender, subject)
         action = decide(sender, subject, cat.tier, protected, cat.label)
-        decided.append({**r, "label": cat.label, "tier": cat.tier,
-                        "protected": protected, "action": action})
+        decided.append({**r, "label": cat.label, "tier": cat.tier, "protected": protected, "action": action})
     noise = [d for d in decided if d["action"] == "archive"]
     keep = [d for d in decided if d["action"] != "archive"]
     print(f"\n=== {account}  (mailbox: {inbox})  — {len(decided)} FLAGGED ===")
@@ -503,9 +670,14 @@ def unflag_backlog_run(account, inbox, do_apply, receipt_path=None):
     print(f"\n  --- KEEP FLAGGED — real fires/keep ({len(keep)}) ---")
     for d in keep:
         print(f"    [{d['label'][:16]:16}] {d['sender'][:34]:34} {d['subject'][:44]}")
-    result = {"account": account, "inbox": inbox,
-              "mode": "unflag-apply" if do_apply else "unflag-dry",
-              "flagged_total": len(decided), "unflag_planned": len(noise), "keep": len(keep)}
+    result = {
+        "account": account,
+        "inbox": inbox,
+        "mode": "unflag-apply" if do_apply else "unflag-dry",
+        "flagged_total": len(decided),
+        "unflag_planned": len(noise),
+        "keep": len(keep),
+    }
     if do_apply:
         uc, ue = _unflag_noise(account, inbox, [d["id"] for d in noise])
         result.update({"unflagged": uc, "errors": ue})
@@ -513,8 +685,8 @@ def unflag_backlog_run(account, inbox, do_apply, receipt_path=None):
     else:
         print("\n  DRY RUN — no flags changed. Re-run with --apply to execute.")
     receipt = receipt_path or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "audit",
-        f"unflag_backlog-{account.replace('@', '_at_')}.json")
+        os.path.dirname(os.path.abspath(__file__)), "audit", f"unflag_backlog-{account.replace('@', '_at_')}.json"
+    )
     os.makedirs(os.path.dirname(receipt), exist_ok=True)
     with open(receipt, "w") as f:
         json.dump({"result": result, "rows": decided}, f, indent=2)
@@ -527,14 +699,29 @@ def main(argv=None):
     ap.add_argument("--account", required=True)
     ap.add_argument("--limit", type=int, default=2000)
     ap.add_argument("--apply", action="store_true", help="actually flag/move (default: dry run)")
-    ap.add_argument("--flag-only-gmail", action="store_true",
-                    help="autonomic mode: flag Gmail fires + archive folder stores, but skip the "
-                         "heavy/futile Gmail bulk-archive loop (gated on a write door)")
-    ap.add_argument("--unflag-noise", action="store_true",
-                    help="backlog flag-hygiene: enumerate all flagged inbox messages and clear the "
-                         "flag on those the classifier now judges noise (nothing archived/deleted)")
+    ap.add_argument(
+        "--flag-only-gmail",
+        action="store_true",
+        help="autonomic mode: flag Gmail fires + archive folder stores, but skip the "
+        "heavy/futile Gmail bulk-archive loop (gated on a write door)",
+    )
+    ap.add_argument(
+        "--unflag-noise",
+        action="store_true",
+        help="backlog flag-hygiene: enumerate all flagged inbox messages and clear the "
+        "flag on those the classifier now judges noise (nothing archived/deleted)",
+    )
     ap.add_argument("--noise-mailbox", default=NOISE_MAILBOX_DEFAULT)
     ap.add_argument("--receipt", default=None, help="path to write JSON receipt of all decisions")
+    ap.add_argument(
+        "--since-days",
+        type=int,
+        default=None,
+        help="bound the enumeration to messages received in the last N days. WITHOUT "
+        "this, Mail.app materializes a scripting object for EVERY message in the "
+        "mailbox before --limit slices anything, which hangs its main thread. "
+        "0 or unset = unbounded (the historical behaviour).",
+    )
     args = ap.parse_args(argv)
 
     provider = MailAppProvider(account=args.account)
@@ -542,24 +729,25 @@ def main(argv=None):
     inbox = pick_inbox_name(provider)
     if args.unflag_noise:
         return unflag_backlog_run(args.account, inbox, args.apply, args.receipt)
-    rows = classify_inbox(provider, inbox, args.limit)
+    # `--limit` bounds the Python slice, never Mail.app's work: the unbounded selector materializes
+    # every message in the mailbox BEFORE anything is sliced. Only `since_days` reaches the
+    # AppleScript `whose` predicate, which is what actually bounds what Mail builds.
+    rows = classify_inbox(provider, inbox, args.limit, since_days=args.since_days or None)
     report(args.account, inbox, rows)
 
-    result = {"account": args.account, "inbox": inbox, "total": len(rows),
-              "mode": "apply" if args.apply else "dry_run"}
+    result = {"account": args.account, "inbox": inbox, "total": len(rows), "mode": "apply" if args.apply else "dry_run"}
     if args.apply:
         n = sum(1 for r in rows if r["action"] == "archive")
         mode = "flag-only-gmail" if args.flag_only_gmail else "full"
         print(f"\n  APPLYING [{mode}] (flag fires; move {n} noise → '{args.noise_mailbox}')…")
-        result.update(apply(args.account, inbox, rows, args.noise_mailbox,
-                            flag_only_gmail=args.flag_only_gmail))
+        result.update(apply(args.account, inbox, rows, args.noise_mailbox, flag_only_gmail=args.flag_only_gmail))
         print(f"  done: {result}")
     else:
         print("\n  DRY RUN — no changes. Re-run with --apply to execute.")
 
     receipt = args.receipt or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "audit",
-        f"inbox_sweep-{args.account.replace('@', '_at_')}.json")
+        os.path.dirname(os.path.abspath(__file__)), "audit", f"inbox_sweep-{args.account.replace('@', '_at_')}.json"
+    )
     os.makedirs(os.path.dirname(receipt), exist_ok=True)
     with open(receipt, "w") as f:
         json.dump({"result": result, "rows": rows}, f, indent=2)
