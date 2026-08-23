@@ -464,7 +464,7 @@ class MailAppProvider(EmailProvider):
     def get_flag_color(self, message_id: str) -> FlagColor:
         """
         Get the current flag color of a message.
-        
+
         Reads Mail.app's `flag index` property which maps to FlagColor enum:
         -1 = NO_FLAG, 0 = RED, 1 = ORANGE, 2 = YELLOW, 3 = GREEN, 4 = BLUE, 5 = PURPLE, 6 = GRAY
         """
@@ -485,13 +485,13 @@ class MailAppProvider(EmailProvider):
     def set_flag_color(self, message_id: str, color: FlagColor) -> bool:
         """
         Set a specific flag color on a message.
-        
+
         Uses Mail.app's `flag index` property. Setting to NO_FLAG (-1) clears the flag.
         Boolean `flagged status` is NOT used here to preserve colored flag semantics.
         """
         if color == FlagColor.NO_FLAG:
             return self.clear_flag(message_id)
-        
+
         script = f'''
         tell application "Mail"
             set targetMsg to first message whose id is {message_id}

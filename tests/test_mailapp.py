@@ -26,7 +26,7 @@ def test_list_messages_captures_bulk_headers():
     provider._run_applescript = lambda script: _canned_list_output([
         ("1", "Feross Aboukhadijeh <feross@socket.dev>", "Socket Weekly", "false", "false", "-1",
          ["List-Unsubscribe: <https://socket.dev/unsub>"]),
-        ("2", "Micah Longo <micahlongo@gmail.com>", "Padavano v. MDC (Depositions)",
+        ("2", "User One <user.one@example.com>", "Legal Matter (Depositions)",
          "false", "false", "-1", []),
     ])
 
@@ -60,9 +60,9 @@ def test_bulk_headers_flow_end_to_end_to_obligation(tmp_path):
          ["List-Unsubscribe: <https://ceiamerica.com/unsub>"]),
     ]
     REAL = [
-        ("r1", "Micah Longo <micahlongo@gmail.com>", "Padavano v. MDC (Depositions)"),
-        ("r2", "Zafer Ramzan <zafer@algora.io>", "Air Space Intelligence interview"),
-        ("r3", "Uruba Niazi <uruba.niazi@authplane.ai>", "quick question on FastMCP + auth"),
+        ("r1", "User One <user.one@example.com>", "Legal Matter (Depositions)"),
+        ("r2", "User Two <user.two@example.com>", "Air Space Intelligence interview"),
+        ("r3", "User Three <user.three@example.com>", "quick question on FastMCP + auth"),
     ]
     rows = []
     for mid, sender, subject, hdrs in JUNK:
@@ -92,7 +92,7 @@ def test_bulk_headers_flow_end_to_end_to_obligation(tmp_path):
         assert dom in bulk, dom
         assert dom not in reply_owed, dom
     # The 3 real senders stay reply-owed.
-    for dom in ("gmail.com", "algora.io", "authplane.ai"):
+    for dom in ("example.com", "example.com", "example.com"):
         assert dom in reply_owed, dom
 
 
@@ -120,19 +120,19 @@ def test_mailapp_star_accepts_due_date_from_base_apply_actions():
 def test_build_list_script_unbounded_full_scans_oldest_first():
     """The hot INBOX path is unchanged: full `messages of targetMailbox`, oldest-first slice,
     NO date predicate. This is the regression guard that the fix stayed additive."""
-    script = MailAppProvider(account="a.j.padavano@icloud")._build_list_script(
+    script = MailAppProvider(account="user@icloud.example.com")._build_list_script(
         "INBOX", start_offset=0, limit=50, since_days=None)
     assert "set allMsgs to messages of targetMailbox" in script
     assert "whose date received" not in script
     assert "repeat with i from 1 to ((0 + 50))" in script   # oldest-first, offset+limit
-    assert 'of account "a.j.padavano@icloud"' in script
+    assert 'of account "user@icloud.example.com"' in script
 
 
 def test_build_list_script_bounded_uses_date_predicate_newest_first():
     """since_days ⇒ a server-side `whose date received > cutoff` predicate (bounds what Mail.app
     materializes) walked NEWEST-first (`by -1`). This is the whole fix — the archive is never
     fully materialized, so a large All-Mail can't time out."""
-    script = MailAppProvider(account="a.j.padavano@icloud")._build_list_script(
+    script = MailAppProvider(account="user@icloud.example.com")._build_list_script(
         "Archive", start_offset=0, limit=500, since_days=180)
     assert "whose date received > cutoffDate" in script
     assert "set cutoffDate to (current date) - (180 * days)" in script
@@ -157,7 +157,7 @@ def test_list_messages_bounded_passes_generous_timeout_unbounded_keeps_default()
     """Non-breaking-signature guard: the bounded path passes timeout=900; the unbounded path
     calls _run_applescript with the SAME one-arg shape as before (so 1-arg mocks/callers
     never break). This is why adding the kwarg didn't regress the hot path."""
-    provider = MailAppProvider(account="a.j.padavano@icloud")
+    provider = MailAppProvider(account="user@icloud.example.com")
     calls = []
 
     def fake(script, *args, **kwargs):

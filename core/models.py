@@ -27,7 +27,7 @@ class ActionType(Enum):
 class FlagColor(IntEnum):
     """
     Seven native Mail.app flag colors plus no flag.
-    
+
     These represent universal operator posture, never subject matter.
     Mapping matches Mail.app's flag index property:
     - -1 = NO_FLAG (closed/completed/no open loop)
@@ -134,7 +134,7 @@ class StateSource(str, Enum):
 class FlagMutation:
     """
     Represents a flag color mutation to apply to a message.
-    
+
     Used for batch-planning and receipt-bound flag operations.
     """
     message_id: str

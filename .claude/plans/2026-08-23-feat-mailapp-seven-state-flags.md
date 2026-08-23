@@ -103,31 +103,31 @@ python -m ruff check core/models.py providers/base.py providers/mailapp.py cli.p
 python -m mypy core/models.py providers/base.py providers/mailapp.py cli.py
 
 # Manual CLI verification
-python cli.py flags doctor --provider mailapp --account "padavano.anthony@gmail"
-python cli.py flags audit --provider mailapp --account "padavano.anthony@gmail" --flagged-only
-python cli.py flags plan --provider mailapp --account "padavano.anthony@gmail" --legacy-migration --output /tmp/plan.json
-python cli.py flags apply --provider mailapp --account "padavano.anthony@gmail" --plan /tmp/plan.json --dry-run --limit 5
+python cli.py flags doctor --provider mailapp --account "user@example.com"
+python cli.py flags audit --provider mailapp --account "user@example.com" --flagged-only
+python cli.py flags plan --provider mailapp --account "user@example.com" --legacy-migration --output /tmp/plan.json
+python cli.py flags apply --provider mailapp --account "user@example.com" --plan /tmp/plan.json --dry-run --limit 5
 ```
 
 ## Migration Workflow (Operational)
 
 ```bash
 # 1. Audit current flagged backlog
-uma flags audit --provider mailapp --account "padavano.anthony@gmail" --flagged-only
+uma flags audit --provider mailapp --account "user@example.com" --flagged-only
 
 # 2. Generate migration plan (read-only)
-uma flags plan --provider mailapp --account "padavano.anthony@gmail" --legacy-migration --output plan.json
+uma flags plan --provider mailapp --account "user@example.com" --legacy-migration --output plan.json
 
 # 3. Review plan.json (inspect mutations, hash)
 
 # 4. Canary apply (first 10 messages)
-uma flags apply --provider mailapp --account "padavano.anthony@gmail" --plan plan.json --limit 10
+uma flags apply --provider mailapp --account "user@example.com" --plan plan.json --limit 10
 
 # 5. Verify in Mail.app, then full apply
-uma flags apply --provider mailapp --account "padavano.anthony@gmail" --plan plan.json
+uma flags apply --provider mailapp --account "user@example.com" --plan plan.json
 
 # 6. If issues, rollback
-uma flags rollback --provider mailapp --account "padavano.anthony@gmail" --receipt plan-rollback-*.json
+uma flags rollback --provider mailapp --account "user@example.com" --receipt plan-rollback-*.json
 ```
 
 ## Rollback Receipt Schema
