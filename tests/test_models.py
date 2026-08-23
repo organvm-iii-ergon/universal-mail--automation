@@ -18,6 +18,7 @@ class TestActionType:
         assert names == {
             "ADD_LABEL", "REMOVE_LABEL", "ARCHIVE", "STAR",
             "UNSTAR", "MARK_READ", "MARK_UNREAD", "MOVE_TO_FOLDER",
+            "SET_FLAG", "CLEAR_FLAG",
         }
 
 

@@ -6,11 +6,11 @@ enabling consistent behavior across Gmail, IMAP, Mail.app, and Outlook.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import List, Optional, Iterator, Dict, Any, Tuple, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
 from enum import Flag, auto
 
-from core.models import EmailMessage, LabelAction, ProcessingResult
+from core.models import EmailMessage, LabelAction, ProcessingResult, FlagColor
 from core.rules import is_protected_sender
 
 if TYPE_CHECKING:  # avoid any import-time coupling; AuditLog is duck-typed at runtime
@@ -27,12 +27,13 @@ class ProviderCapabilities(Flag):
     NONE = 0
     TRUE_LABELS = auto()          # Supports multiple labels per message (Gmail)
     FOLDERS = auto()              # Uses folders instead of labels (IMAP, Outlook)
-    STAR = auto()                 # Can star/flag messages
+    STAR = auto()                 # Can star/flag messages (boolean)
     ARCHIVE = auto()              # Can archive (remove from inbox without deleting)
     BATCH_OPERATIONS = auto()     # Supports batch API calls
     SEARCH_QUERY = auto()         # Supports server-side search queries
     GMAIL_EXTENSIONS = auto()     # Supports Gmail IMAP extensions (X-GM-LABELS)
     CATEGORIES = auto()           # Supports color categories (Outlook)
+    COLORED_FLAGS = auto()        # Supports 7-color flag index (Mail.app)
 
 
 @dataclass
@@ -269,6 +270,58 @@ class EmailProvider(ABC):
             return False
         return False  # Subclasses override
 
+    def get_flag_color(self, message_id: str) -> FlagColor:
+        """
+        Get the current flag color of a message.
+
+        Only supported by providers with COLORED_FLAGS capability.
+        Default implementation returns NO_FLAG.
+
+        Args:
+            message_id: Message to query
+
+        Returns:
+            FlagColor of the message, or NO_FLAG if not supported/unflagged
+        """
+        if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
+            return FlagColor.NO_FLAG
+        return FlagColor.NO_FLAG  # Subclasses override
+
+    def set_flag_color(self, message_id: str, color: FlagColor) -> bool:
+        """
+        Set a specific flag color on a message.
+
+        Only supported by providers with COLORED_FLAGS capability.
+        Default implementation returns False.
+
+        Args:
+            message_id: Message to flag
+            color: FlagColor to apply (NO_FLAG clears the flag)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
+            return False
+        return False  # Subclasses override
+
+    def clear_flag(self, message_id: str) -> bool:
+        """
+        Clear the flag from a message (set to NO_FLAG).
+
+        Only supported by providers with COLORED_FLAGS capability.
+        Default implementation returns False.
+
+        Args:
+            message_id: Message to unflag
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
+            return False
+        return self.set_flag_color(message_id, FlagColor.NO_FLAG)
+
     @abstractmethod
     def ensure_label_exists(self, label: str) -> str:
         """
@@ -361,6 +414,11 @@ class EmailProvider(ABC):
                         action.category,
                         action.category_color or "blue",
                     )
+                # Colored flag operations (do not move messages)
+                if action.clear_flag:
+                    self.clear_flag(action.message_id)
+                elif action.flag_color is not None:
+                    self.set_flag_color(action.message_id, action.flag_color)
                 result.success_count += 1
             except Exception as e:
                 result.error_count += 1

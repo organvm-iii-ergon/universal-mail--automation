@@ -10,23 +10,24 @@ def _canned_list_output(rows):
     """Build the exact osascript stdout list_messages parses: one line per message with
     unit-separator (\\x1f) columns, header lines joined by record-separator (\\x1e), plus
     the trailing ---TOTAL: sentinel. `rows` is a list of
-    (id, sender, subject, is_read, is_flagged, [header_lines])."""
+    (id, sender, subject, is_read, is_flagged, flag_index, [header_lines])."""
     lines = []
     for r in rows:
         mid, sender, subject, read, flagged = r[0], r[1], r[2], r[3], r[4]
-        hdr_lines = r[5] if len(r) > 5 else []
+        flag_index = r[5] if len(r) > 5 else "-1"
+        hdr_lines = r[6] if len(r) > 6 else []
         bulk = _HDR_SEP.join(hdr_lines)
-        lines.append(_FIELD_SEP.join([mid, sender, subject, read, flagged, bulk]))
+        lines.append(_FIELD_SEP.join([mid, sender, subject, read, flagged, flag_index, bulk]))
     return "\n".join(lines) + f"\n---TOTAL:{len(rows)}"
 
 
 def test_list_messages_captures_bulk_headers():
     provider = MailAppProvider()
     provider._run_applescript = lambda script: _canned_list_output([
-        ("1", "Feross Aboukhadijeh <feross@socket.dev>", "Socket Weekly", "false", "false",
+        ("1", "Feross Aboukhadijeh <feross@socket.dev>", "Socket Weekly", "false", "false", "-1",
          ["List-Unsubscribe: <https://socket.dev/unsub>"]),
         ("2", "Micah Longo <micahlongo@gmail.com>", "Padavano v. MDC (Depositions)",
-         "false", "false", []),
+         "false", "false", "-1", []),
     ])
 
     result = provider.list_messages(limit=10)
@@ -65,9 +66,9 @@ def test_bulk_headers_flow_end_to_end_to_obligation(tmp_path):
     ]
     rows = []
     for mid, sender, subject, hdrs in JUNK:
-        rows.append((mid, sender, subject, "false", "false", hdrs))
+        rows.append((mid, sender, subject, "false", "false", "-1", hdrs))
     for mid, sender, subject in REAL:
-        rows.append((mid, sender, subject, "false", "false", []))
+        rows.append((mid, sender, subject, "false", "false", "-1", []))
 
     provider = MailAppProvider()
     provider._run_applescript = lambda script: _canned_list_output(rows)
@@ -161,7 +162,7 @@ def test_list_messages_bounded_passes_generous_timeout_unbounded_keeps_default()
 
     def fake(script, *args, **kwargs):
         calls.append(kwargs.get("timeout", args[0] if args else None))
-        return _canned_list_output([("1", "x@y.com", "Hi", "false", "false", [])])
+        return _canned_list_output([("1", "x@y.com", "Hi", "false", "false", "-1", [])])
 
     provider._run_applescript = fake
     provider.list_messages(mailbox="Archive", limit=5)                    # unbounded

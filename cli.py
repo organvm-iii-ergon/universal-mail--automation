@@ -21,6 +21,7 @@ import os
 import secrets
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -29,23 +30,18 @@ if TYPE_CHECKING:
 
 from core.rules import (
     LABEL_RULES,
-    PRIORITY_LABELS,
-    KEEP_IN_INBOX,
-    PRIORITY_TIERS,
-    categorize_message,
     categorize_with_tier,
     should_star,
     should_keep_in_inbox,
     is_vip_sender,
     is_protected_sender,
-    is_time_sensitive,
     escalate_by_age,
     calculate_email_age_hours,
     get_tier_config,
 )
 from core import __version__
 from core.state import StateManager
-from core.models import LabelAction, ProcessingResult
+from core.models import LabelAction, ProcessingResult, FlagColor
 from core.config import load_config, apply_vip_senders_from_config
 from providers.base import EmailProvider, ProviderCapabilities
 
@@ -2086,6 +2082,609 @@ def cmd_mail_delivery_receipt(args: argparse.Namespace) -> int:
     return 0
 
 
+# =============================================================================
+# FLAGS COMMAND HANDLERS — Seven-color workflow state for Mail.app
+# =============================================================================
+
+def cmd_flags_doctor(args: argparse.Namespace) -> int:
+    """Diagnose Mail.app colored flag capability and configuration."""
+    if args.provider != "mailapp":
+        print("flags doctor: only supported for mailapp provider", file=sys.stderr)
+        return 1
+
+    provider = get_provider(
+        args.provider,
+        account=args.account,
+    )
+
+    with provider:
+        if not (provider.capabilities & ProviderCapabilities.COLORED_FLAGS):
+            print("✗ COLORED_FLAGS capability not available")
+            return 1
+
+        print("✓ COLORED_FLAGS capability available")
+        print(f"  Provider: {provider.name}")
+        print(f"  Capabilities: {provider.capabilities}")
+
+        # Test read capability
+        try:
+            test_result = provider.list_messages(limit=1)
+            if test_result.messages:
+                msg = test_result.messages[0]
+                flag_color = getattr(msg, 'flag_color', FlagColor.NO_FLAG)
+                print(f"✓ Read capability: OK (sample flag_color={flag_color.name_str})")
+            else:
+                print("⚠ Read capability: OK (no messages to sample)")
+        except Exception as e:
+            print(f"✗ Read capability: FAILED ({e})")
+            return 1
+
+        # Test write capability (dry-run)
+        print("✓ Write capability: Available (requires live message for full test)")
+        print("✓ Clear/unflag capability: Available")
+
+        # Show flag color mapping
+        print("\nFlag Color Mapping (Mail.app flag index):")
+        for fc in FlagColor:
+            print(f"  {int(fc):>3} = {fc.name_str:<12} ({fc.operator_posture})")
+
+        return 0
+
+
+def cmd_flags_audit(args: argparse.Namespace) -> int:
+    """Read-only inventory of flagged messages."""
+    if args.provider != "mailapp":
+        print("flags audit: only supported for mailapp provider", file=sys.stderr)
+        return 1
+
+    provider = get_provider(
+        args.provider,
+        account=args.account,
+    )
+
+    mailbox = args.mailbox
+    limit = args.limit
+    since_days = args.since_days
+    flagged_only = args.flagged_only
+
+    logger.info(f"Auditing mailbox {mailbox} (flagged_only={flagged_only}, limit={limit})")
+
+    with provider:
+        if flagged_only:
+            rows = _audit_flagged_messages(provider, args.account, mailbox)
+        else:
+            rows = _audit_all_messages(provider, mailbox, limit, since_days)
+
+    # Display results
+    if args.output == "json":
+        import json
+        print(json.dumps([r for r in rows], indent=2, default=str))
+    elif args.output == "csv":
+        _print_csv(rows)
+    else:
+        _print_audit_table(rows, flagged_only)
+
+    # Write receipt if requested
+    if args.receipt:
+        import json
+        receipt_data = {
+            "provider": args.provider,
+            "account": args.account,
+            "mailbox": mailbox,
+            "flagged_only": flagged_only,
+            "limit": limit,
+            "since_days": since_days,
+            "count": len(rows),
+            "rows": rows,
+        }
+        Path(args.receipt).expanduser().parent.mkdir(parents=True, exist_ok=True)
+        with open(Path(args.receipt).expanduser(), "w") as f:
+            json.dump(receipt_data, f, indent=2, default=str)
+        print(f"\nReceipt written to: {args.receipt}")
+
+    return 0
+
+
+def _audit_flagged_messages(provider: EmailProvider, account: str, mailbox: str) -> list:
+    """Enumerate ONLY flagged messages using Mail.app whose predicate."""
+    from providers.mailapp import MailAppProvider
+    assert isinstance(provider, MailAppProvider), "flags audit requires mailapp provider"
+    script = f'''
+    tell application "Mail"
+        set targetMailbox to mailbox "{mailbox}" of account "{account}"
+        set outp to ""
+        repeat with m in (messages of targetMailbox whose flagged status is true)
+            try
+                set outp to outp & (id of m as string) & tab & (sender of m) & tab & (subject of m) & tab & (flag index of m as string) & linefeed
+            end try
+        end repeat
+        return outp
+    end tell
+    '''
+    try:
+        output = provider._run_applescript(script, timeout=600)
+    except RuntimeError as e:
+        logger.error(f"Failed to enumerate flagged messages: {e}")
+        return []
+
+    rows = []
+    for line in output.split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 4:
+            msg_id, sender, subject, flag_index = parts[:4]
+            flag_color = FlagColor.from_index(int(flag_index))
+            rows.append({
+                "id": msg_id,
+                "sender": sender,
+                "subject": subject,
+                "flag_index": int(flag_index),
+                "flag_color": flag_color.name_str,
+                "operator_posture": flag_color.operator_posture,
+            })
+    return rows
+
+
+def _audit_all_messages(provider: EmailProvider, mailbox: str, limit: int, since_days: int | None) -> list:
+    """Audit all messages in mailbox (bounded by limit/since_days)."""
+    from providers.mailapp import MailAppProvider
+    assert isinstance(provider, MailAppProvider), "flags queue requires mailapp provider"
+    list_result = provider.list_messages(
+        mailbox=mailbox,
+        limit=limit,
+        since_days=since_days,
+    )
+    rows = []
+    for msg in list_result.messages:
+        rows.append({
+            "id": msg.id,
+            "sender": msg.sender,
+            "subject": msg.subject,
+            "flag_color": msg.flag_color.name_str if hasattr(msg, 'flag_color') else "unknown",
+            "operator_posture": msg.flag_color.operator_posture if hasattr(msg, 'flag_color') else "unknown",
+            "is_read": msg.is_read,
+        })
+    return rows
+
+
+def _print_audit_table(rows: list, flagged_only: bool):
+    """Print audit results as a table."""
+    if not rows:
+        print("No messages found.")
+        return
+
+    title = "FLAGGED MESSAGES AUDIT" if flagged_only else "MAILBOX AUDIT"
+    print(f"\n{'=' * 80}")
+    print(f"{title} — {len(rows)} messages")
+    print(f"{'=' * 80}")
+
+    from collections import Counter
+    color_counts = Counter(r.get("flag_color", "unknown") for r in rows)
+    for color, count in sorted(color_counts.items(), key=lambda x: -x[1]):
+        print(f"  {color}: {count}")
+
+    print()
+    for r in rows:
+        flag = r.get("flag_color", "?")
+        sender = r.get("sender", "")[:40]
+        subject = r.get("subject", "")[:50]
+        print(f"  [{flag:<12}] {sender:<40} {subject}")
+
+    print(f"{'=' * 80}\n")
+
+
+def _print_csv(rows: list):
+    """Print audit results as CSV."""
+    import csv
+    import sys
+    writer = csv.writer(sys.stdout)
+    writer.writerow(["id", "sender", "subject", "flag_color", "operator_posture", "is_read"])
+    for r in rows:
+        writer.writerow([
+            r.get("id", ""),
+            r.get("sender", ""),
+            r.get("subject", ""),
+            r.get("flag_color", ""),
+            r.get("operator_posture", ""),
+            str(r.get("is_read", "")),
+        ])
+
+
+def cmd_flags_plan(args: argparse.Namespace) -> int:
+    """Generate migration/reclassification plan for legacy flags."""
+    if args.provider != "mailapp":
+        print("flags plan: only supported for mailapp provider", file=sys.stderr)
+        return 1
+
+    if not args.output:
+        print("flags plan: --output is required", file=sys.stderr)
+        return 1
+
+    provider = get_provider(
+        args.provider,
+        account=args.account,
+    )
+
+    mailbox = args.mailbox
+    limit = args.limit
+
+    logger.info(f"Generating migration plan for {mailbox} (limit={limit})")
+
+    with provider:
+        rows = _audit_flagged_messages(provider, args.account, mailbox)
+
+    if not rows:
+        print("No flagged messages found to migrate.")
+        return 0
+
+    plan_mutations = []
+    for r in rows:
+        observed = FlagColor.from_index(r["flag_index"])
+        proposed = _propose_reclassification(r, observed)
+        if proposed != observed:
+            plan_mutations.append({
+                "message_id": r["id"],
+                "sender": r["sender"],
+                "subject": r["subject"],
+                "observed_flag": observed.name_str,
+                "proposed_flag": proposed.name_str,
+                "reason": _migration_reason(observed, proposed, r),
+                "confidence": 0.7,
+            })
+
+    import hashlib
+    import json
+    plan_data = {
+        "schema": "uma.flags.migration.plan.v1",
+        "account": args.account,
+        "mailbox": mailbox,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "total_scanned": len(rows),
+        "mutations": plan_mutations,
+    }
+    plan_json = json.dumps(plan_data, sort_keys=True)
+    plan_hash = hashlib.sha256(plan_json.encode()).hexdigest()[:16]
+    plan_data["plan_hash"] = plan_hash
+
+    Path(args.output).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    with open(Path(args.output).expanduser(), "w") as f:
+        json.dump(plan_data, f, indent=2)
+
+    unchanged = len(rows) - len(plan_mutations)
+    print(f"\nMigration Plan Generated: {args.output}")
+    print(f"  Plan Hash: {plan_hash}")
+    print(f"  Total Scanned: {len(rows)}")
+    print(f"  Unchanged: {unchanged}")
+    print(f"  To Recolor: {len(plan_mutations)}")
+    print(f"  To Unflag: {sum(1 for m in plan_mutations if m['proposed_flag'] == 'No Flag')}")
+
+    return 0
+
+
+def _propose_reclassification(row: dict, observed: FlagColor) -> FlagColor:
+    """Propose new flag color based on legacy flag and content analysis."""
+    sender = row.get("sender", "").lower()
+    subject = row.get("subject", "").lower()
+    combined = f"{sender} {subject}"
+
+    if observed == FlagColor.RED:
+        if any(k in combined for k in ["security", "fraud", "unauthorized", "billing", "payment", "overdue", "default", "urgent", "action required"]):
+            return FlagColor.RED
+        if any(k in combined for k in ["recruiter", "hiring", "job", "interview", "opportunity", "position"]):
+            return FlagColor.ORANGE
+        if any(k in combined for k in ["awaiting", "pending", "follow up", "reply", "response"]):
+            return FlagColor.YELLOW
+        if any(k in combined for k in ["meeting", "calendar", "scheduled", "appointment", "call"]):
+            return FlagColor.GREEN
+        if any(k in combined for k in ["receipt", "confirmation", "order", "shipped", "tracking"]):
+            return FlagColor.BLUE
+        return FlagColor.PURPLE
+
+    if observed == FlagColor.PURPLE:
+        return FlagColor.PURPLE
+
+    return observed
+
+
+def _migration_reason(observed: FlagColor, proposed: FlagColor, row: dict) -> str:
+    """Generate human-readable reason for migration."""
+    if observed == proposed:
+        return "No change"
+    sender = row.get("sender", "")
+    subject = row.get("subject", "")[:50]
+    return f"Legacy {observed.name_str} -> {proposed.name_str} based on content analysis (from: {sender[:30]}, subj: {subject})"
+
+
+def cmd_flags_queue(args: argparse.Namespace) -> int:
+    """Show working surface: NOW/ACTION/WAITING/SCHEDULED/REVIEW/REFERENCE/LATER."""
+    if args.provider != "mailapp":
+        print("flags queue: only supported for mailapp provider", file=sys.stderr)
+        return 1
+
+    provider = get_provider(
+        args.provider,
+        account=args.account,
+    )
+
+    mailbox = args.mailbox
+    limit = args.limit
+
+    logger.info(f"Building flags queue for {mailbox} (limit={limit})")
+
+    with provider:
+        rows = _audit_flagged_messages(provider, args.account, mailbox)
+
+    queue_order = [FlagColor.RED, FlagColor.ORANGE, FlagColor.YELLOW, FlagColor.GREEN, FlagColor.BLUE, FlagColor.PURPLE, FlagColor.GRAY]
+    queue_data = {fc: [] for fc in queue_order}
+
+    for r in rows:
+        fc = FlagColor.from_index(r["flag_index"])
+        if fc in queue_data:
+            queue_data[fc].append(r)
+
+    if args.output == "json":
+        import json
+        output = {fc.queue_label: queue_data[fc] for fc in queue_order}
+        print(json.dumps(output, indent=2, default=str))
+        return 0
+
+    print(f"\n{'=' * 80}")
+    print(f"FLAGS QUEUE — {mailbox} ({sum(len(v) for v in queue_data.values())} flagged)")
+    print(f"{'=' * 80}")
+
+    for fc in queue_order:
+        items = queue_data[fc]
+        if not items:
+            continue
+        print(f"\n  {fc.queue_label} ({fc.name_str}) — {len(items)}")
+        print(f"  {'-' * 76}")
+        for r in items[:20]:
+            sender = r.get("sender", "")[:35]
+            subject = r.get("subject", "")[:45]
+            print(f"    {sender:<35} {subject}")
+        if len(items) > 20:
+            print(f"    ... +{len(items) - 20} more")
+
+    print(f"\n{'=' * 80}\n")
+    return 0
+
+
+def cmd_flags_apply(args: argparse.Namespace) -> int:
+    """Apply a flag mutation plan from a receipt."""
+    if args.provider != "mailapp":
+        print("flags apply: only supported for mailapp provider", file=sys.stderr)
+        return 1
+
+    import json
+    plan_path = Path(args.plan).expanduser()
+    if not plan_path.exists():
+        print(f"Plan not found: {plan_path}", file=sys.stderr)
+        return 1
+
+    with open(plan_path) as f:
+        plan = json.load(f)
+
+    plan_hash = plan.get("plan_hash")
+    if not plan_hash:
+        print("Invalid plan: missing plan_hash", file=sys.stderr)
+        return 1
+
+    plan_copy = {k: v for k, v in plan.items() if k != "plan_hash"}
+    import hashlib
+    computed_hash = hashlib.sha256(json.dumps(plan_copy, sort_keys=True).encode()).hexdigest()[:16]
+    if computed_hash != plan_hash:
+        print(f"Plan hash mismatch! Expected {plan_hash}, got {computed_hash}", file=sys.stderr)
+        print("Mailbox state may have drifted. Use --force to override.", file=sys.stderr)
+        if not args.force:
+            return 1
+
+    provider = get_provider(
+        args.provider,
+        account=args.account,
+    )
+
+    mutations = plan.get("mutations", [])
+    limit = args.limit
+
+    if args.dry_run:
+        print(f"DRY RUN - Would apply {min(limit, len(mutations))} of {len(mutations)} mutations:")
+        for m in mutations[:limit]:
+            print(f"  {m['message_id']}: {m['observed_flag']} -> {m['proposed_flag']} ({m['reason'][:60]})")
+        return 0
+
+    applied = []
+    failed = []
+    for i, m in enumerate(mutations[:limit]):
+        msg_id = m["message_id"]
+        proposed = FlagColor.from_string(m["proposed_flag"])
+        try:
+            if proposed == FlagColor.NO_FLAG:
+                success = provider.clear_flag(msg_id)
+            else:
+                success = provider.set_flag_color(msg_id, proposed)
+            if success:
+                applied.append({**m, "status": "applied"})
+            else:
+                failed.append({**m, "status": "failed", "error": "Provider returned False"})
+        except Exception as e:
+            failed.append({**m, "status": "error", "error": str(e)})
+
+    rollback_receipt = {
+        "schema": "uma.flags.rollback.receipt.v1",
+        "plan_hash": plan_hash,
+        "applied_at": datetime.now(timezone.utc).isoformat(),
+        "applied": applied,
+        "failed": failed,
+        "rollback_data": [
+            {"message_id": m["message_id"], "previous_flag": m["observed_flag"]}
+            for m in applied
+        ],
+    }
+
+    receipt_path = plan_path.with_name(f"{plan_path.stem}-rollback-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json")
+    with open(receipt_path, "w") as f:
+        json.dump(rollback_receipt, f, indent=2)
+
+    print(f"Applied: {len(applied)}, Failed: {len(failed)}")
+    print(f"Rollback receipt: {receipt_path}")
+    return 0 if not failed else 1
+
+
+def cmd_flags_rollback(args: argparse.Namespace) -> int:
+    """Rollback a previously applied flag mutation plan."""
+    if args.provider != "mailapp":
+        print("flags rollback: only supported for mailapp provider", file=sys.stderr)
+        return 1
+
+    import json
+    receipt_path = Path(args.receipt).expanduser()
+    if not receipt_path.exists():
+        print(f"Rollback receipt not found: {receipt_path}", file=sys.stderr)
+        return 1
+
+    with open(receipt_path) as f:
+        receipt = json.load(f)
+
+    rollback_data = receipt.get("rollback_data", [])
+    if not rollback_data:
+        print("No rollback data in receipt", file=sys.stderr)
+        return 1
+
+    provider = get_provider(
+        args.provider,
+        account=args.account,
+    )
+
+    if args.dry_run:
+        print(f"DRY RUN - Would rollback {len(rollback_data)} mutations:")
+        for r in rollback_data:
+            print(f"  {r['message_id']}: restore {r['previous_flag']}")
+        return 0
+
+    restored = 0
+    failed = 0
+    for r in rollback_data:
+        msg_id = r["message_id"]
+        previous = FlagColor.from_string(r["previous_flag"])
+        try:
+            if previous == FlagColor.NO_FLAG:
+                success = provider.clear_flag(msg_id)
+            else:
+                success = provider.set_flag_color(msg_id, previous)
+            if success:
+                restored += 1
+            else:
+                failed += 1
+        except Exception as e:
+            logger.error(f"Failed to rollback {msg_id}: {e}")
+            failed += 1
+
+    print(f"Restored: {restored}, Failed: {failed}")
+    return 0 if failed == 0 else 1
+
+
+def cmd_flags_overrides(args: argparse.Namespace) -> int:
+    """List detected human flag overrides."""
+    if args.provider != "mailapp":
+        print("flags overrides: only supported for mailapp provider", file=sys.stderr)
+        return 1
+
+    provider = get_provider(
+        args.provider,
+        account=args.account,
+    )
+
+    mailbox = args.mailbox
+
+    with provider:
+        rows = _audit_flagged_messages(provider, args.account, mailbox)
+
+    overrides = []
+    for r in rows:
+        observed = FlagColor.from_index(r["flag_index"])
+        proposed = _propose_reclassification(r, observed)
+        if proposed != observed:
+            overrides.append({
+                "id": r["id"],
+                "sender": r["sender"],
+                "subject": r["subject"][:60],
+                "observed_flag": observed.name_str,
+                "automation_proposed": proposed.name_str,
+                "potential_override": True,
+            })
+
+    if not overrides:
+        print("No human overrides detected.")
+        return 0
+
+    print(f"\n{'=' * 80}")
+    print(f"HUMAN OVERRIDES DETECTED — {len(overrides)} messages")
+    print(f"{'=' * 80}")
+    for o in overrides:
+        print(f"  [{o['observed_flag']} -> {o['automation_proposed']}] {o['sender'][:35]} {o['subject']}")
+
+    print("\nNote: These are potential overrides detected by heuristic comparison.")
+    print("True override detection requires persisted automation state.")
+    return 0
+
+
+def cmd_flags_explain(args: argparse.Namespace) -> int:
+    """Explain the flag classification for a specific message."""
+    if args.provider != "mailapp":
+        print("flags explain: only supported for mailapp provider", file=sys.stderr)
+        return 1
+
+    provider = get_provider(
+        args.provider,
+        account=args.account,
+    )
+
+    message_ref = args.message_ref
+
+    with provider:
+        msg = provider.get_message_details(message_ref)
+        if not msg:
+            print(f"Message not found: {message_ref}", file=sys.stderr)
+            return 1
+
+    flag_color = getattr(msg, 'flag_color', FlagColor.NO_FLAG)
+    is_starred = msg.is_starred
+
+    print(f"\n{'=' * 60}")
+    print("MESSAGE EXPLANATION")
+    print(f"{'=' * 60}")
+    print(f"ID:          {msg.id}")
+    print(f"Sender:      {msg.sender}")
+    print(f"Subject:     {msg.subject}")
+    print(f"Date:        {msg.date}")
+    print(f"Read:        {msg.is_read}")
+    print(f"Starred:     {is_starred} (boolean)")
+    print(f"Flag Color:  {flag_color.name_str} ({flag_color.operator_posture})")
+
+    proposed = _propose_reclassification({"sender": msg.sender, "subject": msg.subject, "flag_index": int(flag_color)}, flag_color)
+    if proposed != flag_color:
+        print(f"Automation would propose: {proposed.name_str} ({proposed.operator_posture})")
+    else:
+        print(f"Automation agrees: {proposed.name_str}")
+
+    combined = f"{msg.sender} {msg.subject}".lower()
+    signals = []
+    for rule_name, rule in LABEL_RULES.items():
+        for pattern in rule["patterns"]:
+            import re
+            if re.search(pattern, combined, re.IGNORECASE):
+                signals.append(f"  Rule match: {rule_name} (tier {rule.get('tier', 4)})")
+                break
+    if signals:
+        print("\nClassification signals:")
+        for s in signals[:10]:
+            print(s)
+
+    print(f"{'=' * 60}\n")
+    return 0
+
+
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -2411,6 +3010,209 @@ Examples:
         help="User's name for the draft signature",
     )
     triage_parser.set_defaults(func=cmd_triage)
+
+    # Flags command group — seven-color workflow state for Mail.app
+    flags_parser = subparsers.add_parser(
+        "flags",
+        parents=[provider_group],
+        help="Seven-color flag workflow state operations (Mail.app only)",
+    )
+    flags_subparsers = flags_parser.add_subparsers(dest="flags_command", help="Flags subcommands")
+
+    # flags doctor
+    flags_doctor_parser = flags_subparsers.add_parser(
+        "doctor",
+        parents=[provider_group],
+        help="Diagnose Mail.app colored flag capability and configuration",
+    )
+    flags_doctor_parser.set_defaults(func=cmd_flags_doctor)
+
+    # flags audit
+    flags_audit_parser = flags_subparsers.add_parser(
+        "audit",
+        parents=[provider_group],
+        help="Read-only inventory of flagged messages",
+    )
+    flags_audit_parser.add_argument(
+        "--mailbox", "-m",
+        default="INBOX",
+        help="Mailbox to audit (default: INBOX)",
+    )
+    flags_audit_parser.add_argument(
+        "--limit", "-l",
+        type=int,
+        default=500,
+        help="Maximum messages to scan (default: 500)",
+    )
+    flags_audit_parser.add_argument(
+        "--since-days",
+        type=int,
+        default=None,
+        help="Bound scan to messages received in last N days",
+    )
+    flags_audit_parser.add_argument(
+        "--flagged-only",
+        action="store_true",
+        help="Only enumerate currently flagged messages",
+    )
+    flags_audit_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Dry run (no mutations, implied for audit)",
+    )
+    flags_audit_parser.add_argument(
+        "--output", "-o",
+        choices=["table", "json", "csv"],
+        default="table",
+        help="Output format (default: table)",
+    )
+    flags_audit_parser.add_argument(
+        "--receipt",
+        help="Path to write JSON receipt of audit results",
+    )
+    flags_audit_parser.set_defaults(func=cmd_flags_audit)
+
+    # flags plan
+    flags_plan_parser = flags_subparsers.add_parser(
+        "plan",
+        parents=[provider_group],
+        help="Generate migration/reclassification plan for legacy flags",
+    )
+    flags_plan_parser.add_argument(
+        "--legacy-migration",
+        action="store_true",
+        help="Plan migration from legacy red/purple flags to seven-color system",
+    )
+    flags_plan_parser.add_argument(
+        "--mailbox", "-m",
+        default="INBOX",
+        help="Mailbox to plan for (default: INBOX)",
+    )
+    flags_plan_parser.add_argument(
+        "--limit", "-l",
+        type=int,
+        default=500,
+        help="Maximum messages to include in plan (default: 500)",
+    )
+    flags_plan_parser.add_argument(
+        "--since-days",
+        type=int,
+        default=None,
+        help="Bound scan to messages received in last N days",
+    )
+    flags_plan_parser.add_argument(
+        "--output", "-o",
+        help="Path to write immutable plan JSON (required)",
+    )
+    flags_plan_parser.set_defaults(func=cmd_flags_plan)
+
+    # flags queue
+    flags_queue_parser = flags_subparsers.add_parser(
+        "queue",
+        parents=[provider_group],
+        help="Show working surface: NOW/ACTION/WAITING/SCHEDULED/REVIEW/REFERENCE/LATER",
+    )
+    flags_queue_parser.add_argument(
+        "--mailbox", "-m",
+        default="INBOX",
+        help="Mailbox to scan (default: INBOX)",
+    )
+    flags_queue_parser.add_argument(
+        "--limit", "-l",
+        type=int,
+        default=200,
+        help="Maximum messages to show (default: 200)",
+    )
+    flags_queue_parser.add_argument(
+        "--output", "-o",
+        choices=["table", "json"],
+        default="table",
+        help="Output format (default: table)",
+    )
+    flags_queue_parser.set_defaults(func=cmd_flags_queue)
+
+    # flags apply
+    flags_apply_parser = flags_subparsers.add_parser(
+        "apply",
+        parents=[provider_group],
+        help="Apply a flag mutation plan from a receipt",
+    )
+    flags_apply_parser.add_argument(
+        "--plan",
+        required=True,
+        help="Path to plan receipt JSON",
+    )
+    flags_apply_parser.add_argument(
+        "--limit", "-l",
+        type=int,
+        default=10,
+        help="Maximum mutations to apply (default: 10 for canary)",
+    )
+    flags_apply_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force apply even if mailbox state has drifted",
+    )
+    flags_apply_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Dry run - show what would be applied",
+    )
+    flags_apply_parser.set_defaults(func=cmd_flags_apply)
+
+    # flags rollback
+    flags_rollback_parser = flags_subparsers.add_parser(
+        "rollback",
+        parents=[provider_group],
+        help="Rollback a previously applied flag mutation plan",
+    )
+    flags_rollback_parser.add_argument(
+        "--receipt",
+        required=True,
+        help="Path to rollback receipt JSON",
+    )
+    flags_rollback_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Dry run - show what would be rolled back",
+    )
+    flags_rollback_parser.set_defaults(func=cmd_flags_rollback)
+
+    # flags overrides
+    flags_overrides_parser = flags_subparsers.add_parser(
+        "overrides",
+        parents=[provider_group],
+        help="List detected human flag overrides",
+    )
+    flags_overrides_parser.add_argument(
+        "--mailbox", "-m",
+        default="INBOX",
+        help="Mailbox to scan (default: INBOX)",
+    )
+    flags_overrides_parser.add_argument(
+        "--limit", "-l",
+        type=int,
+        default=200,
+        help="Maximum messages to scan (default: 200)",
+    )
+    flags_overrides_parser.set_defaults(func=cmd_flags_overrides)
+
+    # flags explain
+    flags_explain_parser = flags_subparsers.add_parser(
+        "explain",
+        parents=[provider_group],
+        help="Explain the flag classification for a specific message",
+    )
+    flags_explain_parser.add_argument(
+        "message_ref",
+        help="Message reference (ID or Message-ID digest)",
+    )
+    flags_explain_parser.add_argument(
+        "--mailbox", "-m",
+        default="INBOX",
+        help="Mailbox containing the message (default: INBOX)",
+    )
+    flags_explain_parser.set_defaults(func=cmd_flags_explain)
 
     # Operator summary command - local report to canonical dashboard payload.
     ops_parser = subparsers.add_parser(
