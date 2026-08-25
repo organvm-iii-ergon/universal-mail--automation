@@ -2087,7 +2087,13 @@ def cmd_mail_delivery_receipt(args: argparse.Namespace) -> int:
 # =============================================================================
 
 def cmd_flags_doctor(args: argparse.Namespace) -> int:
-    """Diagnose Mail.app colored flag capability and configuration."""
+    """Diagnose Mail.app colored flag capability and configuration.
+
+    Read-only. Does NOT call the unbounded list_messages path.
+    Reports: scripting property detection, read capability (inferred from
+    provider construction), native mapping source, write capability
+    (implemented but not live-tested), and live round-trip status.
+    """
     if args.provider != "mailapp":
         print("flags doctor: only supported for mailapp provider", file=sys.stderr)
         return 1
@@ -2098,35 +2104,34 @@ def cmd_flags_doctor(args: argparse.Namespace) -> int:
     )
 
     with provider:
+        # 1. Scripting property detection
         if not (provider.capabilities & ProviderCapabilities.COLORED_FLAGS):
-            print("✗ COLORED_FLAGS capability not available")
+            print("✗ COLORED_FLAGS capability not declared by provider")
             return 1
-
-        print("✓ COLORED_FLAGS capability available")
+        print("✓ Scripting property: COLORED_FLAGS declared")
         print(f"  Provider: {provider.name}")
         print(f"  Capabilities: {provider.capabilities}")
 
-        # Test read capability
-        try:
-            test_result = provider.list_messages(limit=1)
-            if test_result.messages:
-                msg = test_result.messages[0]
-                flag_color = getattr(msg, 'flag_color', FlagColor.NO_FLAG)
-                print(f"✓ Read capability: OK (sample flag_color={flag_color.name_str})")
-            else:
-                print("⚠ Read capability: OK (no messages to sample)")
-        except Exception as e:
-            print(f"✗ Read capability: FAILED ({e})")
-            return 1
+        # 2. Read capability — inferred from provider construction, NOT by
+        #    calling the unbounded list_messages path.
+        print("✓ Read capability: implemented (provider constructed successfully)")
 
-        # Test write capability (dry-run)
-        print("✓ Write capability: Available (requires live message for full test)")
-        print("✓ Clear/unflag capability: Available")
+        # 3. Native mapping source
+        print("\n  Native mapping source: providers/mailapp.py MAILAPP_INDEX_TO_FLAG")
+        print("  Flag Color Mapping (Mail.app flag index):")
+        from providers.mailapp import MAILAPP_INDEX_TO_FLAG
+        for index in sorted(MAILAPP_INDEX_TO_FLAG.keys()):
+            fc = MAILAPP_INDEX_TO_FLAG[index]
+            print(f"    {index:>3} = {fc.name_str:<12} ({fc.operator_posture})")
 
-        # Show flag color mapping
-        print("\nFlag Color Mapping (Mail.app flag index):")
-        for fc in FlagColor:
-            print(f"  {int(fc):>3} = {fc.name_str:<12} ({fc.operator_posture})")
+        # 4. Write capability — implemented but NOT live-tested
+        print("\n  Write capability: implemented (not live-tested)")
+        print("  Clear/unflag capability: implemented (not live-tested)")
+
+        # 5. Live round-trip status
+        print("  Live round-trip: NOT performed (doctor is read-only)")
+        print("\n  To test read capability live, use: flags audit --flagged-only")
+        print("  To test write capability, use: flags apply (NOT_READY until Phase 9)")
 
         return 0
 
@@ -2451,137 +2456,35 @@ def cmd_flags_queue(args: argparse.Namespace) -> int:
 
 
 def cmd_flags_apply(args: argparse.Namespace) -> int:
-    """Apply a flag mutation plan from a receipt."""
-    if args.provider != "mailapp":
-        print("flags apply: only supported for mailapp provider", file=sys.stderr)
-        return 1
+    """Apply a flag mutation plan from a receipt.
 
-    import json
-    plan_path = Path(args.plan).expanduser()
-    if not plan_path.exists():
-        print(f"Plan not found: {plan_path}", file=sys.stderr)
-        return 1
-
-    with open(plan_path) as f:
-        plan = json.load(f)
-
-    plan_hash = plan.get("plan_hash")
-    if not plan_hash:
-        print("Invalid plan: missing plan_hash", file=sys.stderr)
-        return 1
-
-    plan_copy = {k: v for k, v in plan.items() if k != "plan_hash"}
-    import hashlib
-    computed_hash = hashlib.sha256(json.dumps(plan_copy, sort_keys=True).encode()).hexdigest()[:16]
-    if computed_hash != plan_hash:
-        print(f"Plan hash mismatch! Expected {plan_hash}, got {computed_hash}", file=sys.stderr)
-        print("Mailbox state may have drifted. Use --force to override.", file=sys.stderr)
-        if not args.force:
-            return 1
-
-    provider = get_provider(
-        args.provider,
-        account=args.account,
+    SAFETY GATE: This command is disabled until the approval-receipt gate,
+    preflight checks, and idempotent ledger are implemented. See PR #192
+    remediation plan Phase 9.
+    """
+    print(
+        "NOT_READY: flags apply requires approval-receipt gate, "
+        "snapshot-bound preflight, and idempotent ledger (not yet implemented). "
+        "See PR #192 remediation plan Phase 9.",
+        file=sys.stderr,
     )
-
-    mutations = plan.get("mutations", [])
-    limit = args.limit
-
-    if args.dry_run:
-        print(f"DRY RUN - Would apply {min(limit, len(mutations))} of {len(mutations)} mutations:")
-        for m in mutations[:limit]:
-            print(f"  {m['message_id']}: {m['observed_flag']} -> {m['proposed_flag']} ({m['reason'][:60]})")
-        return 0
-
-    applied = []
-    failed = []
-    for i, m in enumerate(mutations[:limit]):
-        msg_id = m["message_id"]
-        proposed = FlagColor.from_string(m["proposed_flag"])
-        try:
-            if proposed == FlagColor.NO_FLAG:
-                success = provider.clear_flag(msg_id)
-            else:
-                success = provider.set_flag_color(msg_id, proposed)
-            if success:
-                applied.append({**m, "status": "applied"})
-            else:
-                failed.append({**m, "status": "failed", "error": "Provider returned False"})
-        except Exception as e:
-            failed.append({**m, "status": "error", "error": str(e)})
-
-    rollback_receipt = {
-        "schema": "uma.flags.rollback.receipt.v1",
-        "plan_hash": plan_hash,
-        "applied_at": datetime.now(timezone.utc).isoformat(),
-        "applied": applied,
-        "failed": failed,
-        "rollback_data": [
-            {"message_id": m["message_id"], "previous_flag": m["observed_flag"]}
-            for m in applied
-        ],
-    }
-
-    receipt_path = plan_path.with_name(f"{plan_path.stem}-rollback-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json")
-    with open(receipt_path, "w") as f:
-        json.dump(rollback_receipt, f, indent=2)
-
-    print(f"Applied: {len(applied)}, Failed: {len(failed)}")
-    print(f"Rollback receipt: {receipt_path}")
-    return 0 if not failed else 1
+    return 89
 
 
 def cmd_flags_rollback(args: argparse.Namespace) -> int:
-    """Rollback a previously applied flag mutation plan."""
-    if args.provider != "mailapp":
-        print("flags rollback: only supported for mailapp provider", file=sys.stderr)
-        return 1
+    """Rollback a previously applied flag mutation plan.
 
-    import json
-    receipt_path = Path(args.receipt).expanduser()
-    if not receipt_path.exists():
-        print(f"Rollback receipt not found: {receipt_path}", file=sys.stderr)
-        return 1
-
-    with open(receipt_path) as f:
-        receipt = json.load(f)
-
-    rollback_data = receipt.get("rollback_data", [])
-    if not rollback_data:
-        print("No rollback data in receipt", file=sys.stderr)
-        return 1
-
-    provider = get_provider(
-        args.provider,
-        account=args.account,
+    SAFETY GATE: This command is disabled until receipt-integrity verification,
+    qualified message resolution, and human-change refusal are implemented.
+    See PR #192 remediation plan Phase 11.
+    """
+    print(
+        "NOT_READY: flags rollback requires receipt-integrity verification, "
+        "qualified message resolution, and human-change refusal "
+        "(not yet implemented). See PR #192 remediation plan Phase 11.",
+        file=sys.stderr,
     )
-
-    if args.dry_run:
-        print(f"DRY RUN - Would rollback {len(rollback_data)} mutations:")
-        for r in rollback_data:
-            print(f"  {r['message_id']}: restore {r['previous_flag']}")
-        return 0
-
-    restored = 0
-    failed = 0
-    for r in rollback_data:
-        msg_id = r["message_id"]
-        previous = FlagColor.from_string(r["previous_flag"])
-        try:
-            if previous == FlagColor.NO_FLAG:
-                success = provider.clear_flag(msg_id)
-            else:
-                success = provider.set_flag_color(msg_id, previous)
-            if success:
-                restored += 1
-            else:
-                failed += 1
-        except Exception as e:
-            logger.error(f"Failed to rollback {msg_id}: {e}")
-            failed += 1
-
-    print(f"Restored: {restored}, Failed: {failed}")
-    return 0 if failed == 0 else 1
+    return 89
 
 
 def cmd_flags_overrides(args: argparse.Namespace) -> int:
@@ -3147,11 +3050,6 @@ Examples:
         type=int,
         default=10,
         help="Maximum mutations to apply (default: 10 for canary)",
-    )
-    flags_apply_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force apply even if mailbox state has drifted",
     )
     flags_apply_parser.add_argument(
         "--dry-run",
