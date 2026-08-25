@@ -2139,11 +2139,15 @@ def cmd_flags_audit(args: argparse.Namespace) -> int:
     """Read-only inventory of flagged messages.
 
     Delegates ALL enumeration to the provider and ALL artifact handling to
-    core.flag_workflow. A private snapshot (mode 0600) is always written;
-    --receipt writes the PUBLIC-SAFE projection only (no PII).
+    core.flag_workflow. A private snapshot (mode 0600) is ALWAYS written —
+    including for failed/incomplete scans, so failure evidence is durable.
+    --receipt writes the PUBLIC-SAFE projection only (allowlist fields).
 
-    Exit codes: 0 complete | 20 incomplete without --allow-partial |
-    1 provider/config error.
+    Exit codes: 0 complete (or partial accepted via --allow-partial) |
+    20 incomplete without --allow-partial | 1 provider/config error.
+
+    Rendering is mutually exclusive: json OR csv OR table — never mixed,
+    so machine-readable output stays parseable.
     """
     if args.provider != "mailapp":
         print("flags audit: only supported for mailapp provider", file=sys.stderr)
@@ -2164,46 +2168,60 @@ def cmd_flags_audit(args: argparse.Namespace) -> int:
 
     with provider:
         try:
-            result = provider.enumerate_flagged(
-                mailbox=args.mailbox,
-                limit=args.limit,
-                since_days=args.since_days,
-            )
+            if getattr(args, "estate", False):
+                estate = flag_workflow.enumerate_estate(
+                    provider,
+                    per_surface_limit=args.limit,
+                    since_days=args.since_days,
+                )
+                snapshot = flag_workflow.build_estate_snapshot(
+                    estate, provider_name=provider.name)
+                result = type("R", (), {
+                    "complete": snapshot.complete,
+                    "scope_complete": snapshot.scope_complete,
+                    "status": snapshot.status,
+                    "errors": snapshot.errors,
+                    "inaccessible_count": snapshot.inaccessible_count,
+                    "timeout_count": snapshot.timeout_count,
+                    "unknown_index_count": snapshot.unknown_index_count,
+                    "next_cursor": None,
+                    "scanned_boundary": {
+                        "total_flagged_seen": snapshot.total_matched,
+                        "hidden_by_limit": snapshot.hidden_by_limit},
+                })()
+            else:
+                result = provider.enumerate_flagged(
+                    mailbox=args.mailbox,
+                    limit=args.limit,
+                    since_days=args.since_days,
+                )
         except RuntimeError as e:
             print(f"flags audit: enumeration failed: {e}", file=sys.stderr)
             return 1
 
-    if not result.complete and not getattr(args, "allow_partial", False):
-        print(
-            "flags audit: INCOMPLETE scan "
-            f"({len(result.errors)} errors, "
-            f"{result.inaccessible_count} inaccessible rows, "
-            f"{result.timeout_count} timeouts). "
-            "Result is NOT a full inventory and will NOT be labeled "
-            "'no messages found'. Re-run with --allow-partial to emit a "
-            "partial report.",
-            file=sys.stderr,
+    # Build + durably persist the snapshot BEFORE any exit decision so a
+    # timeout/partial scan always leaves 0600 evidence on disk.
+    if not getattr(args, "estate", False):
+        snapshot = flag_workflow.build_snapshot(
+            provider_name=provider.name,
+            account=args.account or "",
+            mailbox=args.mailbox,
+            rows=result.rows,
+            complete=result.complete,
+            scope_complete=result.scope_complete,
+            status=result.status,
+            errors=result.errors,
+            inaccessible_count=result.inaccessible_count,
+            timeout_count=result.timeout_count,
+            unknown_index_count=result.unknown_index_count,
+            limit=args.limit,
+            since_days=args.since_days,
+            total_matched=result.scanned_boundary.get(
+                "total_flagged_seen", len(result.rows)),
+            returned_count=len(result.rows),
+            hidden_by_limit=result.scanned_boundary.get("hidden_by_limit", 0),
+            next_cursor=result.next_cursor,
         )
-        for err in result.errors:
-            print(f"  error: {err}", file=sys.stderr)
-        return 20
-
-    snapshot = flag_workflow.build_snapshot(
-        provider_name=provider.name,
-        account=args.account or "",
-        mailbox=args.mailbox,
-        rows=result.rows,
-        complete=result.complete,
-        errors=result.errors,
-        inaccessible_count=result.inaccessible_count,
-        timeout_count=result.timeout_count,
-        unknown_index_count=result.unknown_index_count,
-        total_flagged_seen=result.scanned_boundary.get(
-            "total_flagged_seen", len(result.rows)),
-        hidden_by_limit=result.scanned_boundary.get("hidden_by_limit", 0),
-    )
-
-    # Private snapshot: user-local state, outside any repository.
     snap_dir = Path(
         os.environ.get(
             "UMA_FLAGS_STATE_DIR",
@@ -2211,11 +2229,35 @@ def cmd_flags_audit(args: argparse.Namespace) -> int:
         )
     ) / "snapshots"
     snap_path = flag_workflow.write_private_snapshot(snapshot, snap_dir)
-    print(f"Private snapshot (mode 0600): {snap_path}")
-    print(f"Snapshot id: {snapshot.snapshot_id}  status: {snapshot.status}")
-    print(f"Content hash: {snapshot.content_hash}")
 
-    # Display layer: render rows from the typed snapshot.
+    incomplete = not result.complete
+    if incomplete and not getattr(args, "allow_partial", False):
+        print(
+            f"flags audit: {result.status.upper()} scan "
+            f"({len(result.errors)} errors, "
+            f"{result.inaccessible_count} inaccessible rows, "
+            f"{result.timeout_count} timeouts, "
+            f"{snapshot.hidden_by_limit} hidden by limit). "
+            "Private evidence snapshot was still written. This is NOT a "
+            "full inventory and MUST NOT be treated as an empty mailbox. "
+            "Re-run with --allow-partial to accept the partial report.",
+            file=sys.stderr,
+        )
+        for err in result.errors:
+            print(f"  error: {err}", file=sys.stderr)
+        print(f"  snapshot: {snap_path}", file=sys.stderr)
+        return 20
+
+    # Operational metadata goes to STDERR so --output json/csv stays pure
+    # machine-readable output on STDOUT.
+    print(f"Private snapshot (mode 0600): {snap_path}", file=sys.stderr)
+    print(f"Snapshot id: {snapshot.snapshot_id}  status: {snapshot.status}",
+          file=sys.stderr)
+    print(f"Content hash: {snapshot.content_hash}", file=sys.stderr)
+    if snapshot.next_cursor:
+        print(f"Resume cursor: {snapshot.next_cursor}", file=sys.stderr)
+
+    # Display layer — MUTUALLY EXCLUSIVE rendering.
     display_rows = [
         {
             "id": m.provider_id,
@@ -2227,18 +2269,19 @@ def cmd_flags_audit(args: argparse.Namespace) -> int:
         }
         for m in snapshot.messages
     ]
-    if not display_rows and snapshot.complete:
-        print("No flagged messages found in scope.")
-    elif display_rows:
-        _print_audit_table(display_rows, args.flagged_only)
-
     if args.output == "json":
         import json
         print(json.dumps(snapshot.to_dict(), indent=2, default=str))
-    elif args.output == "csv" and display_rows:
+    elif args.output == "csv":
         _print_csv(display_rows)
+    else:
+        if not display_rows and snapshot.complete:
+            print("No flagged messages found in scope.")
+        elif display_rows:
+            _print_audit_table(display_rows, args.flagged_only)
 
-    # Receipt is the PUBLIC-SAFE projection — aggregate counts + digests only.
+    # Receipt is the PUBLIC-SAFE allowlist projection — cryptographically
+    # linked to the private snapshot and independently verifiable.
     if args.receipt:
         import json
         public = snapshot.to_public_safe()
@@ -2338,19 +2381,25 @@ def cmd_flags_plan(args: argparse.Namespace) -> int:
         mailbox=args.mailbox,
         rows=result.rows,
         complete=result.complete,
+        scope_complete=result.scope_complete,
+        status=result.status,
         errors=result.errors,
         inaccessible_count=result.inaccessible_count,
         timeout_count=result.timeout_count,
         unknown_index_count=result.unknown_index_count,
-        total_flagged_seen=result.scanned_boundary.get(
+        limit=args.limit,
+        since_days=args.since_days,
+        total_matched=result.scanned_boundary.get(
             "total_flagged_seen", len(result.rows)),
+        returned_count=len(result.rows),
         hidden_by_limit=result.scanned_boundary.get("hidden_by_limit", 0),
+        next_cursor=result.next_cursor,
     )
 
     try:
         plan = flag_workflow.build_plan(snapshot)
     except flag_workflow.FlagWorkflowError as e:
-        # Incomplete snapshots are structurally ineligible — say why.
+        # Incomplete/bounded_partial snapshots are structurally ineligible.
         print(f"flags plan: {e}", file=sys.stderr)
         return 20
 
@@ -2974,6 +3023,13 @@ Examples:
     flags_audit_parser.add_argument(
         "--receipt",
         help="Path to write PUBLIC-SAFE (redacted) JSON receipt of audit results",
+    )
+    flags_audit_parser.add_argument(
+        "--estate",
+        action="store_true",
+        help="Discover ALL account/mailbox surfaces and scan each "
+             "(read-only). Per-surface limits apply; any failed surface "
+             "breaks estate completeness.",
     )
     flags_audit_parser.add_argument(
         "--allow-partial",

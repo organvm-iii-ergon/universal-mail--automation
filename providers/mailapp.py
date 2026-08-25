@@ -17,10 +17,30 @@ from providers.base import (
     ProviderCapabilities,
     ListMessagesResult,
 )
-from core.models import EmailMessage, FlagColor
+from core.models import EmailMessage, FlagColor, MessageReference
 from core.protocols import CAPTURE_HEADERS
 
 logger = logging.getLogger(__name__)
+
+
+class ProviderScriptError(RuntimeError):
+    """Typed provider failure: AppleScript transport/parse/mutation problem."""
+
+
+class MessageNotFoundError(ProviderScriptError):
+    """Scoped lookup resolved zero candidates in the exact account+mailbox."""
+
+
+class FlagStateDriftError(ProviderScriptError):
+    """Live evidence no longer matches the reference's bound evidence digest,
+    or the reference carries no durable evidence. Mutation refused."""
+
+
+@dataclass(frozen=True)
+class SurfaceRef:
+    """One discovered account/mailbox surface of the local Mail estate."""
+    account: str
+    mailbox: str
 
 # --- Mail.app native index <-> semantic FlagColor mapping ---
 # Mail.app owns these tables. Unknown native indices map to UNKNOWN,
@@ -88,21 +108,81 @@ class FlaggedRow:
 class EnumerationResult:
     """Typed result of a flagged-message enumeration. Never a bare list.
 
-    ``complete=False`` means the scan did not finish honestly (timeout,
-    AppleScript error, partial parse) — callers must not treat the rows as
-    the full flagged estate, and must not label the run "no messages found".
+    Completeness is TWO-valued and neither may be faked:
+
+    - ``scope_complete``: the requested bounded window (account+mailbox+
+      date window) was walked with zero omissions.
+    - ``complete`` (estate-honest): scope_complete AND nothing hidden by
+      ``limit`` AND zero inaccessible rows. Only ``complete`` snapshots are
+      eligible to produce plans.
+
+    ``next_cursor`` is an opaque resume descriptor (never a fake offset):
+    when rows were hidden, it records how to widen the window honestly.
     """
     rows: List[FlaggedRow]
     complete: bool
+    scope_complete: bool
+    status: str                      # complete|bounded_partial|partial|failed|timed_out
     errors: List[str]
     inaccessible_count: int
     timeout_count: int
     unknown_index_count: int
+    next_cursor: Optional[str]
     scanned_boundary: Dict[str, Any]
 
     @property
     def total_rows(self) -> int:
         return len(self.rows)
+
+    @staticmethod
+    def _status(scope_complete: bool, errors: List[str], inaccessible: int,
+                timeouts: int, hidden: int) -> str:
+        if timeouts:
+            return "timed_out"
+        if errors or not scope_complete:
+            return "failed"
+        if inaccessible:
+            return "partial"
+        if hidden:
+            return "bounded_partial"
+        return "complete"
+
+    @classmethod
+    def build(cls, *, rows: List[FlaggedRow], scope_complete: bool,
+              errors: List[str], inaccessible_count: int,
+              timeout_count: int, unknown_index_count: int,
+              hidden_by_limit: int,
+              scanned_boundary: Dict[str, Any]) -> "EnumerationResult":
+        """Single construction path enforcing the completeness contract."""
+        complete = (
+            scope_complete
+            and not errors
+            and inaccessible_count == 0
+            and hidden_by_limit == 0
+        )
+        cursor = None
+        if hidden_by_limit > 0:
+            import json as _json
+            b = scanned_boundary
+            cursor = _json.dumps({
+                "resume": "widen-limit-or-narrow-window",
+                "account": b.get("account"),
+                "mailbox": b.get("mailbox"),
+                "since_days": b.get("since_days"),
+                "total_matched": b.get("total_flagged_seen"),
+                "returned": len(rows),
+                "hidden": hidden_by_limit,
+                "ordering": "received_desc",
+            }, sort_keys=True)
+        return cls(
+            rows=rows, complete=complete, scope_complete=scope_complete,
+            status=cls._status(scope_complete, errors, inaccessible_count,
+                               timeout_count, hidden_by_limit),
+            errors=errors, inaccessible_count=inaccessible_count,
+            timeout_count=timeout_count,
+            unknown_index_count=unknown_index_count,
+            next_cursor=cursor, scanned_boundary=scanned_boundary,
+        )
 
 
 def _parse_bulk_headers(blob: str) -> Dict[str, str]:
@@ -537,67 +617,228 @@ class MailAppProvider(EmailProvider):
             logger.error(f"Failed to unflag message: {e}")
             return False
 
-    def get_flag_color(self, message_id: str) -> FlagColor:
+    # --- Scoped colored-flag reads/writes (MessageReference required) --------
+    #
+    # There is deliberately NO bare-id colored-flag path on this provider.
+    # A global Mail.app id is ambiguous across accounts, and a mutation
+    # without evidence verification cannot be trusted. All colored ops go:
+    #   resolve within exact account+mailbox -> verify evidence digest ->
+    #   mutate -> re-read and verify native result.
+
+    def _build_scoped_lookup_script(self, mailbox: str, account: str,
+                                    provider_id: str) -> str:
+        """PURE builder for the scoped resolve. No 'first message whose id is'
+        outside an exact mailbox-of-account context; ids validated numeric;
+        account/mailbox escaped as AppleScript string expressions."""
+        if not provider_id.strip().lstrip("-").isdigit():
+            raise ProviderScriptError(
+                f"refusing to interpolate non-numeric Mail.app id: "
+                f"{provider_id!r}"
+            )
+        mailbox_e = self._as_applescript(mailbox)
+        account_e = self._as_applescript(account)
+        return (
+            '        set fieldSep to (ASCII character 31)\n'
+            '        tell application "Mail"\n'
+            f'            set targetMailbox to mailbox {mailbox_e} of account {account_e}\n'
+            f'            set candidates to (messages of targetMailbox whose id is {provider_id})\n'
+            '            if (count of candidates) is 0 then return "NOT_FOUND"\n'
+            '            set m to item 1 of candidates\n'
+            '            set outp to (flag index of m as string) & fieldSep\n'
+            '            try\n'
+            '                set outp to outp & ((date received of m) as «class isot» as string)\n'
+            '            on error\n'
+            '                set outp to outp & ""\n'
+            '            end try\n'
+            '            set outp to outp & fieldSep\n'
+            '            try\n'
+            '                set outp to outp & (sender of m)\n'
+            '            on error\n'
+            '                set outp to outp & ""\n'
+            '            end try\n'
+            '            set outp to outp & fieldSep\n'
+            '            try\n'
+            '                set outp to outp & (subject of m)\n'
+            '            on error\n'
+            '                set outp to outp & ""\n'
+            '            end try\n'
+            '            set msgIdHeader to ""\n'
+            '            try\n'
+            '                repeat with para in (paragraphs of (all headers of m))\n'
+            '                    set ln to (para as string)\n'
+            '                    if ln starts with "Message-ID:" or ln starts with "Message-Id:" then\n'
+            '                        set msgIdHeader to ln\n'
+            '                        exit repeat\n'
+            '                    end if\n'
+            '                end repeat\n'
+            '            end try\n'
+            '            set outp to outp & fieldSep & msgIdHeader\n'
+            '            return outp\n'
+            '        end tell\n'
+            '        '
+        )
+
+    def _resolve_scoped_fields(self, ref: MessageReference
+                               ) -> Dict[str, Optional[str]]:
+        """Resolve one reference inside its exact scope. Raises typed errors."""
+        ref.validate_scoped()
+        script = self._build_scoped_lookup_script(
+            ref.mailbox, ref.account, ref.provider_id)
+        try:
+            # Strip ONLY newlines for parsing — str.strip() would also eat
+            # \x1f control chars and collapse legitimate trailing empty
+            # fields (e.g. an absent Message-ID header column).
+            output = self._run_applescript(script).strip("\n")
+        except RuntimeError as e:
+            raise ProviderScriptError(
+                f"scoped resolve failed for {ref}: {e}") from e
+        if output.strip() == "NOT_FOUND":
+            raise MessageNotFoundError(
+                f"no message {ref.provider_id} in "
+                f"{ref.account}/{ref.mailbox}")
+        parts = output.split(_FIELD_SEP)
+        if len(parts) < 5:
+            raise ProviderScriptError(
+                f"malformed scoped-resolve output for {ref}")
+        native_raw, received_iso, sender, subject, msgid_header = parts[:5]
+        try:
+            native_index: Optional[int] = int(native_raw.strip())
+        except ValueError:
+            native_index = None
+        return {
+            "native_index": str(native_index)
+            if native_index is not None else None,
+            "received_iso": received_iso or None,
+            "sender": sender,
+            "subject": subject,
+            "message_id_raw": msgid_header or None,
+        }
+
+    def resolve_scoped(self, ref: MessageReference) -> MessageReference:
+        """Re-resolve the message and return an enriched copy of the ref.
+
+        The returned reference carries current observed fields + a freshly
+        computed evidence_digest + RFC Message-ID digest when present. Callers
+        compare digests against their snapshot-bound ref BEFORE mutating.
         """
-        Get the current flag color of a message.
+        fields = self._resolve_scoped_fields(ref)
+        enriched = ref.with_resolved_evidence(
+            received_iso=fields["received_iso"] or "",
+            sender=fields["sender"] or "",
+            subject=fields["subject"] or "",
+            message_id_raw=fields["message_id_raw"],
+        )
+        raw_idx = fields["native_index"]
+        return MessageReference(
+            **{**enriched.__dict__,
+               "observed_native_flag": int(raw_idx) if raw_idx else None},
+        )
 
-        Reads Mail.app's `flag index` property which maps to FlagColor enum:
-        -1 = NO_FLAG, 0 = RED, 1 = ORANGE, 2 = YELLOW, 3 = GREEN, 4 = BLUE, 5 = PURPLE, 6 = GRAY
+    def _verify_evidence(self, ref: MessageReference) -> Dict[str, Optional[str]]:
+        """Resolve live fields and enforce the evidence binding.
 
-        Raises:
-            RuntimeError: If AppleScript execution fails (timeout, message not found, etc.)
+        Refuses mutation when the reference carries no durable evidence, or
+        when live evidence no longer matches what was observed.
         """
-        script = f'''
-        tell application "Mail"
-            set targetMsg to first message whose id is {message_id}
-            return flag index of targetMsg
-        end tell
-        '''
-        output = self._run_applescript(script)
-        index = int(output.strip())
-        return flag_from_mailapp_index(index)
+        if ref.evidence_digest is None:
+            raise FlagStateDriftError(
+                f"{ref}: no durable evidence bound; automatic mutation "
+                "is ineligible"
+            )
+        fields = self._resolve_scoped_fields(ref)
+        live_digest = MessageReference.compute_evidence_digest(
+            fields["received_iso"], fields["sender"], fields["subject"])
+        if live_digest != ref.evidence_digest:
+            raise FlagStateDriftError(
+                f"{ref}: live evidence {live_digest[:12]}… != bound "
+                f"{ref.evidence_digest[:12]}… — refusing mutation"
+            )
+        return fields
 
-    def set_flag_color(self, message_id: str, color: FlagColor) -> bool:
+    def get_flag_color_ref(self, ref: MessageReference) -> FlagColor:
+        """Scoped read: exact account+mailbox lookup, mapped semantic color."""
+        fields = self._resolve_scoped_fields(ref)
+        raw = fields["native_index"]
+        if raw is None:
+            return FlagColor.UNKNOWN
+        return flag_from_mailapp_index(int(raw))
+
+    def set_flag_color_ref(self, ref: MessageReference, color: FlagColor) -> bool:
+        """Evidence-verified colored write with read-after-write verification.
+
+        UNKNOWN has no native index (KeyError by contract). Returns True only
+        when the post-write re-read shows the expected native index.
         """
-        Set a specific flag color on a message.
-
-        Uses Mail.app's `flag index` property via the explicit mapping table.
-        Setting to NO_FLAG clears the flag. UNKNOWN raises KeyError — there is
-        no valid native index for it.
-        """
-        if color == FlagColor.NO_FLAG:
-            return self.clear_flag(message_id)
-
-        index = mailapp_index_from_flag(color)
-        script = f'''
-        tell application "Mail"
-            set targetMsg to first message whose id is {message_id}
-            set flag index of targetMsg to {index}
-            return "ok"
-        end tell
-        '''
+        index = mailapp_index_from_flag(color)   # KeyError for UNKNOWN
+        self._verify_evidence(ref)
+        mailbox_e = self._as_applescript(ref.mailbox)
+        account_e = self._as_applescript(ref.account)
+        script = (
+            '        tell application "Mail"\n'
+            f'            set targetMailbox to mailbox {mailbox_e} of account {account_e}\n'
+            f'            set candidates to (messages of targetMailbox whose id is {ref.provider_id})\n'
+            '            if (count of candidates) is 0 then error "NOT_FOUND"\n'
+            '            set flag index of item 1 of candidates to '
+            f'{index}\n'
+            '            return "ok"\n'
+            '        end tell\n'
+            '        '
+        )
         try:
             self._run_applescript(script)
-            return True
         except RuntimeError as e:
-            logger.error(f"Failed to set flag color {color.name_str} on message {message_id}: {e}")
-            return False
+            logger.error(f"scoped set failed for {ref}: {e}")
+            raise ProviderScriptError(f"scoped set failed for {ref}") from e
+        # Read-after-write verification against the EXPECTED native value.
+        post = self.get_flag_color_ref(ref)
+        if post != color:
+            raise ProviderScriptError(
+                f"post-write verification failed for {ref}: expected "
+                f"{color.value}, read back {post.value}"
+            )
+        return True
 
-    def clear_flag(self, message_id: str) -> bool:
-        """Clear the flag from a message (set flag index to -1)."""
-        script = f'''
-        tell application "Mail"
-            set targetMsg to first message whose id is {message_id}
-            set flag index of targetMsg to -1
-            return "ok"
-        end tell
-        '''
+    def clear_flag_ref(self, ref: MessageReference) -> bool:
+        """Evidence-verified unflag with read-after-write verification."""
+        return self.set_flag_color_ref(ref, FlagColor.NO_FLAG)
+
+    def discover_surfaces(self, timeout_seconds: int = 300
+                          ) -> List["SurfaceRef"]:
+        """Discover every account/mailbox surface this Mac exposes.
+
+        Read-only. Per-call timeout; failures surface as typed errors so an
+        estate scan can mark itself partial instead of silently shrinking.
+        """
+        script = (
+            '        set fieldSep to (ASCII character 31)\n'
+            '        set recSep to (ASCII character 29)\n'
+            '        tell application "Mail"\n'
+            '            set outRows to {}\n'
+            '            repeat with acct in accounts\n'
+            '                set acctName to name of acct\n'
+            '                repeat with mbx in mailboxes of acct\n'
+            '                    set end of outRows to (acctName & fieldSep & (name of mbx))\n'
+            '                end repeat\n'
+            '            end repeat\n'
+            '            set AppleScript\'s text item delimiters to recSep\n'
+            '            return outRows as string\n'
+            '        end tell\n'
+            '        '
+        )
         try:
-            self._run_applescript(script)
-            return True
+            output = self._run_applescript(script, timeout=timeout_seconds)
         except RuntimeError as e:
-            logger.error(f"Failed to clear flag on message {message_id}: {e}")
-            return False
+            raise ProviderScriptError(f"surface discovery failed: {e}") from e
+        surfaces: List[SurfaceRef] = []
+        for row in output.split(_ROW_SEP):
+            line = row.strip("\n")
+            if not line:
+                continue
+            parts = line.split(_FIELD_SEP)
+            if len(parts) < 2:
+                continue
+            surfaces.append(SurfaceRef(account=parts[0], mailbox=parts[1]))
+        return surfaces
 
     def ensure_label_exists(self, label: str) -> str:
         """Ensure mailbox exists, creating if necessary."""
@@ -833,21 +1074,28 @@ class MailAppProvider(EmailProvider):
         limit: int = 500,
         since_days: Optional[int] = None,
         timeout_seconds: int = 600,
+        account: Optional[str] = None,
     ) -> EnumerationResult:
         """Enumerate flagged messages in one account-scoped mailbox surface.
 
+        ``account`` overrides the constructor-scoped account for THIS call
+        (used by estate scans that sweep many surfaces on one provider).
+
         Honors ``limit`` (rows truncated newest-first AFTER counting the full
-        predicate-bounded set, so truncation is visible) and ``since_days``
-        (Mail.app-side date predicate). A failure raises nothing and returns
-        an INCOMPLETE result with the error recorded — never an empty success.
+        predicate-bounded set — truncation is VISIBLE and breaks estate
+        completeness) and ``since_days`` (Mail.app-side date predicate).
+        Inaccessible rows also break completeness. A failure raises nothing
+        and returns an INCOMPLETE result with the error recorded — never an
+        empty success.
         """
-        account = self.account or ""
-        boundary: Dict[str, object] = {
+        account = account if account is not None else (self.account or "")
+        boundary: Dict[str, Any] = {
             "provider": self.name,
             "account": account,
             "mailbox": mailbox,
             "limit": int(limit),
             "since_days": since_days,
+            "ordering": "received_desc",
         }
         errors: List[str] = []
         inaccessible = 0
@@ -862,20 +1110,22 @@ class MailAppProvider(EmailProvider):
             if "timed out" in msg.lower():
                 timeout_count = 1
             errors.append(f"enumeration failed: {msg}")
-            return EnumerationResult(
-                rows=[], complete=False, errors=errors,
+            return EnumerationResult.build(
+                rows=[], scope_complete=False, errors=errors,
                 inaccessible_count=0, timeout_count=timeout_count,
-                unknown_index_count=0, scanned_boundary=boundary,
+                unknown_index_count=0, hidden_by_limit=0,
+                scanned_boundary=boundary,
             )
 
         rows: List[FlaggedRow] = []
         total_seen = -1
         if _FIELD_SEP not in output:
             errors.append("malformed enumeration output (missing header)")
-            return EnumerationResult(
-                rows=[], complete=False, errors=errors,
+            return EnumerationResult.build(
+                rows=[], scope_complete=False, errors=errors,
                 inaccessible_count=0, timeout_count=0,
-                unknown_index_count=0, scanned_boundary=boundary,
+                unknown_index_count=0, hidden_by_limit=0,
+                scanned_boundary=boundary,
             )
         header, _, body = output.partition(_FIELD_SEP)
         try:
@@ -928,11 +1178,16 @@ class MailAppProvider(EmailProvider):
         parsed_rows.sort(key=_sort_key, reverse=True)
         hidden_by_limit = max(0, len(parsed_rows) - int(limit))
         rows = parsed_rows[:max(0, int(limit))]
-        boundary["total_flagged_seen"] = total_seen
+        boundary["total_flagged_seen"] = (
+            total_seen if total_seen >= 0 else len(parsed_rows))
+        boundary["returned_count"] = len(rows)
         boundary["hidden_by_limit"] = hidden_by_limit
-        complete = total_seen >= 0 and not errors
-        return EnumerationResult(
-            rows=rows, complete=complete, errors=errors,
+
+        scope_complete = total_seen >= 0 and not errors
+        return EnumerationResult.build(
+            rows=rows, scope_complete=scope_complete, errors=errors,
             inaccessible_count=inaccessible, timeout_count=timeout_count,
-            unknown_index_count=unknown_index, scanned_boundary=boundary,
+            unknown_index_count=unknown_index,
+            hidden_by_limit=hidden_by_limit,
+            scanned_boundary=boundary,
         )

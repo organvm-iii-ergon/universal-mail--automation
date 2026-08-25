@@ -27,12 +27,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.models import FlagColor
+from core.models import FlagColor, MessageReference
 from core.flag_policy import MIGRATION_POLICY_VERSION, Proposal, propose
 
 # --- Schema names ----------------------------------------------------------
 
 SNAPSHOT_SCHEMA = "uma.flags.snapshot.v1"
+PUBLIC_RECEIPT_SCHEMA = "uma.flags.public_receipt.v1"
 PLAN_SCHEMA = "uma.flags.migration.plan.v2"
 APPROVAL_SCHEMA = "uma.flags.approval.v1"
 APPLY_RECEIPT_SCHEMA = "uma.flags.apply_receipt.v1"
@@ -119,8 +120,13 @@ class SnapshotMessage:
 class FlagSnapshot:
     """Immutable observation of one flagged-estate scan.
 
-    ``complete=False`` snapshots are structurally ineligible to produce
-    apply-capable plans (:func:`build_plan` refuses them).
+    Completeness is TWO-valued (never one ambiguous boolean):
+
+    - ``scope_complete``: the bounded window was walked with zero omissions
+      from the provider.
+    - ``complete`` (estate-honest): scope_complete AND nothing hidden by the
+      limit AND zero inaccessible rows. ONLY ``complete`` snapshots may
+      produce plans (:func:`build_plan` enforces this).
     """
     schema: str
     snapshot_id: str
@@ -128,15 +134,21 @@ class FlagSnapshot:
     provider: str
     account: str
     mailbox: str
-    complete: bool
-    status: str                       # complete|partial|failed|timed_out
+    complete: bool                     # estate-honest; plan-eligibility gate
+    scope_complete: bool               # window walked without omission
+    status: str                        # complete|bounded_partial|partial|failed|timed_out
     zero_write_mode: bool
     errors: List[str]
     inaccessible_count: int
     timeout_count: int
     unknown_index_count: int
-    total_flagged_seen: int
+    limit: int
+    since_days: Optional[int]
+    ordering: str                      # e.g. "received_desc"
+    total_matched: int                 # predicate-bounded count reported
+    returned_count: int                # rows actually captured
     hidden_by_limit: int
+    next_cursor: Optional[str]
     messages: List[SnapshotMessage]
     content_hash: str                 # sha256 over everything except itself
 
@@ -149,14 +161,20 @@ class FlagSnapshot:
             "account": self.account,
             "mailbox": self.mailbox,
             "complete": self.complete,
+            "scope_complete": self.scope_complete,
             "status": self.status,
             "zero_write_mode": self.zero_write_mode,
             "errors": list(self.errors),
             "inaccessible_count": self.inaccessible_count,
             "timeout_count": self.timeout_count,
             "unknown_index_count": self.unknown_index_count,
-            "total_flagged_seen": self.total_flagged_seen,
+            "limit": self.limit,
+            "since_days": self.since_days,
+            "ordering": self.ordering,
+            "total_matched": self.total_matched,
+            "returned_count": self.returned_count,
             "hidden_by_limit": self.hidden_by_limit,
+            "next_cursor": self.next_cursor,
             "messages": [
                 {
                     "provider": m.provider,
@@ -168,6 +186,11 @@ class FlagSnapshot:
                     "native_index": m.native_index,
                     "observed_flag": m.observed_flag.value,
                     "received_iso": m.received_iso,
+                    "evidence_digest": (
+                        MessageReference.compute_evidence_digest(
+                            m.received_iso, m.sender, m.subject)
+                        if (m.received_iso or m.sender or m.subject) else None
+                    ),
                 }
                 for m in self.messages
             ],
@@ -176,22 +199,77 @@ class FlagSnapshot:
         return d
 
     def to_public_safe(self) -> Dict[str, Any]:
-        """Aggregate projection: NO senders, subjects, or raw provider ids.
+        """EXPLICIT ALLOWLIST projection — never derived from the private dict.
 
-        Only counts, statuses, and per-message reference digests survive —
-        safe to write into shared receipts.
+        Contains NO raw account, mailbox, sender, subject, native id, local
+        path, or free-form error text. Cryptographically linked to its source
+        private snapshot via source_snapshot_sha256, which participates in
+        the public content_hash along with every other field (hash computed
+        LAST, after all authoritative fields — including 'projection').
         """
-        base = self.to_dict()
-        base["messages"] = [
-            {"ref_digest": m.ref_digest, "observed_flag": m.observed_flag.value}
-            for m in self.messages
-        ]
-        # Recompute hash over the redacted content so the public artifact is
-        # independently verifiable.
-        base.pop("content_hash")
-        base["content_hash"] = sha256_hex(base)
-        base["projection"] = "public_safe"
-        return base
+        private_hash = self.to_dict()["content_hash"]
+        public: Dict[str, Any] = {
+            "schema": PUBLIC_RECEIPT_SCHEMA,
+            "projection": "public_safe",
+            "source_snapshot_sha256": private_hash,
+            "snapshot_id": self.snapshot_id,
+            "provider": self.provider,
+            "scope_digest": sha256_hex({
+                "account": self.account, "mailbox": self.mailbox,
+            }),
+            "generated_at": self.generated_at,
+            "status": self.status,
+            "complete": self.complete,
+            "zero_write_mode": self.zero_write_mode,
+            "counts": {
+                "total_matched": self.total_matched,
+                "returned": self.returned_count,
+                "hidden_by_limit": self.hidden_by_limit,
+                "unknown_index": self.unknown_index_count,
+                "inaccessible": self.inaccessible_count,
+                "timeouts": self.timeout_count,
+                "errors": len(self.errors),
+            },
+            # Error CODES only — never free-form text (may embed locals).
+            "error_codes": sorted({
+                e.split(":")[0].split(" ")[0][:40] for e in self.errors if e
+            }),
+            "messages": [
+                {"ref": m.ref_digest, "flag": m.observed_flag.value}
+                for m in self.messages
+            ],
+        }
+        public["content_hash"] = sha256_hex(public)   # LAST, over everything
+        return public
+
+
+def validate_public_receipt(raw: Any) -> None:
+    """Fail-closed integrity check for a public-safe receipt."""
+    if not isinstance(raw, dict):
+        raise FlagWorkflowError("public receipt must be a JSON object")
+    if raw.get("schema") != PUBLIC_RECEIPT_SCHEMA:
+        raise FlagWorkflowError(
+            f"public receipt schema must be {PUBLIC_RECEIPT_SCHEMA}, "
+            f"got {raw.get('schema')!r}"
+        )
+    if raw.get("projection") != "public_safe":
+        raise FlagWorkflowError("projection must be 'public_safe'")
+    # Structural privacy gate FIRST: a receipt carrying forbidden fields is
+    # invalid no matter what its hash says.
+    forbidden = {"account", "mailbox", "sender", "subject", "messages_raw"}
+    present = forbidden & set(raw.keys())
+    if present:
+        raise FlagWorkflowError(
+            f"public receipt contains forbidden keys: {sorted(present)}"
+        )
+    stored = require_hex256(raw.get("content_hash"), "public content_hash")
+    require_hex256(raw.get("source_snapshot_sha256"),
+                   "source_snapshot_sha256")
+    body = {k: v for k, v in raw.items() if k != "content_hash"}
+    if sha256_hex(body) != stored:
+        raise FlagWorkflowError(
+            "public receipt content_hash mismatch (tampered)"
+        )
 
 
 def build_snapshot(
@@ -201,30 +279,50 @@ def build_snapshot(
     mailbox: str,
     rows: List[Any],
     complete: bool,
+    scope_complete: bool,
+    status: str,
     errors: List[str],
     inaccessible_count: int,
     timeout_count: int,
     unknown_index_count: int,
-    total_flagged_seen: int,
+    limit: int,
+    since_days: Optional[int],
+    ordering: str = "received_desc",
+    total_matched: int,
+    returned_count: int,
     hidden_by_limit: int,
+    next_cursor: Optional[str] = None,
     generated_at: Optional[str] = None,
 ) -> FlagSnapshot:
     """Build a FlagSnapshot from a provider EnumerationResult's fields.
 
-    ``rows`` elements need: provider_id, account, mailbox, sender, subject,
-    native_index, flag_color (FlagColor), received_iso — i.e. providers'
-    transport rows as-is.
+    Identity (P0 #1): the timestamp is MATERIALIZED FIRST and participates
+    in snapshot_id together with exact scope and a canonical digest of all
+    row evidence — two audits of the same scope with identical counts can
+    never collide, so write_private_snapshot can never overwrite one.
     """
-    if errors and complete:
-        raise FlagWorkflowError(
-            "cannot mark snapshot complete while errors are recorded"
-        )
-    if timeout_count and complete:
-        raise FlagWorkflowError("cannot mark snapshot complete after timeout")
-    status = (
-        "complete" if complete
-        else ("timed_out" if timeout_count else ("failed" if errors else "partial"))
-    )
+    generated_at = generated_at or datetime.now(timezone.utc).isoformat()
+
+    # Strict completeness contract — mirrors EnumerationResult.build and is
+    # re-verified here because snapshots are the plan-eligibility boundary.
+    if complete:
+        if errors:
+            raise FlagWorkflowError(
+                "cannot mark snapshot complete while errors are recorded")
+        if timeout_count:
+            raise FlagWorkflowError(
+                "cannot mark snapshot complete after timeout")
+        if inaccessible_count:
+            raise FlagWorkflowError(
+                "cannot mark snapshot complete with inaccessible rows")
+        if hidden_by_limit:
+            raise FlagWorkflowError(
+                "cannot mark snapshot complete while rows are hidden by "
+                "limit (status must be bounded_partial)")
+        if not scope_complete:
+            raise FlagWorkflowError(
+                "cannot mark snapshot complete without scope_complete")
+
     messages = [
         SnapshotMessage(
             provider=getattr(r, "provider", None) or provider_name,
@@ -239,27 +337,39 @@ def build_snapshot(
         )
         for r in rows
     ]
+    evidence_digest = sha256_hex([{
+        "id": m.provider_id, "flag": m.observed_flag.value,
+        "received": m.received_iso, "sender": m.sender,
+        "subject": m.subject,
+    } for m in messages])
     snap = FlagSnapshot(
         schema=SNAPSHOT_SCHEMA,
+        # Unique per audit run: real timestamp + scope + full evidence digest.
         snapshot_id="snap-" + sha256_hex({
+            "generated_at": generated_at,
             "provider": provider_name, "account": account,
-            "mailbox": mailbox, "generated_at": generated_at,
-            "n_messages": len(messages),
+            "mailbox": mailbox,
+            "evidence": evidence_digest,
         })[:32],
-        generated_at=generated_at
-        or datetime.now(timezone.utc).isoformat(),
+        generated_at=generated_at,
         provider=provider_name,
         account=account,
         mailbox=mailbox,
         complete=complete,
+        scope_complete=scope_complete,
         status=status,
         zero_write_mode=True,
         errors=list(errors),
         inaccessible_count=inaccessible_count,
         timeout_count=timeout_count,
         unknown_index_count=unknown_index_count,
-        total_flagged_seen=total_flagged_seen,
+        limit=int(limit),
+        since_days=since_days,
+        ordering=ordering,
+        total_matched=total_matched,
+        returned_count=returned_count,
         hidden_by_limit=hidden_by_limit,
+        next_cursor=next_cursor,
         messages=messages,
         content_hash="",
     )
@@ -319,15 +429,156 @@ def load_snapshot(path: Path) -> FlagSnapshot:
         schema=raw["schema"], snapshot_id=raw["snapshot_id"],
         generated_at=raw["generated_at"], provider=raw["provider"],
         account=raw["account"], mailbox=raw["mailbox"],
-        complete=bool(raw["complete"]), status=raw["status"],
+        complete=bool(raw["complete"]),
+        scope_complete=bool(raw.get("scope_complete", raw["complete"])),
+        status=raw["status"],
         zero_write_mode=bool(raw.get("zero_write_mode", True)),
         errors=list(raw.get("errors", [])),
         inaccessible_count=int(raw.get("inaccessible_count", 0)),
         timeout_count=int(raw.get("timeout_count", 0)),
         unknown_index_count=int(raw.get("unknown_index_count", 0)),
-        total_flagged_seen=int(raw.get("total_flagged_seen", 0)),
+        limit=int(raw.get("limit", 0)),
+        since_days=raw.get("since_days"),
+        ordering=str(raw.get("ordering", "received_desc")),
+        total_matched=int(raw.get("total_matched",
+                                  raw.get("total_flagged_seen", 0))),
+        returned_count=int(raw.get("returned_count", len(messages))),
         hidden_by_limit=int(raw.get("hidden_by_limit", 0)),
+        next_cursor=raw.get("next_cursor"),
         messages=messages, content_hash=stored,
+    )
+
+
+# --- Estate-wide enumeration (multi-surface) ---------------------------------
+
+
+def enumerate_estate(
+    provider: Any,
+    *,
+    surfaces: Optional[List[Any]] = None,
+    per_surface_limit: int = 500,
+    since_days: Optional[int] = None,
+    timeout_seconds: int = 600,
+) -> Dict[str, Any]:
+    """Enumerate flagged messages across MULTIPLE account/mailbox surfaces.
+
+    ``surfaces=None`` triggers read-only discovery on the provider. Every
+    surface is scanned with its own limit+timeout; per-surface failures are
+    recorded and DO break estate completeness. Rows are deduplicated by
+    qualified-reference digest across surfaces.
+
+    Returns a typed aggregate — never raises for surface-level failure.
+    """
+    if surfaces is None:
+        surfaces = provider.discover_surfaces()
+    surface_reports: List[Dict[str, Any]] = []
+    all_rows: List[Any] = []           # transport rows from provider
+    seen_refs: set = set()
+    deduped_rows: List[Any] = []
+    errors: List[str] = []
+    inaccessible_total = 0
+    timeout_total = 0
+    unknown_total = 0
+    hidden_total = 0
+    total_matched_all = 0
+
+    for surface in surfaces:
+        try:
+            result = provider.enumerate_flagged(
+                mailbox=surface.mailbox,
+                limit=per_surface_limit,
+                since_days=since_days,
+                timeout_seconds=timeout_seconds,
+                account=surface.account,
+            )
+        except RuntimeError as e:
+            # A raised surface error is a failed surface, not a silent skip.
+            surface_reports.append({
+                "account": surface.account, "mailbox": surface.mailbox,
+                "status": "failed", "error": str(e),
+            })
+            errors.append(f"{surface.account}/{surface.mailbox}: {e}")
+            continue
+        surface_reports.append({
+            "account": surface.account, "mailbox": surface.mailbox,
+            "status": result.status,
+            "total_matched": result.scanned_boundary.get(
+                "total_flagged_seen", len(result.rows)),
+            "returned": len(result.rows),
+        })
+        all_rows.extend(result.rows)
+        errors.extend(f"{surface.account}/{surface.mailbox}: {e}"
+                      for e in result.errors)
+        inaccessible_total += result.inaccessible_count
+        timeout_total += result.timeout_count
+        unknown_total += result.unknown_index_count
+        hidden_total += max(0, result.scanned_boundary.get(
+            "hidden_by_limit", 0))
+        total_matched_all += result.scanned_boundary.get(
+            "total_flagged_seen", 0)
+        if not result.scope_complete:
+            errors.append(
+                f"{surface.account}/{surface.mailbox}: scope incomplete")
+        for row in result.rows:
+            key = MessageReference(
+                provider=getattr(provider, "name",
+                                 getattr(row, "provider", "mailapp")),
+                account=row.account, mailbox=row.mailbox,
+                provider_id=row.provider_id,
+            ).ref_digest
+            if key in seen_refs:
+                continue                      # cross-surface duplicate
+            seen_refs.add(key)
+            deduped_rows.append(row)
+
+    estate_complete = (
+        not errors and inaccessible_total == 0 and timeout_total == 0
+        and hidden_total == 0 and bool(surfaces)
+    )
+    status = (
+        "complete" if estate_complete
+        else ("timed_out" if timeout_total else
+              ("failed" if errors else "bounded_partial"))
+    )
+    return {
+        "rows": deduped_rows,
+        "deduplicated_removed": len(all_rows) - len(deduped_rows),
+        "estate_complete": estate_complete,
+        "status": status,
+        "errors": errors,
+        "inaccessible_count": inaccessible_total,
+        "timeout_count": timeout_total,
+        "unknown_index_count": unknown_total,
+        "hidden_by_limit_total": hidden_total,
+        "total_matched_all_surfaces": total_matched_all,
+        "surfaces": surface_reports,
+    }
+
+
+def build_estate_snapshot(estate: Dict[str, Any], *, provider_name: str,
+                          generated_at: Optional[str] = None) -> FlagSnapshot:
+    """Snapshot over an estate aggregate. Scope fields describe the WHOLE
+    discovered estate; completeness follows the same strict contract."""
+    return build_snapshot(
+        provider_name=provider_name,
+        account="<estate>",
+        mailbox=f"{len(estate['surfaces'])} surfaces",
+        rows=estate["rows"],
+        complete=estate["estate_complete"],
+        scope_complete=not any(
+            s.get("status") == "failed" for s in estate["surfaces"]),
+        status=estate["status"],
+        errors=estate["errors"],
+        inaccessible_count=estate["inaccessible_count"],
+        timeout_count=estate["timeout_count"],
+        unknown_index_count=estate["unknown_index_count"],
+        limit=-1,                    # multi-surface; per-surface limits recorded
+        since_days=None,
+        total_matched=estate["total_matched_all_surfaces"],
+        returned_count=len(estate["rows"]),
+        hidden_by_limit=estate["hidden_by_limit_total"],
+        next_cursor=None,
+        generated_at=generated_at,
     )
 
 
@@ -392,10 +643,14 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
     apply-eligible until a future classifier supplies real confidence AND an
     approval receipt exists (apply path, later commit).
     """
-    if not snapshot.complete:
+    if not snapshot.complete or snapshot.status != "complete":
         raise FlagWorkflowError(
             f"refusing to build apply-capable plan from "
-            f"{snapshot.status} snapshot {snapshot.snapshot_id}"
+            f"{snapshot.status} snapshot {snapshot.snapshot_id} "
+            f"(complete={snapshot.complete}, scope_complete="
+            f"{snapshot.scope_complete}, hidden="
+            f"{snapshot.hidden_by_limit}, inaccessible="
+            f"{snapshot.inaccessible_count})"
         )
     proposals: List[Proposal] = []
     for m in snapshot.messages:
@@ -428,7 +683,7 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
         "snapshot_sha256": snapshot.to_dict()["content_hash"],
         "snapshot_complete": snapshot.complete,
         "zero_write_declaration": True,
-        "total_scanned": snapshot.total_flagged_seen,
+        "total_scanned": snapshot.total_matched,
         "mutations": [m.to_dict() for m in mutations],
         "unchanged_count": len(snapshot.messages) - len(mutations),
     }

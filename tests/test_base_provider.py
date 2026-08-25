@@ -11,12 +11,22 @@ All tests use lightweight fakes — no network, no real accounts.
 
 import pytest
 
-from core.models import EmailMessage, LabelAction, FlagColor
+from core.models import EmailMessage, LabelAction, FlagColor, MessageReference
 from providers.base import (
     EmailProvider,
     ProviderCapabilities,
     ListMessagesResult,
 )
+
+
+def _ref(provider_id="m1", evidence=True):
+    """Qualified reference; with durable evidence unless disabled."""
+    r = MessageReference(provider="fake", account="acct", mailbox="INBOX",
+                         provider_id=provider_id)
+    if evidence:
+        return r.with_resolved_evidence(
+            "2026-01-01T00:00:00", "a@b.com", "Subject")
+    return r
 
 
 class FakeProvider(EmailProvider):
@@ -240,47 +250,94 @@ class TestApplyActionsDispatch:
 
 
 class TestFlagOperationsOnUnsupportedProvider:
-    """Providers without COLORED_FLAGS must reject flag operations."""
+    """Providers without COLORED_FLAGS must reject ref-based flag operations."""
 
-    def test_get_flag_color_raises_on_unsupported(self):
+    def test_get_flag_color_ref_raises_on_unsupported(self):
         p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
         with pytest.raises(NotImplementedError, match="does not support COLORED_FLAGS"):
+            p.get_flag_color_ref(_ref())
+
+    def test_set_flag_color_ref_raises_on_unsupported(self):
+        p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
+        with pytest.raises(NotImplementedError, match="does not support COLORED_FLAGS"):
+            p.set_flag_color_ref(_ref(), FlagColor.RED)
+
+    def test_clear_flag_ref_raises_on_unsupported(self):
+        p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
+        with pytest.raises(NotImplementedError, match="does not support COLORED_FLAGS"):
+            p.clear_flag_ref(_ref())
+
+
+class TestBareIdColoredPathRemoved:
+    """The unqualified colored-flag surface no longer exists anywhere."""
+
+    def test_bare_get_flag_color_always_raises_directive(self):
+        p = FakeProvider(capabilities=ProviderCapabilities.COLORED_FLAGS)
+        with pytest.raises(NotImplementedError, match="use get_flag_color_ref"):
             p.get_flag_color("m1")
 
-    def test_set_flag_color_raises_on_unsupported(self):
-        p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
-        with pytest.raises(NotImplementedError, match="does not support COLORED_FLAGS"):
-            p.set_flag_color("m1", FlagColor.RED)
 
-    def test_clear_flag_raises_on_unsupported(self):
-        p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
-        with pytest.raises(NotImplementedError, match="does not support COLORED_FLAGS"):
-            p.clear_flag("m1")
+class TestColoredOpRequiresQualifiedReference:
+    """Colored ops without a durable scoped reference fail at validation."""
+
+    def test_missing_reference_rejected_at_validate(self):
+        from core.models import LabelActionValidationError
+        action = LabelAction(message_id="1", flag_color=FlagColor.RED)
+        with pytest.raises(LabelActionValidationError,
+                           match="requires a qualified MessageReference"):
+            action.validate()
+
+    def test_clear_flag_missing_reference_rejected(self):
+        from core.models import LabelActionValidationError
+        action = LabelAction(message_id="1", clear_flag=True)
+        with pytest.raises(LabelActionValidationError,
+                           match="requires a qualified MessageReference"):
+            action.validate()
+
+    def test_evidence_less_reference_rejected_at_validate(self):
+        from core.models import LabelActionValidationError
+        action = LabelAction(message_id="1", flag_color=FlagColor.RED,
+                             message_ref=_ref(evidence=False))
+        with pytest.raises(LabelActionValidationError,
+                           match="lacks durable evidence"):
+            action.validate()
+
+    def test_malformed_scope_rejected_at_validate(self):
+        from core.models import LabelActionValidationError
+        bad = MessageReference(provider="", account="", mailbox="",
+                               provider_id="")
+        bad = bad.with_resolved_evidence("t", "s@x", "S")
+        action = LabelAction(message_id="1", flag_color=FlagColor.RED,
+                             message_ref=bad)
+        with pytest.raises(ValueError, match="non-empty string"):
+            action.validate()
 
 
 class TestFlagOperationFailuresCounted:
-    """Failed flag operations must increment error_count, not success_count."""
+    """Failed ref-based flag operations count as errors, never successes."""
 
     def test_set_flag_color_false_is_error(self):
         class FailingProvider(FakeProvider):
-            def set_flag_color(self, message_id, color):
+            def set_flag_color_ref(self, ref, color):
                 return False
 
         p = FailingProvider(capabilities=ProviderCapabilities.COLORED_FLAGS)
         result = p.apply_actions([
-            LabelAction(message_id="m1", sender="a@b.com", flag_color=FlagColor.RED),
+            LabelAction(message_id="m1", sender="a@b.com",
+                        flag_color=FlagColor.RED, message_ref=_ref()),
         ])
         assert result.error_count == 1
         assert result.success_count == 0
 
     def test_clear_flag_false_is_error(self):
         class FailingProvider(FakeProvider):
-            def clear_flag(self, message_id):
+            def clear_flag_ref(self, ref):
                 return False
 
         p = FailingProvider(capabilities=ProviderCapabilities.COLORED_FLAGS)
         result = p.apply_actions([
-            LabelAction(message_id="m1", sender="a@b.com", clear_flag=True),
+            LabelAction(message_id="m1", sender="a@b.com", clear_flag=True,
+                        message_ref=_ref()),
         ])
         assert result.error_count == 1
         assert result.success_count == 0
@@ -320,7 +377,8 @@ class TestValidationBeforeGateNormalization:
     def test_archive_plus_flag_rejected_even_for_protected_sender(self):
         p = self._gate_mutating_provider()
         result = p.apply_actions([
-            LabelAction(message_id="m1", sender="", archive=True, flag_color=FlagColor.RED),
+            LabelAction(message_id="m1", sender="", archive=True,
+                        flag_color=FlagColor.RED, message_ref=_ref()),
         ])
         # Rejected as invalid combination — NOT silently normalized to a
         # flag-only action by the protected-sender gate.
@@ -338,7 +396,8 @@ class TestUnsupportedProviderThroughApplyActions:
     def test_flag_color_unsupported_records_capability_error(self):
         p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
         result = p.apply_actions([
-            LabelAction(message_id="m1", sender="a@b.com", flag_color=FlagColor.RED),
+            LabelAction(message_id="m1", sender="a@b.com",
+                        flag_color=FlagColor.RED, message_ref=_ref()),
         ])
         assert result.error_count == 1
         assert result.success_count == 0
@@ -348,7 +407,8 @@ class TestUnsupportedProviderThroughApplyActions:
     def test_clear_flag_unsupported_records_capability_error(self):
         p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
         result = p.apply_actions([
-            LabelAction(message_id="m1", sender="a@b.com", clear_flag=True),
+            LabelAction(message_id="m1", sender="a@b.com", clear_flag=True,
+                        message_ref=_ref()),
         ])
         assert result.error_count == 1
         assert result.success_count == 0
@@ -383,12 +443,12 @@ class TestRejectedActionsMakeZeroProviderCalls:
                 calls.append(f"ensure_label_exists:{label}")
                 return label
 
-            def set_flag_color(self, message_id, color):
-                calls.append(f"set_flag_color:{color}")
+            def set_flag_color_ref(self, ref, color):
+                calls.append(f"set_flag_color_ref:{color}")
                 return True
 
-            def clear_flag(self, message_id):
-                calls.append("clear_flag")
+            def clear_flag_ref(self, ref):
+                calls.append("clear_flag_ref")
                 return True
 
         p = RecordingProvider(
@@ -402,8 +462,10 @@ class TestRejectedActionsMakeZeroProviderCalls:
                         flag_color=FlagColor.RED, archive=True),
             LabelAction(message_id="m2", sender="a@b.com", clear_flag=True,
                         add_labels=["Work"]),
-            LabelAction(message_id="m3", sender="a@b.com", flag_color=FlagColor.UNKNOWN),
-            LabelAction(message_id="m4", sender="a@b.com", clear_flag=True, category="Work"),
+            LabelAction(message_id="m3", sender="a@b.com",
+                        flag_color=FlagColor.UNKNOWN),
+            LabelAction(message_id="m4", sender="a@b.com", clear_flag=True,
+                        category="Work"),
         ])
         assert result.error_count == 4
         assert result.success_count == 0
@@ -413,19 +475,20 @@ class TestRejectedActionsMakeZeroProviderCalls:
         calls = []
 
         class RecordingProvider(FakeProvider):
-            def set_flag_color(self, message_id, color):
-                calls.append(f"set_flag_color:{message_id}:{color}")
+            def set_flag_color_ref(self, ref, color):
+                calls.append(f"set_flag_color_ref:{ref.provider_id}:{color}")
                 return True
 
         p = RecordingProvider(capabilities=ProviderCapabilities.COLORED_FLAGS)
         result = p.apply_actions([
             LabelAction(message_id="bad", sender="a@b.com",
                         flag_color=FlagColor.RED, archive=True),
-            LabelAction(message_id="good", sender="a@b.com", flag_color=FlagColor.RED),
+            LabelAction(message_id="good", sender="a@b.com",
+                        flag_color=FlagColor.RED, message_ref=_ref("good")),
         ])
         assert result.error_count == 1
         assert result.success_count == 1
-        assert calls == [f"set_flag_color:good:{FlagColor.RED}"]
+        assert calls == [f"set_flag_color_ref:good:{FlagColor.RED}"]
 
 
 class TestProviderCapabilitiesFlag:

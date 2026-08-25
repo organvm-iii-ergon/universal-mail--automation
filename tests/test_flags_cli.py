@@ -15,20 +15,48 @@ from core.flag_workflow import SNAPSHOT_SCHEMA
 
 
 class FakeEnumeration:
-    def __init__(self, rows=(), complete=True, errors=None,
+    """Builds a REAL providers.mailapp.EnumerationResult via .build() so
+    completeness/status semantics have one source of truth."""
+
+    def __init__(self, rows=(), complete=None, errors=None,
                  inaccessible=0, timeouts=0, unknown=0, total_seen=None,
-                 hidden=0):
-        self.rows = list(rows)
-        self.complete = complete
-        self.errors = list(errors or [])
-        self.inaccessible_count = inaccessible
-        self.timeout_count = timeouts
-        self.unknown_index_count = unknown
-        self.scanned_boundary = {
-            "total_flagged_seen": total_seen if total_seen is not None
-            else len(self.rows),
-            "hidden_by_limit": hidden,
-        }
+                 hidden=0, scope_complete=None):
+        from providers.mailapp import EnumerationResult
+        rows = list(rows)
+        if scope_complete is None:
+            scope_complete = not errors and inaccessible == 0
+        if total_seen is None:
+            total_seen = len(rows)
+        result = EnumerationResult.build(
+            rows=rows,
+            scope_complete=bool(scope_complete),
+            errors=list(errors or []),
+            inaccessible_count=inaccessible,
+            timeout_count=timeouts,
+            unknown_index_count=unknown,
+            hidden_by_limit=hidden,
+            scanned_boundary={
+                "provider": "mailapp", "account": "acct",
+                "mailbox": "INBOX", "limit": 500, "since_days": None,
+                "ordering": "received_desc",
+                "total_flagged_seen": total_seen,
+                "returned_count": len(rows),
+                "hidden_by_limit": hidden,
+            },
+        )
+        self.__dict__.update({
+            "rows": result.rows, "complete": result.complete,
+            "scope_complete": result.scope_complete,
+            "status": result.status, "errors": result.errors,
+            "inaccessible_count": result.inaccessible_count,
+            "timeout_count": result.timeout_count,
+            "unknown_index_count": result.unknown_index_count,
+            "next_cursor": result.next_cursor,
+            "scanned_boundary": result.scanned_boundary,
+        })
+        # Explicit overrides AFTER construction (tests may force shapes).
+        if complete is not None:
+            self.complete = complete
 
 
 def _fake_provider(monkeypatch, enumeration=None, message=None):
@@ -103,15 +131,44 @@ class TestFlagsAuditHandler:
         return type("Args", (), defaults)()
 
     def test_incomplete_scan_exits_20_without_allow_partial(
-            self, monkeypatch, capsys, tmp_path, ):
+            self, monkeypatch, capsys, tmp_path):
         monkeypatch.setenv("UMA_FLAGS_STATE_DIR", str(tmp_path))
         _fake_provider(monkeypatch, FakeEnumeration(complete=False, errors=["timeout"]))
         rc = cli.cmd_flags_audit(self._args())
         err = capsys.readouterr().err
         assert rc == 20
-        assert "INCOMPLETE" in err
-        assert "no messages found" not in err.lower().replace(
-            "'no messages found'", "")   # must never claim empty success
+        assert "PARTIAL" in err or "FAILED" in err or "BOUNDED" in err
+        # must never claim empty success
+        assert "no messages found" not in err.lower()
+
+    def test_incomplete_scan_leaves_durable_failure_receipt(
+            self, monkeypatch, capsys, tmp_path):
+        """P0 #6: failure evidence is persisted BEFORE the exit-20 gate."""
+        monkeypatch.setenv("UMA_FLAGS_STATE_DIR", str(tmp_path))
+        _fake_provider(monkeypatch,
+                       FakeEnumeration(complete=False, errors=["boom"]))
+        rc = cli.cmd_flags_audit(self._args())
+        assert rc == 20
+        snaps = list((tmp_path / "snapshots").glob("*.json"))
+        assert len(snaps) == 1, "failure receipt missing"
+        data = json.loads(snaps[0].read_text())
+        assert data["complete"] is False
+        assert data["status"] in ("partial", "failed")
+        assert data["zero_write_mode"] is True
+
+    def test_bounded_partial_hidden_rows_break_completeness(
+            self, monkeypatch, capsys, tmp_path):
+        """hidden_by_limit>0 → incomplete + bounded_partial, never plan-grade."""
+        monkeypatch.setenv("UMA_FLAGS_STATE_DIR", str(tmp_path))
+        _fake_provider(monkeypatch, FakeEnumeration(
+            scope_complete=True, hidden=3, total_seen=5))
+        rc = cli.cmd_flags_audit(self._args())     # no --allow-partial
+        assert rc == 20
+        snap = json.loads((tmp_path / "snapshots").glob("*.json")
+                          .__iter__().__next__().read_text())
+        assert snap["status"] == "bounded_partial"
+        assert snap["hidden_by_limit"] == 3
+        assert snap["next_cursor"]
 
     def test_incomplete_scan_allowed_with_allow_partial(
             self, monkeypatch, capsys, tmp_path):
@@ -119,8 +176,41 @@ class TestFlagsAuditHandler:
         _fake_provider(monkeypatch, FakeEnumeration(complete=False, errors=["partial"]))
         rc = cli.cmd_flags_audit(self._args(allow_partial=True))
         assert rc == 0
+        err = capsys.readouterr().err
+        assert "status: failed" in err   # errors recorded -> honest 'failed'
+
+    def test_json_output_is_pure_machine_readable(
+            self, monkeypatch, capsys, tmp_path):
+        """Rendering is mutually exclusive: --output json emits ONLY JSON."""
+        import json as _json
+        monkeypatch.setenv("UMA_FLAGS_STATE_DIR", str(tmp_path))
+        from providers.mailapp import FlaggedRow
+        rows = [FlaggedRow(
+            provider_id="7", account="acct", mailbox="INBOX",
+            sender="s@x.com", subject="Subj", native_index=0,
+            flag_color=FlagColor.RED, received_iso=None)]
+        _fake_provider(monkeypatch, FakeEnumeration(rows=rows))
+        rc = cli.cmd_flags_audit(self._args(output="json"))
         out = capsys.readouterr().out
-        assert "status: failed" in out   # errors recorded -> honest 'failed'
+        assert rc == 0
+        parsed = _json.loads(out)          # would fail if table text preceded
+        assert parsed["schema"] == SNAPSHOT_SCHEMA
+
+    def test_csv_output_is_pure_csv(
+            self, monkeypatch, capsys, tmp_path):
+        monkeypatch.setenv("UMA_FLAGS_STATE_DIR", str(tmp_path))
+        from providers.mailapp import FlaggedRow
+        rows = [FlaggedRow(
+            provider_id="7", account="acct", mailbox="INBOX",
+            sender="s@x.com", subject="Subj", native_index=0,
+            flag_color=FlagColor.RED, received_iso=None)]
+        _fake_provider(monkeypatch, FakeEnumeration(rows=rows))
+        rc = cli.cmd_flags_audit(self._args(output="csv"))
+        out = capsys.readouterr().out
+        assert rc == 0
+        lines = out.strip().splitlines()
+        assert lines[0].startswith("id,sender")       # header row first
+        assert "Private snapshot" not in out          # no mixed human text
 
     def test_writes_private_snapshot_and_public_safe_receipt(
             self, monkeypatch, capsys, tmp_path):

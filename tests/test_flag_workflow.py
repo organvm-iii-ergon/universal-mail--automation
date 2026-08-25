@@ -25,15 +25,31 @@ def _msg(provider_id="1", sender="a@b.com", subject="Hi",
     )
 
 
-def _snapshot(messages, complete=True):
+def _row(provider_id="1", sender="a@b.com", subject="Hi",
+         color=FlagColor.RED, account="acct", mailbox="INBOX",
+         received_iso=None):
+    """Transport-row stand-in with the attributes build_snapshot reads."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        provider_id=provider_id, account=account, mailbox=mailbox,
+        sender=sender, subject=subject, native_index=None,
+        flag_color=color, received_iso=received_iso)
+
+
+def _snapshot(messages, complete=True, status=None):
+    complete = complete
     snap = fw.FlagSnapshot(
         schema=fw.SNAPSHOT_SCHEMA, snapshot_id="snap-test",
         generated_at=datetime.now(timezone.utc).isoformat(),
         provider="mailapp", account="acct", mailbox="INBOX",
-        complete=complete, status="complete" if complete else "partial",
+        complete=complete,
+        scope_complete=complete,
+        status=status or ("complete" if complete else "partial"),
         zero_write_mode=True, errors=[],
         inaccessible_count=0, timeout_count=0, unknown_index_count=0,
-        total_flagged_seen=len(messages), hidden_by_limit=0,
+        limit=500, since_days=None, ordering="received_desc",
+        total_matched=len(messages), returned_count=len(messages),
+        hidden_by_limit=0, next_cursor=None,
         messages=list(messages), content_hash="",
     )
     snap.content_hash = snap.to_dict()["content_hash"]
@@ -70,27 +86,108 @@ class TestSnapshotModel:
         assert d1["content_hash"] != d2["content_hash"]
         assert len(d1["content_hash"]) == 64
 
-    def test_public_safe_strips_pii(self):
+    def test_public_safe_is_allowlist_never_private_derived(self):
         snap = _snapshot([
             _msg("11", "secret@corp.example", "Classified Subject X"),
         ])
         public = snap.to_public_safe()
         blob = json.dumps(public)
+        # PII stripped
         assert "secret@corp.example" not in blob
         assert "Classified Subject X" not in blob
-        assert "provider_id" not in blob          # raw id stripped
-        # ref digests survive so the projection is still auditable
-        assert any("ref_digest" in m for m in public["messages"])
+        assert '"provider_id"' not in blob
+        # Raw scope NEVER present — only its digest
+        assert "account" not in public and "mailbox" not in public
+        assert "acct" not in blob and "INBOX" not in blob
+        assert len(public["scope_digest"]) == 64
+        # Free-form errors never leak; codes at most
+        assert "errors" not in public and "error_codes" in public
+        # Cryptographic link to private source
+        assert public["source_snapshot_sha256"] == \
+            snap.to_dict()["content_hash"]
+
+    def test_public_hash_covers_projection_field(self):
+        snap = _snapshot([_msg()])
+        public = snap.to_public_safe()
+        stored = public["content_hash"]
+        body = {k: v for k, v in public.items() if k != "content_hash"}
+        assert fw.sha256_hex(body) == stored
+        # Tampering with ANY field — including 'projection' — breaks it.
+        tampered = dict(public, projection="not_public")
+        bad = {k: v for k, v in tampered.items() if k != "content_hash"}
+        assert fw.sha256_hex(bad) != stored
+
+    def test_public_receipt_validator_and_tamper(self, tmp_path):
+        snap = _snapshot([_msg()])
+        receipt = snap.to_public_safe()
+        fw.validate_public_receipt(receipt)          # valid passes
+
+        path = tmp_path / "public.json"
+        path.write_text(json.dumps(receipt))
+        loaded = json.loads(path.read_text())
+
+        loaded_tampered = dict(loaded, complete=not loaded["complete"])
+        with pytest.raises(fw.FlagWorkflowError, match="tampered"):
+            fw.validate_public_receipt(loaded_tampered)
+
+        injected = dict(loaded, account="leak@corp.example",
+                        content_hash=receipt["content_hash"])
+        with pytest.raises(fw.FlagWorkflowError, match="forbidden keys"):
+            fw.validate_public_receipt(injected)
+
+    def test_snapshot_ids_unique_across_identical_audits(self):
+        """P0 #1: same scope + same count + different runs → different ids,
+        so write_private_snapshot can never overwrite an earlier artifact."""
+        def rows_factory():
+            return [_row(str(i)) for i in range(3)]
+        t0 = "2026-08-25T10:00:00+00:00"
+        t1 = "2026-08-25T10:05:00+00:00"
+        kw = dict(provider_name="mailapp", account="a", mailbox="INBOX",
+                  complete=True, scope_complete=True, status="complete",
+                  errors=[], inaccessible_count=0, timeout_count=0,
+                  unknown_index_count=0, limit=500, since_days=None,
+                  total_matched=3, returned_count=3, hidden_by_limit=0)
+        s_a = fw.build_snapshot(rows=rows_factory(), generated_at=t0, **kw)
+        s_b = fw.build_snapshot(rows=rows_factory(), generated_at=t1, **kw)
+        assert s_a.snapshot_id != s_b.snapshot_id
+
+    def test_unique_ids_mean_no_file_overwrite(self, tmp_path):
+        kw = dict(provider_name="mailapp", account="a", mailbox="INBOX",
+                  complete=True, scope_complete=True, status="complete",
+                  errors=[], inaccessible_count=0, timeout_count=0,
+                  unknown_index_count=0, limit=500, since_days=None,
+                  total_matched=1, returned_count=1, hidden_by_limit=0)
+        msgs = [_row("9")]
+        p1 = fw.write_private_snapshot(
+            fw.build_snapshot(rows=msgs, generated_at="2026-08-25T10:00:00+00:00", **kw),
+            tmp_path)
+        p2 = fw.write_private_snapshot(
+            fw.build_snapshot(rows=msgs, generated_at="2026-08-25T10:01:00+00:00", **kw),
+            tmp_path)
+        assert p1 != p2
+        assert p1.exists() and p2.exists()
 
     def test_build_snapshot_rejects_complete_with_errors(self):
         with pytest.raises(fw.FlagWorkflowError, match="errors are recorded"):
             fw.build_snapshot(
                 provider_name="mailapp", account="a", mailbox="INBOX",
-                rows=[], complete=True, errors=["boom"],
+                rows=[], complete=True, scope_complete=True,
+                status="complete", errors=["boom"],
                 inaccessible_count=0, timeout_count=0,
-                unknown_index_count=0, total_flagged_seen=0,
-                hidden_by_limit=0,
+                unknown_index_count=0, limit=500, since_days=None,
+                total_matched=0, returned_count=0, hidden_by_limit=0,
             )
+
+    def test_build_snapshot_rejects_complete_with_hidden_or_inaccessible(self):
+        base = dict(provider_name="mailapp", account="a", mailbox="INBOX",
+                    rows=[], complete=True, scope_complete=True,
+                    status="complete", errors=[], timeout_count=0,
+                    unknown_index_count=0, limit=100, since_days=None,
+                    total_matched=5, returned_count=0)
+        with pytest.raises(fw.FlagWorkflowError, match="inaccessible"):
+            fw.build_snapshot(inaccessible_count=2, hidden_by_limit=0, **base)
+        with pytest.raises(fw.FlagWorkflowError, match="hidden"):
+            fw.build_snapshot(inaccessible_count=0, hidden_by_limit=3, **base)
 
     def test_load_snapshot_detects_tamper(self, tmp_path):
         snap = _snapshot([_msg()])
@@ -100,7 +197,7 @@ class TestSnapshotModel:
         assert loaded.snapshot_id == snap.snapshot_id
 
         tampered = json.loads(path.read_text())
-        tampered["total_flagged_seen"] = 999
+        tampered["total_matched"] = 999
         path.write_text(json.dumps(tampered))
         with pytest.raises(fw.FlagWorkflowError, match="tampered"):
             fw.load_snapshot(path)
@@ -128,12 +225,25 @@ class TestPlanBuildingAndValidation:
     def test_incomplete_snapshot_cannot_produce_plan(self):
         snap = self._complete_snapshot()
         broken = fw.FlagSnapshot(
-            **{**snap.__dict__, "complete": False, "status": "partial"},
+            **{**snap.__dict__, "complete": False, "status": "bounded_partial"},
         )
         broken.content_hash = ""
         broken.content_hash = broken.to_dict()["content_hash"]
         with pytest.raises(fw.FlagWorkflowError, match="refusing"):
             fw.build_plan(broken)
+
+    def test_bounded_partial_status_blocks_plan(self):
+        """hidden_by_limit>0 must be structurally plan-ineligible."""
+        snap = self._complete_snapshot()
+        bounded = fw.FlagSnapshot(
+            **{**snap.__dict__, "complete": False,
+               "scope_complete": True, "status": "bounded_partial",
+               "hidden_by_limit": 144, "next_cursor": '{"resume":"widen"}'},
+        )
+        bounded.content_hash = ""
+        bounded.content_hash = bounded.to_dict()["content_hash"]
+        with pytest.raises(fw.FlagWorkflowError, match="refusing"):
+            fw.build_plan(bounded)
 
     def test_validate_accepts_built_plan(self):
         plan = fw.build_plan(self._complete_snapshot())
@@ -307,3 +417,143 @@ class TestLegacyPolicyContract:
         assert p1.reason_code == p2.reason_code == RC_CAREER_SIGNAL_ORANGE
         p3 = propose("nothing@matches.here", "no signals at all", FlagColor.RED)
         assert p3.reason_code == RC_AMBIGUOUS_PURPLE
+
+
+class TestEstateEnumeration:
+    """Multi-surface enumeration: discovery fallback, dedupe, partial."""
+
+    class _Surface:
+        def __init__(self, account, mailbox):
+            self.account, self.mailbox = account, mailbox
+
+    class _Provider:
+        name = "mailapp"
+
+        def __init__(self, surfaces, results=None):
+            self._surfaces = surfaces
+            self._results = results or {}
+            self.discover_called = False
+
+        def discover_surfaces(self):
+            self.discover_called = True
+            return self._surfaces
+
+        def enumerate_flagged(self, mailbox, limit=500, since_days=None,
+                              timeout_seconds=600, account=None):
+            for s in self._surfaces:
+                if s.mailbox == mailbox and s.account == account and \
+                        (s.account, s.mailbox) in self._results:
+                    return self._results[(s.account, s.mailbox)]
+            raise RuntimeError(f"unexpected surface {account}/{mailbox}")
+
+    @staticmethod
+    def _result(rows, hidden=0, errors=None, inaccessible=0,
+                scope_complete=True, timeouts=0):
+        from providers.mailapp import EnumerationResult
+        return EnumerationResult.build(
+            rows=rows, scope_complete=scope_complete,
+            errors=list(errors or []), inaccessible_count=inaccessible,
+            timeout_count=timeouts, unknown_index_count=0,
+            hidden_by_limit=hidden,
+            scanned_boundary={"total_flagged_seen": len(rows) + hidden,
+                              "hidden_by_limit": hidden,
+                              "account": rows[0].account if rows else "?",
+                              "mailbox": rows[0].mailbox if rows else "?"},
+        )
+
+    @staticmethod
+    def _trow(pid, account, mailbox):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            provider_id=pid, account=account, mailbox=mailbox,
+            sender="s@x.com", subject="S", native_index=0,
+            flag_color=FlagColor.RED, received_iso=None)
+
+    def test_discovers_surfaces_when_none_given(self):
+        surfaces = [self._Surface("a@x", "INBOX")]
+        prov = self._Provider(surfaces, {("a@x", "INBOX"): self._result([])})
+        out = fw.enumerate_estate(prov)
+        assert prov.discover_called is True
+        # One real, cleanly-scanned, genuinely-empty surface IS complete.
+        assert out["estate_complete"] is True
+
+    def test_zero_discovered_surfaces_is_not_complete(self):
+        """Discovery returning nothing must NOT masquerade as a clean estate."""
+        prov = self._Provider([], {})
+        out = fw.enumerate_estate(prov)
+        assert out["estate_complete"] is False
+        snap = fw.build_estate_snapshot(out, provider_name="mailapp")
+        with pytest.raises(fw.FlagWorkflowError, match="refusing"):
+            fw.build_plan(snap)
+
+    def test_cross_surface_duplicates_removed_by_ref_digest(self):
+        s1 = self._Surface("a@x", "INBOX")
+        s2 = self._Surface("b@y", "INBOX")
+        results = {
+            ("a@x", "INBOX"): self._result([self._trow("7", "a@x", "INBOX")]),
+            ("b@y", "INBOX"): self._result([self._trow("7", "b@y", "INBOX")]),
+        }
+        # Same provider_id on DIFFERENT accounts is NOT a duplicate.
+        out = fw.enumerate_estate(self._Provider([s1, s2], results))
+        assert len(out["rows"]) == 2
+        assert out["deduplicated_removed"] == 0
+
+        same_acct = [self._Surface("a@x", "INBOX"), self._Surface("a@x", "Archive")]
+        results2 = {
+            ("a@x", "INBOX"): self._result([self._trow("7", "a@x", "INBOX")]),
+            ("a@x", "Archive"): self._result([self._trow("7", "a@x", "INBOX")]),
+        }
+        out2 = fw.enumerate_estate(self._Provider(same_acct, results2))
+        assert len(out2["rows"]) == 1
+        assert out2["deduplicated_removed"] == 1
+
+    def test_failed_surface_breaks_estate_completeness(self):
+        s_ok = self._Surface("a@x", "INBOX")
+        s_bad = self._Surface("b@y", "INBOX")
+
+        class ExplodesForB(self._Provider):
+            def __init__(self):
+                super().__init__(
+                    [s_ok, s_bad],
+                    {("a@x", "INBOX"): TestEstateEnumeration._result([])})
+
+            def enumerate_flagged(self, mailbox="INBOX", limit=500,
+                                  since_days=None, timeout_seconds=600,
+                                  account=None):
+                if account == "b@y":
+                    raise RuntimeError("AppleScript timed out")
+                return self._results[("a@x", "INBOX")]
+
+        out = fw.enumerate_estate(ExplodesForB(), per_surface_limit=10)
+        assert out["estate_complete"] is False
+        assert out["status"] in ("failed", "timed_out")
+        assert any("b@y" in e for e in out["errors"])
+
+    def test_hidden_rows_anywhere_break_completeness(self):
+        s1 = self._Surface("a@x", "INBOX")
+        s2 = self._Surface("a@x", "Archive")
+        results = {
+            ("a@x", "INBOX"): self._result([]),
+            ("a@x", "Archive"): self._result(
+                [self._trow("9", "a@x", "Archive")], hidden=4),
+        }
+        out = fw.enumerate_estate(self._Provider([s1, s2], results))
+        assert out["estate_complete"] is False
+        assert out["hidden_by_limit_total"] == 4
+        snap = fw.build_estate_snapshot(out, provider_name="mailapp")
+        assert snap.status == "bounded_partial"
+        with pytest.raises(fw.FlagWorkflowError, match="refusing"):
+            fw.build_plan(snap)
+
+    def test_clean_multi_surface_estate_is_plan_eligible(self):
+        s1 = self._Surface("a@x", "INBOX")
+        s2 = self._Surface("a@x", "Archive")
+        results = {
+            ("a@x", "INBOX"): self._result([self._trow("1", "a@x", "INBOX")]),
+            ("a@x", "Archive"): self._result([self._trow("2", "a@x", "Archive")]),
+        }
+        out = fw.enumerate_estate(self._Provider([s1, s2], results))
+        assert out["estate_complete"] is True
+        snap = fw.build_estate_snapshot(out, provider_name="mailapp")
+        plan = fw.build_plan(snap)      # must not raise
+        assert plan["schema"] == fw.PLAN_SCHEMA

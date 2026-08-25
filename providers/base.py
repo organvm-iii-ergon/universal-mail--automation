@@ -14,6 +14,7 @@ from core.models import (
     EmailMessage,
     LabelAction,
     LabelActionValidationError,
+    MessageReference,
     ProcessingResult,
     FlagColor,
 )
@@ -278,61 +279,44 @@ class EmailProvider(ABC):
 
     def get_flag_color(self, message_id: str) -> FlagColor:
         """
-        Get the current flag color of a message.
+        Bare-id colored reads are NOT part of the colored-flag contract.
 
-        Only supported by providers with COLORED_FLAGS capability.
-
-        Args:
-            message_id: Message to query
-
-        Returns:
-            FlagColor of the message
+        Providers capable of colored flags implement the ref-based API
+        (:meth:`get_flag_color_ref`). This stub exists only so non-flag
+        providers fail closed identically to before.
 
         Raises:
-            NotImplementedError: If provider does not support COLORED_FLAGS
+            NotImplementedError: Always — use get_flag_color_ref(ref).
         """
+        raise NotImplementedError(
+            "bare-id colored flag read removed; use get_flag_color_ref"
+            "(MessageReference)"
+        )
+
+    # --- Ref-based colored-flag contract (the ONLY supported surface) ------
+
+    def get_flag_color_ref(self, ref: MessageReference) -> FlagColor:
+        """Scoped semantic read for a qualified reference."""
         if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
             raise NotImplementedError(
                 f"{self.name} does not support COLORED_FLAGS capability"
             )
-        raise NotImplementedError("subclass must implement get_flag_color")
+        raise NotImplementedError(
+            "subclass must implement get_flag_color_ref")
 
-    def set_flag_color(self, message_id: str, color: FlagColor) -> bool:
-        """
-        Set a specific flag color on a message.
-
-        Only supported by providers with COLORED_FLAGS capability.
-
-        Args:
-            message_id: Message to flag
-            color: FlagColor to apply (NO_FLAG clears the flag)
-
-        Raises:
-            NotImplementedError: If provider does not support COLORED_FLAGS
-        """
+    def set_flag_color_ref(self, ref: MessageReference, color: FlagColor) -> bool:
+        """Evidence-verified scoped write; True only when post-write
+        re-read confirms the expected native value."""
         if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
             raise NotImplementedError(
                 f"{self.name} does not support COLORED_FLAGS capability"
             )
-        raise NotImplementedError("subclass must implement set_flag_color")
+        raise NotImplementedError(
+            "subclass must implement set_flag_color_ref")
 
-    def clear_flag(self, message_id: str) -> bool:
-        """
-        Clear the flag from a message (set to NO_FLAG).
-
-        Only supported by providers with COLORED_FLAGS capability.
-
-        Args:
-            message_id: Message to unflag
-
-        Raises:
-            NotImplementedError: If provider does not support COLORED_FLAGS
-        """
-        if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
-            raise NotImplementedError(
-                f"{self.name} does not support COLORED_FLAGS capability"
-            )
-        raise NotImplementedError("subclass must implement clear_flag")
+    def clear_flag_ref(self, ref: MessageReference) -> bool:
+        """Evidence-verified scoped unflag (NO_FLAG)."""
+        return self.set_flag_color_ref(ref, FlagColor.NO_FLAG)
 
     @abstractmethod
     def ensure_label_exists(self, label: str) -> str:
@@ -437,18 +421,26 @@ class EmailProvider(ABC):
                         raise RuntimeError("provider failed to apply category")
                 # Colored flag operations (do not move messages). Capability gate
                 # runs BEFORE any provider call so an unsupported provider never
-                # reaches its (default-raising) flag methods.
+                # reaches its (default-raising) flag methods. Dispatch is ALWAYS
+                # through the scoped, evidence-verified ref API — there is no
+                # bare-id colored path anywhere in the codebase.
                 if action.clear_flag or action.flag_color is not None:
                     if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
                         raise LabelActionValidationError(
                             "provider does not support COLORED_FLAGS capability"
                         )
-                if action.clear_flag:
-                    if not self.clear_flag(action.message_id):
-                        raise RuntimeError("provider failed to clear flag")
-                elif action.flag_color is not None:
-                    if not self.set_flag_color(action.message_id, action.flag_color):
-                        raise RuntimeError("provider failed to set flag color")
+                    if action.message_ref is None:   # belt+braces; validate() also enforces
+                        raise LabelActionValidationError(
+                            "colored flag operation requires a qualified "
+                            "MessageReference"
+                        )
+                    if action.clear_flag:
+                        if not self.clear_flag_ref(action.message_ref):
+                            raise RuntimeError("provider failed to clear flag")
+                    elif action.flag_color is not None:
+                        if not self.set_flag_color_ref(
+                                action.message_ref, action.flag_color):
+                            raise RuntimeError("provider failed to set flag color")
                 result.success_count += 1
             except Exception as e:
                 result.error_count += 1

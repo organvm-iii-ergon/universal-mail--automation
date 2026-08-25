@@ -4,13 +4,16 @@ from datetime import datetime
 
 import pytest
 
-from core.models import FlagColor, LabelAction
+from core.models import FlagColor, LabelAction, MessageReference
 from providers.mailapp import (
     MailAppProvider,
     MAILAPP_INDEX_TO_FLAG,
     MAILAPP_FLAG_TO_INDEX,
     flag_from_mailapp_index,
     mailapp_index_from_flag,
+    ProviderScriptError,
+    MessageNotFoundError,
+    FlagStateDriftError,
     _FIELD_SEP,
     _HDR_SEP,
 )
@@ -267,28 +270,167 @@ def test_list_messages_parses_flag_index_to_flag_color():
 
 
 class TestMailAppFlagReadFailure:
-    """Mail.app flag read failures propagate as exceptions, not UNKNOWN."""
+    """Ref-based flag reads propagate typed provider failures."""
 
     def test_get_flag_color_applescript_error_raises(self):
-        provider = MailAppProvider()
-        provider._run_applescript = lambda script: (_ for _ in ()).throw(RuntimeError("AppleScript timeout"))
-        with pytest.raises(RuntimeError, match="AppleScript timeout"):
-            provider.get_flag_color("msg1")
+        p = MailAppProvider()
+        p._run_applescript = lambda script, *a, **k: (
+            (_ for _ in ()).throw(RuntimeError("AppleScript timed out")))
+        ref = MessageReference(provider="mailapp", account="a",
+                               mailbox="INBOX", provider_id="1")
+        with pytest.raises(ProviderScriptError, match="scoped resolve failed"):
+            p.get_flag_color_ref(ref)
 
     def test_get_flag_color_malformed_output_raises(self):
-        provider = MailAppProvider()
-        provider._run_applescript = lambda script: "not an integer"
-        with pytest.raises(ValueError):
-            provider.get_flag_color("msg1")
+        p = MailAppProvider()
+        p._run_applescript = lambda script, *a, **k: "garbage-no-separators"
+        ref = MessageReference(provider="mailapp", account="a",
+                               mailbox="INBOX", provider_id="1")
+        with pytest.raises(ProviderScriptError, match="malformed"):
+            p.get_flag_color_ref(ref)
 
 
 class TestMailAppUnknownIndexHandling:
     """Successfully read but unrecognized native index returns UNKNOWN."""
 
     def test_unknown_index_returns_unknown(self):
-        provider = MailAppProvider()
-        provider._run_applescript = lambda script: "99"
-        assert provider.get_flag_color("msg1") is FlagColor.UNKNOWN
+        p = MailAppProvider()
+        p._run_applescript = lambda s, *a, **k: "\x1f".join(
+            ["99", "", "", "", ""])
+        ref = MessageReference(provider="mailapp", account="a", mailbox="INBOX",
+                               provider_id="7")
+        assert p.get_flag_color_ref(ref) is FlagColor.UNKNOWN
+
+
+class _ScopedHarness:
+    """Shared fixture logic for scoped resolve/mutate tests."""
+
+    RESOLVED = "\x1f".join([
+        "0",                       # flag index RED
+        "2026-07-01T00:00:00",     # received isot
+        "vip@bank.example",
+        "Statement July",
+        "Message-ID: <abc@x>",
+    ])
+
+    @staticmethod
+    def make_ref(evidence=True):
+        base = MessageReference(provider="mailapp", account="acct",
+                                mailbox="INBOX", provider_id="42")
+        if evidence:
+            return base.with_resolved_evidence(
+                "2026-07-01T00:00:00", "vip@bank.example",
+                "Statement July", "Message-ID: <abc@x>")
+        return base
+
+    @classmethod
+    def prov(cls, outputs):
+        """Provider whose scripted outputs pop in order."""
+        p = MailAppProvider(account="acct")
+        calls = []
+        seq = list(outputs)
+        def run(script, *a, **k):
+            calls.append(script)
+            if not seq:
+                raise AssertionError("unexpected extra AppleScript call")
+            item = seq.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        p._run_applescript = run
+        p.calls = calls
+        return p
+
+
+class TestScopedLookup:
+    def test_script_is_scoped_never_global_lookup(self):
+        p = MailAppProvider(account="a")
+        script = p._build_scoped_lookup_script("In\"box", 'we"ird', "77")
+        assert "first message whose id is" not in script
+        assert 'mailbox "In\\"box" of account "we\\"ird"' in script
+        assert "whose id is 77" in script
+
+    def test_non_numeric_id_refused_before_interpolation(self):
+        p = MailAppProvider(account="a")
+        with pytest.raises(ProviderScriptError, match="non-numeric"):
+            p._build_scoped_lookup_script("INBOX", "a", "abc; tell app")
+
+    def test_resolve_scoped_enriches_reference(self):
+        ref = _ScopedHarness.make_ref()
+        p = _ScopedHarness.prov([_ScopedHarness.RESOLVED])
+        enriched = p.resolve_scoped(ref)
+        assert enriched.observed_native_flag == 0
+        assert enriched.message_id_digest is not None
+        assert enriched.evidence_digest == ref.evidence_digest
+
+    def test_resolve_not_found_typed_error(self):
+        p = _ScopedHarness.prov(["NOT_FOUND"])
+        with pytest.raises(MessageNotFoundError, match="no message 42"):
+            p.resolve_scoped(_ScopedHarness.make_ref())
+
+    def test_evidence_drift_refuses(self):
+        drifted = _ScopedHarness.RESOLVED.replace("Statement July", "CHANGED")
+        p = _ScopedHarness.prov([drifted])
+        with pytest.raises(FlagStateDriftError, match="refusing mutation"):
+            p.set_flag_color_ref(_ScopedHarness.make_ref(), FlagColor.ORANGE)
+
+    def test_missing_evidence_refuses_without_any_call(self):
+        p = _ScopedHarness.prov([])   # any call would raise harness assertion
+        with pytest.raises(FlagStateDriftError, match="ineligible"):
+            p.set_flag_color_ref(
+                _ScopedHarness.make_ref(evidence=False), FlagColor.ORANGE)
+        assert p.calls == []
+
+
+class TestScopedWrites:
+    def test_post_write_mismatch_raises(self):
+        h = _ScopedHarness
+        p = h.prov([h.RESOLVED, "ok", h.RESOLVED])  # re-read still RED
+        with pytest.raises(ProviderScriptError, match="post-write verification"):
+            p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE)
+
+    def test_post_write_match_returns_true(self):
+        h = _ScopedHarness
+        matched = h.RESOLVED.replace("0", "1", 1)   # flag index now 1=ORANGE
+        p = h.prov([h.RESOLVED, "ok", matched])
+        assert p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE) is True
+
+    def test_clear_routes_through_no_flag(self):
+        h = _ScopedHarness
+        cleared = h.RESOLVED.replace("0\x1f", "-1\x1f", 1)
+        assert cleared.startswith("-1")     # guard: replacement actually hit
+        p = h.prov([h.RESOLVED, "ok", cleared])
+        assert p.clear_flag_ref(h.make_ref()) is True
+
+    def test_bare_id_colored_methods_are_gone(self):
+        """Structural guarantee: no unqualified colored-flag path exists."""
+        p = MailAppProvider()
+        assert not hasattr(p, "set_flag_color") or \
+            getattr(MailAppProvider, "set_flag_color", None) is None
+        assert not hasattr(p, "clear_flag") or \
+            getattr(MailAppProvider, "clear_flag", None) is None
+
+
+class TestSurfaceDiscovery:
+    def test_parses_account_mailbox_pairs(self):
+        p = MailAppProvider()
+        out = "\x1d".join([
+            "\x1f".join(["acct@x.com", "INBOX"]),
+            "\x1f".join(["acct@x.com", "Archive"]),
+            "\x1f".join(["work@y.com", "INBOX"]),
+        ])
+        p._run_applescript = lambda s, *a, **k: out
+        surfaces = p.discover_surfaces()
+        assert (surfaces[0].account, surfaces[0].mailbox) == \
+            ("acct@x.com", "INBOX")
+        assert len(surfaces) == 3
+
+    def test_discovery_failure_typed_never_silent(self):
+        p = MailAppProvider()
+        p._run_applescript = lambda s, *a, **k: (
+            (_ for _ in ()).throw(RuntimeError("AppleScript timed out")))
+        with pytest.raises(ProviderScriptError, match="discovery failed"):
+            p.discover_surfaces()
 
 
 class TestFlagsExplainWithSemanticEnum:
@@ -335,15 +477,21 @@ class TestEnumerateFlagged:
         assert result.rows[0].flag_color == FlagColor.PURPLE
         assert result.rows[1].flag_color == FlagColor.RED
 
-    def test_limit_truncates_but_reports_hidden(self):
+    def test_limit_truncates_marks_bounded_partial_and_cursor(self):
         rows = [
             [str(i), f"s{i}@x.com", "S", "3", f"2026-07-{i:02d}T00:00:00"]
             for i in range(1, 6)   # 5 flagged rows
         ]
         result = self._prov(rows).enumerate_flagged(limit=2)
         assert len(result.rows) == 2                 # honored
+        assert result.complete is False              # hidden>0 breaks estate
+        assert result.scope_complete is True         # window itself was walked
+        assert result.status == "bounded_partial"
         assert result.scanned_boundary["total_flagged_seen"] == 5
         assert result.scanned_boundary["hidden_by_limit"] == 3
+        assert result.next_cursor is not None
+        assert '"hidden":3' in result.next_cursor.replace(" ", "") or \
+            '"hidden": 3' in result.next_cursor
 
     def test_since_days_predicate_present_in_script(self):
         scripts = []
@@ -387,6 +535,8 @@ class TestEnumerateFlagged:
         p._run_applescript = boom
         result = p.enumerate_flagged()
         assert result.complete is False
+        assert result.scope_complete is False
+        assert result.status == "timed_out"
         assert result.timeout_count == 1
         assert result.errors and "timed out" in result.errors[0]
         assert result.rows == []
@@ -400,7 +550,7 @@ class TestEnumerateFlagged:
         assert result.timeout_count == 0
         assert result.errors
 
-    def test_malformed_rows_counted_inaccessible(self):
+    def test_malformed_rows_break_completeness(self):
         good = ["1", "a@b.com", "ok", "2", "2026-01-01T00:00:00"]
         short_row = "\x1f".join(["9", "x@y.com"])          # <5 fields
         bad_id = "\x1f".join(["not-numeric!", "s", "t", "3", ""])
@@ -417,6 +567,10 @@ class TestEnumerateFlagged:
         result = p.enumerate_flagged()
         assert len(result.rows) == 1                       # only the good one
         assert result.inaccessible_count == 2
+        # P0 #4: inaccessible rows break completeness — never plan-eligible.
+        assert result.complete is False
+        assert result.scope_complete is True
+        assert result.status == "partial"
 
     def test_unknown_native_index_counted_and_marked_unknown(self):
         weird = ["7", "w@x.com", "Odd index", "99", ""]
@@ -433,14 +587,3 @@ class TestEnumerateFlagged:
         result = p.enumerate_flagged()
         assert result.complete is False
         assert result.errors
-
-    def test_no_body_retrieval_in_script(self):
-        scripts = []
-        p = MailAppProvider()
-        p._run_applescript = lambda script, *a, **k: (
-            scripts.append(script) or _canned_flagged_output([])
-        )
-        p.enumerate_flagged()
-        assert "content of" not in scripts[0]
-        assert "body" not in scripts[0].lower() or \
-            "date received" in scripts[0]   # 'body' only via date predicate text

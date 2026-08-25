@@ -4,10 +4,117 @@ Data models for email automation.
 Provides provider-agnostic data structures for email messages and label actions.
 """
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Set, Dict
 from enum import Enum
+
+
+def _stable_digest(payload) -> str:
+    """Deterministic SHA-256 over canonical JSON (full 64 hex chars)."""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+@dataclass(frozen=True)
+class MessageReference:
+    """Durable, scoped identity for one message on one provider surface.
+
+    Every flag read and write must accept THIS — never a bare provider id.
+    A global Mail.app id is ambiguous across accounts; scoping to the exact
+    account+mailbox and binding observed evidence makes a mutation verifiable
+    against the state that was actually seen.
+
+    ``evidence_digest`` binds the reference to observed message facts
+    (received date, sender digest, subject digest). Mutations MUST refuse
+    when live evidence no longer matches. ``evidence_digest=None`` means
+    "observed without durable evidence" — such references are ineligible
+    for automatic mutation by policy.
+    """
+    provider: str                     # "mailapp" | "gmail" | "imap" | "outlook"
+    account: str                      # exact account name/address
+    mailbox: str                      # exact mailbox/folder name
+    provider_id: str                  # native id, validated by the provider
+    received_iso: Optional[str] = None
+    sender_digest: Optional[str] = None     # sha256(sender)
+    subject_digest: Optional[str] = None    # sha256(subject)
+    message_id_digest: Optional[str] = None # sha256(RFC Message-ID) when known
+    observed_native_flag: Optional[int] = None
+    evidence_digest: Optional[str] = None   # sha256 of stable observed facts
+    snapshot_id: Optional[str] = None
+
+    @property
+    def ref_digest(self) -> str:
+        """PII-free stable digest of the qualified location."""
+        return _stable_digest({
+            "provider": self.provider,
+            "account": self.account,
+            "mailbox": self.mailbox,
+            "provider_id": self.provider_id,
+        })
+
+    @staticmethod
+    def compute_evidence_digest(received_iso: Optional[str],
+                                sender: Optional[str],
+                                subject: Optional[str]) -> str:
+        """Evidence digest from raw observed fields."""
+        return _stable_digest({
+            "received_iso": received_iso,
+            "sender_digest": _stable_digest(sender or "")
+            if sender is not None else None,
+            "subject_digest": _stable_digest(subject or "")
+            if subject is not None else None,
+        })
+
+    def validate_scoped(self) -> None:
+        """Fail closed on an unqualified or malformed reference.
+
+        Raises ValueError when any scope component is empty or the provider
+        id is not a non-empty token — a reference like this must never reach
+        a provider lookup.
+        """
+        for name, value in (
+            ("provider", self.provider), ("account", self.account),
+            ("mailbox", self.mailbox), ("provider_id", self.provider_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"MessageReference.{name} must be a non-empty string"
+                )
+
+    def with_resolved_evidence(self, received_iso: str,
+                               sender: str, subject: str,
+                               message_id_raw: Optional[str] = None
+                               ) -> "MessageReference":
+        """Return a copy bound to freshly resolved evidence fields.
+
+        Used by providers after a scoped resolve so preflight can compare
+        digests; never mutates in place (frozen).
+        """
+        return MessageReference(
+            provider=self.provider, account=self.account,
+            mailbox=self.mailbox, provider_id=self.provider_id,
+            received_iso=received_iso,
+            sender_digest=_stable_digest(sender),
+            subject_digest=_stable_digest(subject),
+            message_id_digest=(
+                _stable_digest(message_id_raw)
+                if message_id_raw is not None else self.message_id_digest
+            ),
+            observed_native_flag=self.observed_native_flag,
+            evidence_digest=self.compute_evidence_digest(
+                received_iso, sender, subject),
+            snapshot_id=self.snapshot_id,
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{self.provider}:{self.account}/{self.mailbox}#{self.provider_id}"
+        )
 
 
 class ActionType(Enum):
@@ -284,6 +391,7 @@ class LabelAction:
     category: Optional[str] = None
     category_color: Optional[str] = None
     due_date: Optional[datetime] = None
+    message_ref: Optional[MessageReference] = None
 
     def merge(self, other: "LabelAction") -> "LabelAction":
         """Merge another action into this one (same message_id assumed).
@@ -340,11 +448,22 @@ class LabelAction:
             raise LabelActionValidationError(
                 "star and flag_color are mutually exclusive; use one or the other"
             )
-        # Flag mutations (either form) must not be mixed with mailbox-changing
-        # operations. A flag mutation is a pure state change; adding/moving/
-        # archiving a message is a separate operation that must be done
-        # independently. Applies to BOTH clear_flag and flag_color forms.
+        # Colored flag operations require a durable scoped reference —
+        # bare provider ids are ambiguous across accounts and cannot be
+        # evidence-verified before mutation. References without durable
+        # evidence are observation-only and ineligible for mutation.
         is_flag_mutation = self.clear_flag or self.flag_color is not None
+        if is_flag_mutation and self.message_ref is None:
+            raise LabelActionValidationError(
+                "colored flag operation requires a qualified MessageReference"
+            )
+        if is_flag_mutation and self.message_ref is not None:
+            if self.message_ref.evidence_digest is None:
+                raise LabelActionValidationError(
+                    "message reference lacks durable evidence digest; "
+                    "ineligible for automatic mutation"
+                )
+            self.message_ref.validate_scoped()
         if is_flag_mutation and (
             self.add_labels or self.remove_labels or self.archive or self.target_folder
         ):
