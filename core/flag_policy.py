@@ -176,6 +176,18 @@ POLICY_RULES = {
         r"\b\d{1,2}/\d{1,2}(/\d{2,4})?\b",
     ],
     "near_term_date_words": ["today", "tonight", "tomorrow"],
+    # Domain classification hints — DECLARATIVE classifier input, therefore
+    # INSIDE the hashed policy object (a hint change must change the digest).
+    "domain_hints": {
+        "career": ["job", "position", "interview", "recruiter", "hiring",
+                   "application", "candidate", "resume", "offer"],
+        "finance": ["invoice", "payment", "bank", "statement", "tax",
+                    "billing", "account", "loan"],
+        "commerce": ["order", "shipped", "delivery", "cart", "purchase",
+                     "refund", "tracking"],
+        "scheduling": ["appointment", "calendar", "meeting", "invite",
+                       "reschedule", "slot"],
+    },
 }
 
 _POLICY_RULES_TEXT = json.dumps(
@@ -184,10 +196,15 @@ _POLICY_RULES_TEXT = json.dumps(
 POLICY_SHA256 = hashlib.sha256(_POLICY_RULES_TEXT).hexdigest()
 
 
-def compute_policy_sha256() -> str:
-    """Deterministic digest of the active rule configuration."""
+def compute_policy_sha256(rules: Optional[Dict[str, Any]] = None) -> str:
+    """Deterministic digest of the active rule configuration.
+
+    ``rules`` override exists so tests can prove that ANY declarative
+    mutation (e.g. a domain hint) changes the digest.
+    """
+    payload = POLICY_RULES if rules is None else rules
     return hashlib.sha256(json.dumps(
-        POLICY_RULES, sort_keys=True, separators=(",", ":"),
+        payload, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")).hexdigest()
 
 
@@ -206,15 +223,11 @@ _MARKETING_WORDS = tuple(w.lower() for w in POLICY_RULES["marketing_indicators"]
 _CONSEQUENCE_MARKERS = [re.compile(re.escape(w), re.I) for w in POLICY_RULES["material_consequence_markers"]]
 _NEAR_TERM_WORDS = tuple(POLICY_RULES["near_term_date_words"])
 
-_DOMAIN_HINTS = {
-    "career": ("job", "position", "interview", "recruiter", "hiring",
-               "application", "candidate", "resume", "offer"),
-    "finance": ("invoice", "payment", "bank", "statement", "tax",
-                "billing", "account", "loan"),
-    "commerce": ("order", "shipped", "delivery", "cart", "purchase",
-                 "refund", "tracking"),
-    "scheduling": ("appointment", "calendar", "meeting", "invite",
-                   "reschedule", "slot"),
+# Derived FROM the hashed policy object — never declared outside it.
+_DOMAIN_HINTS: Dict[str, Tuple[str, ...]] = {
+    domain: tuple(words)
+    for domain, words in cast(Dict[str, Any],
+                              POLICY_RULES["domain_hints"]).items()
 }
 
 
@@ -232,6 +245,7 @@ class Classification:
     due_evidence: Optional[str]       # matched date phrase, if any
     follow_up_evidence: Optional[str]
     operator_state: str               # open_loop|closed|reference_only|deferred
+    marketing_or_bulk: bool           # typed axis — NEVER parsed from strings
     confidence: float
     evidence_basis: Tuple[str, ...]
 
@@ -421,6 +435,7 @@ def classify(sender: str, subject: str) -> Classification:
         follow_up_evidence=(
             other_party_action if owner == "other_party" else None),
         operator_state=state,
+        marketing_or_bulk=bool(marketing_hits),
         confidence=confidence,
         evidence_basis=tuple(evidence),
     )
@@ -491,6 +506,22 @@ def map_to_flag(c: Classification) -> Tuple[FlagColor, str, str]:
     )
 
 
+def is_auto_eligible(c: Classification) -> bool:
+    """STRUCTURAL eligibility gate — typed axes only, never string parsing.
+
+    Marketing/bulk signals hard-exclude auto-eligibility regardless of
+    confidence, so a future weight change can never silently push bulk
+    mail past the threshold. Commit 6 must build preflight on THIS gate,
+    not on confidence numbers alone.
+    """
+    return (
+        c.confidence >= AUTO_ELIGIBLE_THRESHOLD
+        and not c.marketing_or_bulk
+        and c.semantic_type not in ("unclassifiable",
+                                    "unidentifiable_action")
+    )
+
+
 def propose(sender: str, subject: str, observed: FlagColor) -> Proposal:
     """Classify on CONTENT ONLY; compare against the observed flag last.
 
@@ -499,11 +530,6 @@ def propose(sender: str, subject: str, observed: FlagColor) -> Proposal:
     """
     c = classify(sender, subject)
     flag, reason_code, reason = map_to_flag(c)
-    auto = (
-        c.confidence >= AUTO_ELIGIBLE_THRESHOLD
-        and "marketing_indicator" not in c.evidence_basis
-        and c.semantic_type not in ("unclassifiable", "unidentifiable_action")
-    )
     if flag == observed:
         return Proposal(
             observed, observed, RC_NO_CHANGE,
@@ -511,6 +537,7 @@ def propose(sender: str, subject: str, observed: FlagColor) -> Proposal:
             confidence=1.0, review_required=False,
             auto_eligible=False, classification=c,
         )
+    auto = is_auto_eligible(c)
     review_required = not auto or observed == FlagColor.UNKNOWN
     return Proposal(
         observed, flag, reason_code, reason,
@@ -518,8 +545,3 @@ def propose(sender: str, subject: str, observed: FlagColor) -> Proposal:
         auto_eligible=auto and not review_required,
         classification=c,
     )
-
-
-def is_auto_eligible(proposal: Proposal) -> bool:
-    """Threshold gate used by plan construction (writes stay disabled)."""
-    return proposal.auto_eligible

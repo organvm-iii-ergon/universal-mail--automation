@@ -25,7 +25,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.models import FlagColor, MessageReference
 from core.flag_policy import (
@@ -90,6 +90,56 @@ def compute_plan_hash(plan: Dict[str, Any]) -> str:
     """Hash the plan content EXCLUDING its own plan_hash field."""
     body = {k: v for k, v in plan.items() if k != "plan_hash"}
     return sha256_hex(body)
+
+
+# --- Provider-aware native-flag validation registry ---------------------------
+#
+# The generic snapshot model must not hard-code Mail.app's native mapping,
+# but Commit 6 preflight treats observed_native_flag as evidence, so the
+# mapping MUST be validated exactly. Providers REGISTER their
+# native-index→FlagColor transport function at import time; validation is
+# fail-closed (an unregistered provider cannot have its snapshots planned).
+
+NativeFlagValidator = Callable[[Optional[int]], FlagColor]
+_NATIVE_FLAG_VALIDATORS: Dict[str, NativeFlagValidator] = {}
+
+
+def register_native_flag_validator(provider_name: str,
+                                   validator: NativeFlagValidator) -> None:
+    """Register a provider's native-index transport validator."""
+    _NATIVE_FLAG_VALIDATORS[provider_name] = validator
+
+
+def _native_validator_for(provider_name: str) -> NativeFlagValidator:
+    validator = _NATIVE_FLAG_VALIDATORS.get(provider_name)
+    if validator is None:
+        raise FlagWorkflowError(
+            f"no native-flag validator registered for provider "
+            f"{provider_name!r} — import its provider module or refuse "
+            "planning; fail-closed"
+        )
+    return validator
+
+
+def canonical_scan_status(*, scope_complete: bool, errors: List[str],
+                          inaccessible_count: int, timeout_count: int,
+                          hidden_by_limit: int) -> str:
+    """THE deterministic scan-status derivation.
+
+    Single source of truth shared by the provider transport
+    (EnumerationResult._status), estate aggregation, and snapshot
+    validation — precedence: timeouts > failed(errors/scope) >
+    partial(inaccessible) > bounded_partial(hidden) > complete.
+    """
+    if timeout_count:
+        return "timed_out"
+    if errors or not scope_complete:
+        return "failed"
+    if inaccessible_count:
+        return "partial"
+    if hidden_by_limit:
+        return "bounded_partial"
+    return "complete"
 
 
 # --- Snapshot model ---------------------------------------------------------
@@ -171,27 +221,48 @@ class FlagSnapshot:
             raise FlagWorkflowError(
                 "snapshot zero_write_mode must be True — snapshots from a "
                 "mutating producer are untrustworthy")
-        if self.complete:
-            if self.errors:
-                raise FlagWorkflowError(
-                    "cannot mark snapshot complete while errors are recorded")
-            if self.timeout_count:
-                raise FlagWorkflowError(
-                    "cannot mark snapshot complete after timeout")
-            if self.inaccessible_count:
-                raise FlagWorkflowError(
-                    "cannot mark snapshot complete with inaccessible rows")
-            if self.hidden_by_limit:
-                raise FlagWorkflowError(
-                    "cannot mark snapshot complete while rows are hidden by "
-                    "limit (status must be bounded_partial)")
-            if not self.scope_complete:
-                raise FlagWorkflowError(
-                    "cannot mark snapshot complete without scope_complete")
-            if self.status != "complete":
-                raise FlagWorkflowError(
-                    f"complete=True requires status 'complete', "
-                    f"got {self.status!r}")
+
+        # --- Canonical status state machine (bidirectional) ----------------
+        # status and completeness form ONE coherent state, validated against
+        # the same deterministic precedence the transport itself uses.
+        expected_status = canonical_scan_status(
+            scope_complete=self.scope_complete,
+            errors=self.errors,
+            inaccessible_count=self.inaccessible_count,
+            timeout_count=self.timeout_count,
+            hidden_by_limit=self.hidden_by_limit,
+        )
+        if self.status != expected_status:
+            raise FlagWorkflowError(
+                f"status {self.status!r} inconsistent with scan dimensions "
+                f"(canonical: {expected_status!r}, timeouts="
+                f"{self.timeout_count}, errors={len(self.errors)}, "
+                f"inaccessible={self.inaccessible_count}, hidden="
+                f"{self.hidden_by_limit}, scope_complete="
+                f"{self.scope_complete})"
+            )
+        # complete=True IFF canonical 'complete' — BOTH directions enforced.
+        if self.complete != (expected_status == "complete"):
+            raise FlagWorkflowError(
+                f"complete={self.complete} inconsistent with canonical "
+                f"status {expected_status!r}"
+            )
+        if self.status == "timed_out" and not (
+                self.timeout_count > 0 and self.complete is False):
+            raise FlagWorkflowError(
+                "timed_out requires timeout_count > 0 and complete=False")
+        if self.status == "bounded_partial" and not (
+                self.hidden_by_limit > 0 and self.complete is False):
+            raise FlagWorkflowError(
+                "bounded_partial requires hidden_by_limit > 0 and "
+                "complete=False")
+        if self.status == "partial" and not (
+                self.inaccessible_count > 0 and self.complete is False):
+            raise FlagWorkflowError(
+                "partial requires inaccessible_count > 0 and complete=False")
+        if self.status == "failed" and self.complete is not False:
+            raise FlagWorkflowError("failed requires complete=False")
+
         if self.returned_count != len(self.messages):
             raise FlagWorkflowError(
                 f"returned_count {self.returned_count} != actual message "
@@ -207,15 +278,23 @@ class FlagSnapshot:
                 f"unknown_index_count {self.unknown_index_count} != actual "
                 f"UNKNOWN messages {unknown_actual}")
         seen_refs = set()
+        validator = _native_validator_for(self.provider)
         for m in self.messages:
-            # Native/semantic consistency: UNKNOWN <=> no native index.
-            if (m.native_index is None) != (
-                    m.observed_flag == FlagColor.UNKNOWN):
+            # EXACT native↔semantic consistency via the provider registry:
+            # native=0+BLUE and native=4+RED are as impossible as None+RED.
+            try:
+                expected_flag = validator(m.native_index)
+            except Exception as e:
+                raise FlagWorkflowError(
+                    f"message {m.provider_id}: native index "
+                    f"{m.native_index!r} rejected by {self.provider} "
+                    f"transport validator: {e}") from e
+            if expected_flag != m.observed_flag:
                 raise FlagWorkflowError(
                     f"message {m.provider_id}: native_index="
-                    f"{m.native_index!r} inconsistent with observed_flag="
-                    f"{m.observed_flag.value!r} "
-                    "(UNKNOWN <=> missing native index required)")
+                    f"{m.native_index!r} maps to "
+                    f"{expected_flag.value!r} but observed_flag is "
+                    f"{m.observed_flag.value!r}")
             ref = m.ref_digest
             if ref in seen_refs:
                 raise FlagWorkflowError(

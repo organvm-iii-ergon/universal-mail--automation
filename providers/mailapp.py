@@ -146,15 +146,15 @@ class EnumerationResult:
     @staticmethod
     def _status(scope_complete: bool, errors: List[str], inaccessible: int,
                 timeouts: int, hidden: int) -> str:
-        if timeouts:
-            return "timed_out"
-        if errors or not scope_complete:
-            return "failed"
-        if inaccessible:
-            return "partial"
-        if hidden:
-            return "bounded_partial"
-        return "complete"
+        """Delegate to THE canonical derivation (single precedence)."""
+        from core.flag_workflow import canonical_scan_status
+        return canonical_scan_status(
+            scope_complete=scope_complete,
+            errors=errors,
+            inaccessible_count=inaccessible,
+            timeout_count=timeouts,
+            hidden_by_limit=hidden,
+        )
 
     @classmethod
     def build(cls, *, rows: List[FlaggedRow], scope_complete: bool,
@@ -1228,3 +1228,19 @@ class MailAppProvider(EmailProvider):
             hidden_by_limit=hidden_by_limit,
             scanned_boundary=boundary,
         )
+
+
+# Provider-aware snapshot validation: register the EXACT Mail.app native
+# transport mapping so flag_workflow.validate() can prove that every
+# (native_index, observed_flag) pair in a snapshot is a physically possible
+# observation. Fail-closed for any provider without a registration.
+from core.flag_workflow import register_native_flag_validator  # noqa: E402
+
+register_native_flag_validator(
+    MailAppProvider.name,
+    lambda native_index: (
+        FlagColor.UNKNOWN
+        if native_index is None
+        else flag_from_mailapp_index(native_index)
+    ),
+)

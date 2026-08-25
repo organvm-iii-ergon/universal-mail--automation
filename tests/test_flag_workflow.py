@@ -229,7 +229,8 @@ class TestSnapshotModel:
         assert oct(os.stat(unrelated_parent).st_mode)[-3:] == "755"
 
     def test_build_snapshot_rejects_complete_with_errors(self):
-        with pytest.raises(fw.FlagWorkflowError, match="errors are recorded"):
+        with pytest.raises(fw.FlagWorkflowError,
+                           match="inconsistent with scan dimensions"):
             fw.build_snapshot(
                 provider_name="mailapp", account="a", mailbox="INBOX",
                 rows=[], complete=True, scope_complete=True,
@@ -245,9 +246,13 @@ class TestSnapshotModel:
                     status="complete", errors=[], timeout_count=0,
                     unknown_index_count=0, limit=100, since_days=None,
                     total_matched=5, returned_count=0)
-        with pytest.raises(fw.FlagWorkflowError, match="inaccessible"):
+        # Canonical status for inaccessible>0 is 'partial' — producer must
+        # not be able to stamp complete=True over it.
+        with pytest.raises(fw.FlagWorkflowError,
+                           match="inconsistent with scan dimensions"):
             fw.build_snapshot(inaccessible_count=2, hidden_by_limit=0, **base)
-        with pytest.raises(fw.FlagWorkflowError, match="hidden"):
+        with pytest.raises(fw.FlagWorkflowError,
+                           match="inconsistent with scan dimensions"):
             fw.build_snapshot(inaccessible_count=0, hidden_by_limit=3, **base)
 
     def test_load_snapshot_detects_tamper(self, tmp_path):
