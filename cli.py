@@ -2167,61 +2167,49 @@ def cmd_flags_audit(args: argparse.Namespace) -> int:
     )
 
     with provider:
-        try:
-            if getattr(args, "estate", False):
-                estate = flag_workflow.enumerate_estate(
-                    provider,
-                    per_surface_limit=args.limit,
-                    since_days=args.since_days,
-                )
-                snapshot = flag_workflow.build_estate_snapshot(
-                    estate, provider_name=provider.name)
-                result = type("R", (), {
-                    "complete": snapshot.complete,
-                    "scope_complete": snapshot.scope_complete,
-                    "status": snapshot.status,
-                    "errors": snapshot.errors,
-                    "inaccessible_count": snapshot.inaccessible_count,
-                    "timeout_count": snapshot.timeout_count,
-                    "unknown_index_count": snapshot.unknown_index_count,
-                    "next_cursor": None,
-                    "scanned_boundary": {
-                        "total_flagged_seen": snapshot.total_matched,
-                        "hidden_by_limit": snapshot.hidden_by_limit},
-                })()
-            else:
+        if getattr(args, "estate", False):
+            # Estate mode: enumerate_estate returns a typed aggregate and
+            # never raises for discovery or surface-level failures, so no
+            # shim object is needed — build_estate_snapshot yields a real
+            # FlagSnapshot and ALL downstream decisions read from it.
+            estate = flag_workflow.enumerate_estate(
+                provider,
+                per_surface_limit=args.limit,
+                since_days=args.since_days,
+            )
+            snapshot = flag_workflow.build_estate_snapshot(
+                estate, provider_name=provider.name)
+        else:
+            try:
                 result = provider.enumerate_flagged(
                     mailbox=args.mailbox,
                     limit=args.limit,
                     since_days=args.since_days,
                 )
-        except RuntimeError as e:
-            print(f"flags audit: enumeration failed: {e}", file=sys.stderr)
-            return 1
-
-    # Build + durably persist the snapshot BEFORE any exit decision so a
-    # timeout/partial scan always leaves 0600 evidence on disk.
-    if not getattr(args, "estate", False):
-        snapshot = flag_workflow.build_snapshot(
-            provider_name=provider.name,
-            account=args.account or "",
-            mailbox=args.mailbox,
-            rows=result.rows,
-            complete=result.complete,
-            scope_complete=result.scope_complete,
-            status=result.status,
-            errors=result.errors,
-            inaccessible_count=result.inaccessible_count,
-            timeout_count=result.timeout_count,
-            unknown_index_count=result.unknown_index_count,
-            limit=args.limit,
-            since_days=args.since_days,
-            total_matched=result.scanned_boundary.get(
-                "total_flagged_seen", len(result.rows)),
-            returned_count=len(result.rows),
-            hidden_by_limit=result.scanned_boundary.get("hidden_by_limit", 0),
-            next_cursor=result.next_cursor,
-        )
+            except RuntimeError as e:
+                print(f"flags audit: enumeration failed: {e}", file=sys.stderr)
+                return 1
+            snapshot = flag_workflow.build_snapshot(
+                provider_name=provider.name,
+                account=args.account or "",
+                mailbox=args.mailbox,
+                rows=result.rows,
+                complete=result.complete,
+                scope_complete=result.scope_complete,
+                status=result.status,
+                errors=result.errors,
+                inaccessible_count=result.inaccessible_count,
+                timeout_count=result.timeout_count,
+                unknown_index_count=result.unknown_index_count,
+                limit=args.limit,
+                since_days=args.since_days,
+                total_matched=result.scanned_boundary.get(
+                    "total_flagged_seen", len(result.rows)),
+                returned_count=len(result.rows),
+                hidden_by_limit=result.scanned_boundary.get(
+                    "hidden_by_limit", 0),
+                next_cursor=result.next_cursor,
+            )
     snap_dir = Path(
         os.environ.get(
             "UMA_FLAGS_STATE_DIR",
@@ -2230,20 +2218,22 @@ def cmd_flags_audit(args: argparse.Namespace) -> int:
     ) / "snapshots"
     snap_path = flag_workflow.write_private_snapshot(snapshot, snap_dir)
 
-    incomplete = not result.complete
+    # ALL completeness decisions derive uniformly from the SNAPSHOT —
+    # identical code path for single-surface and estate modes.
+    incomplete = not snapshot.complete
     if incomplete and not getattr(args, "allow_partial", False):
         print(
-            f"flags audit: {result.status.upper()} scan "
-            f"({len(result.errors)} errors, "
-            f"{result.inaccessible_count} inaccessible rows, "
-            f"{result.timeout_count} timeouts, "
+            f"flags audit: {snapshot.status.upper()} scan "
+            f"({len(snapshot.errors)} errors, "
+            f"{snapshot.inaccessible_count} inaccessible rows, "
+            f"{snapshot.timeout_count} timeouts, "
             f"{snapshot.hidden_by_limit} hidden by limit). "
             "Private evidence snapshot was still written. This is NOT a "
             "full inventory and MUST NOT be treated as an empty mailbox. "
             "Re-run with --allow-partial to accept the partial report.",
             file=sys.stderr,
         )
-        for err in result.errors:
+        for err in snapshot.errors:
             print(f"  error: {err}", file=sys.stderr)
         print(f"  snapshot: {snap_path}", file=sys.stderr)
         return 20

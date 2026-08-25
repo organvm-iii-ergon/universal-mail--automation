@@ -2,6 +2,7 @@
 approvals, ledger, overrides, rollback receipts (Commit 3 extraction)."""
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -166,6 +167,58 @@ class TestSnapshotModel:
             tmp_path)
         assert p1 != p2
         assert p1.exists() and p2.exists()
+
+    def test_writer_hardens_preexisting_loose_dirs(self, tmp_path):
+        """4b #3: pre-existing 0755 leaf AND managed uma/uma-flags ancestors
+        are hardened to 0700 before the snapshot lands."""
+        state_root = (
+            tmp_path / "home" / ".local" / "share" / "uma" / "flags"
+            / "snapshots"
+        )
+        # Pre-create the WHOLE chain loose, as another tool might have.
+        state_root.mkdir(parents=True, exist_ok=True)
+        os.chmod(state_root, 0o755)
+        os.chmod(state_root.parent, 0o755)           # uma/flags
+        os.chmod(state_root.parent.parent, 0o755)    # uma
+
+        kw = dict(provider_name="mailapp", account="a", mailbox="INBOX",
+                  complete=True, scope_complete=True, status="complete",
+                  errors=[], inaccessible_count=0, timeout_count=0,
+                  unknown_index_count=0, limit=500, since_days=None,
+                  total_matched=1, returned_count=1, hidden_by_limit=0)
+        written = fw.write_private_snapshot(
+            fw.build_snapshot(rows=[_row("1")],
+                              generated_at="2026-08-25T10:00:00+00:00", **kw),
+            state_root)
+
+        def mode(p):
+            return oct(os.stat(p).st_mode)[-3:]
+
+        assert mode(written.parent) == "700"
+        assert mode(state_root.parent) == "700"       # uma/flags
+        assert mode(state_root.parent.parent) == "700"  # uma
+        assert mode(written) == "600"
+
+    def test_writer_leaves_unrelated_flags_named_dir_alone(self, tmp_path):
+        """A directory elsewhere merely NAMED 'flags' is never chmodded."""
+        unrelated_parent = tmp_path / "documents" / "flags"
+        out_dir = unrelated_parent / "out"
+        out_dir.mkdir(parents=True)
+        os.chmod(unrelated_parent, 0o755)
+
+        kw = dict(provider_name="mailapp", account="a", mailbox="INBOX",
+                  complete=True, scope_complete=True, status="complete",
+                  errors=[], inaccessible_count=0, timeout_count=0,
+                  unknown_index_count=0, limit=500, since_days=None,
+                  total_matched=1, returned_count=1, hidden_by_limit=0)
+        written = fw.write_private_snapshot(
+            fw.build_snapshot(rows=[_row("1")],
+                              generated_at="2026-08-25T10:00:00+00:00", **kw),
+            out_dir)
+
+        assert oct(os.stat(written).st_mode)[-3:] == "600"   # leaf hardened
+        # The unrelated 'flags' parent keeps its original loose mode.
+        assert oct(os.stat(unrelated_parent).st_mode)[-3:] == "755"
 
     def test_build_snapshot_rejects_complete_with_errors(self):
         with pytest.raises(fw.FlagWorkflowError, match="errors are recorded"):
@@ -482,9 +535,45 @@ class TestEstateEnumeration:
         prov = self._Provider([], {})
         out = fw.enumerate_estate(prov)
         assert out["estate_complete"] is False
+        # 4b #1: zero surfaces means NOTHING was scanned — that is a FAILED
+        # scan with an explicit reason, never "bounded_partial".
+        assert out["status"] == "failed"
+        assert any(
+            "discovery returned zero surfaces" in e for e in out["errors"]
+        )
         snap = fw.build_estate_snapshot(out, provider_name="mailapp")
+        assert snap.status == "failed"
         with pytest.raises(fw.FlagWorkflowError, match="refusing"):
             fw.build_plan(snap)
+
+    def test_discovery_failure_yields_typed_aggregate_never_crashes(self):
+        """4b #1: a raising discover_surfaces() must produce a typed FAILED
+        aggregate, not propagate out of enumerate_estate."""
+        class ExplodingDiscovery(self._Provider):
+            def discover_surfaces(self):
+                raise RuntimeError("osascript exited 1: not authorised")
+
+        out = fw.enumerate_estate(ExplodingDiscovery([], {}))
+        assert out["estate_complete"] is False
+        assert out["status"] == "failed"
+        assert out["surfaces"] == []
+        assert any(
+            e.startswith("discovery_failed:") for e in out["errors"]
+        )
+        snap = fw.build_estate_snapshot(out, provider_name="mailapp")
+        assert snap.complete is False and snap.status == "failed"
+        with pytest.raises(fw.FlagWorkflowError, match="refusing"):
+            fw.build_plan(snap)
+
+    def test_discovery_error_without_timeout_words_still_failed(self):
+        """Classification is structural/textual-agnostic: a discovery error
+        containing no 'timed out' text still lands as failed."""
+        class WeirdDiscovery(self._Provider):
+            def discover_surfaces(self):
+                raise RuntimeError("bridge hiccup -42")
+
+        out = fw.enumerate_estate(WeirdDiscovery([], {}))
+        assert out["status"] == "failed"
 
     def test_cross_surface_duplicates_removed_by_ref_digest(self):
         s1 = self._Surface("a@x", "INBOX")

@@ -423,6 +423,14 @@ class LabelAction:
                 else self.category_color
             ),
             due_date=other.due_date or self.due_date,
+            # Qualified reference follows the same other-wins-if-set
+            # precedence as flag_color: a merged colored-flag action must
+            # retain its durable identity or downstream validation rejects it.
+            message_ref=(
+                other.message_ref
+                if other.message_ref is not None
+                else self.message_ref
+            ),
         )
 
     def validate(self) -> None:

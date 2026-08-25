@@ -27,6 +27,15 @@ class ProviderScriptError(RuntimeError):
     """Typed provider failure: AppleScript transport/parse/mutation problem."""
 
 
+class ProviderTimeoutError(ProviderScriptError):
+    """osascript exceeded its deadline.
+
+    STRUCTURAL timeout signal: callers must classify incompleteness from
+    this type, never from message substrings (which break across osascript
+    versions, localizations, and reworded wrappers).
+    """
+
+
 class MessageNotFoundError(ProviderScriptError):
     """Scoped lookup resolved zero candidates in the exact account+mailbox."""
 
@@ -262,8 +271,10 @@ class MailAppProvider(EmailProvider):
                 logger.error(f"AppleScript error: {result.stderr}")
                 raise RuntimeError(f"AppleScript failed: {result.stderr}")
             return result.stdout.strip()
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("AppleScript timed out")
+        except subprocess.TimeoutExpired as exc:
+            raise ProviderTimeoutError(
+                f"AppleScript timed out after {timeout}s"
+            ) from exc
         except FileNotFoundError:
             raise RuntimeError("osascript not found - this provider only works on macOS")
 
@@ -764,10 +775,15 @@ class MailAppProvider(EmailProvider):
         return flag_from_mailapp_index(int(raw))
 
     def set_flag_color_ref(self, ref: MessageReference, color: FlagColor) -> bool:
-        """Evidence-verified colored write with read-after-write verification.
+        """Evidence-verified colored write with FULL post-write verification.
 
-        UNKNOWN has no native index (KeyError by contract). Returns True only
-        when the post-write re-read shows the expected native index.
+        UNKNOWN has no native index (KeyError by contract). After the write,
+        the message is RE-RESOLVED and both properties must hold:
+        (a) the evidence digest is still bound — a change between pre-write
+            verify and post-write re-read means the message was moved or
+            edited mid-flight and the outcome is AMBIGUOUS;
+        (b) the native flag index equals the expected value exactly.
+        Returns True only when both hold.
         """
         index = mailapp_index_from_flag(color)   # KeyError for UNKNOWN
         self._verify_evidence(ref)
@@ -789,12 +805,28 @@ class MailAppProvider(EmailProvider):
         except RuntimeError as e:
             logger.error(f"scoped set failed for {ref}: {e}")
             raise ProviderScriptError(f"scoped set failed for {ref}") from e
-        # Read-after-write verification against the EXPECTED native value.
-        post = self.get_flag_color_ref(ref)
-        if post != color:
+        # Post-write: re-resolve ALL evidence fields and require the digest
+        # to still match, then verify the exact native index.
+        fields = self._resolve_scoped_fields(ref)
+        live_digest = MessageReference.compute_evidence_digest(
+            fields["received_iso"], fields["sender"], fields["subject"])
+        bound_digest = ref.evidence_digest
+        if bound_digest is None:      # unreachable: _verify_evidence enforced
+            raise FlagStateDriftError(
+                f"{ref}: evidence binding vanished during write; ambiguous")
+        if live_digest != bound_digest:
+            raise FlagStateDriftError(
+                f"{ref}: evidence changed during write ({live_digest[:12]}… "
+                f"!= {bound_digest[:12]}…); outcome ambiguous"
+            )
+        post_native_raw = fields["native_index"]
+        expected_native: Optional[int] = (
+            -1 if color == FlagColor.NO_FLAG else int(index)
+        )
+        if post_native_raw is None or int(post_native_raw) != expected_native:
             raise ProviderScriptError(
-                f"post-write verification failed for {ref}: expected "
-                f"{color.value}, read back {post.value}"
+                f"post-write verification failed for {ref}: expected native "
+                f"index {expected_native}, read back {post_native_raw}"
             )
         return True
 
@@ -1105,14 +1137,19 @@ class MailAppProvider(EmailProvider):
         script = self._build_flagged_script(mailbox, account, since_days)
         try:
             output = self._run_applescript(script, timeout=timeout_seconds)
-        except RuntimeError as e:
-            msg = str(e)
-            if "timed out" in msg.lower():
-                timeout_count = 1
-            errors.append(f"enumeration failed: {msg}")
+        except ProviderTimeoutError as e:
+            errors.append(f"enumeration timed out: {e}")
             return EnumerationResult.build(
                 rows=[], scope_complete=False, errors=errors,
-                inaccessible_count=0, timeout_count=timeout_count,
+                inaccessible_count=0, timeout_count=1,
+                unknown_index_count=0, hidden_by_limit=0,
+                scanned_boundary=boundary,
+            )
+        except RuntimeError as e:
+            errors.append(f"enumeration failed: {e}")
+            return EnumerationResult.build(
+                rows=[], scope_complete=False, errors=errors,
+                inaccessible_count=0, timeout_count=0,
                 unknown_index_count=0, hidden_by_limit=0,
                 scanned_boundary=boundary,
             )

@@ -12,6 +12,7 @@ from providers.mailapp import (
     flag_from_mailapp_index,
     mailapp_index_from_flag,
     ProviderScriptError,
+    ProviderTimeoutError,
     MessageNotFoundError,
     FlagStateDriftError,
     _FIELD_SEP,
@@ -402,6 +403,24 @@ class TestScopedWrites:
         p = h.prov([h.RESOLVED, "ok", cleared])
         assert p.clear_flag_ref(h.make_ref()) is True
 
+    def test_post_write_evidence_drift_is_ambiguous(self):
+        """4b #5: evidence changing BETWEEN verify and post-write re-read
+        makes the outcome AMBIGUOUS — refuse even when the color looks set."""
+        h = _ScopedHarness
+        recolored_and_edited = (
+            h.RESOLVED.replace("0", "1", 1)          # color appears applied
+            .replace("Statement July", "EDITED")     # ...but subject changed
+        )
+        p = h.prov([h.RESOLVED, "ok", recolored_and_edited])
+        with pytest.raises(FlagStateDriftError, match="during write"):
+            p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE)
+
+    def test_post_write_evidence_intact_and_exact_native_succeeds(self):
+        h = _ScopedHarness
+        matched = h.RESOLVED.replace("0\x1f", "4\x1f", 1)   # BLUE=4, evidence same
+        p = h.prov([h.RESOLVED, "ok", matched])
+        assert p.set_flag_color_ref(h.make_ref(), FlagColor.BLUE) is True
+
     def test_bare_id_colored_methods_are_gone(self):
         """Structural guarantee: no unqualified colored-flag path exists."""
         p = MailAppProvider()
@@ -528,18 +547,36 @@ class TestEnumerateFlagged:
         assert '"In\\"box"' in scripts[0]
         assert 'mailbox "weird"acct"' not in scripts[0]
 
-    def test_runtime_error_becomes_incomplete_not_empty_success(self):
+    def test_timeout_error_becomes_incomplete_not_empty_success(self):
+        """4b #4: timeouts are classified STRUCTURALLY from
+        ProviderTimeoutError — never from message substrings."""
         p = MailAppProvider()
-        def boom(script, *a, **k):
-            raise RuntimeError("AppleScript timed out")
-        p._run_applescript = boom
+        # Message deliberately contains NO 'timed out' text.
+        p._run_applescript = lambda s, *a, **k: (_ for _ in ()).throw(
+            ProviderTimeoutError("deadline exceeded"))
         result = p.enumerate_flagged()
         assert result.complete is False
         assert result.scope_complete is False
         assert result.status == "timed_out"
         assert result.timeout_count == 1
-        assert result.errors and "timed out" in result.errors[0]
+        assert result.errors and "deadline exceeded" in result.errors[0]
         assert result.rows == []
+
+    def test_error_text_containing_timed_out_is_NOT_a_timeout(self):
+        """A plain script error whose TEXT mentions 'timed out' must stay a
+        failure with timeout_count == 0 (substring matching deleted)."""
+        p = MailAppProvider()
+        p._run_applescript = lambda s, *a, **k: (_ for _ in ()).throw(
+            ProviderScriptError("cache log said 'AppleScript timed out' "
+                                "but this is an exit-1 error"))
+        result = p.enumerate_flagged()
+        assert result.status == "failed"
+        assert result.timeout_count == 0
+        assert result.complete is False
+
+    def test_provider_timeout_error_is_script_error_subtype(self):
+        assert issubclass(ProviderTimeoutError, ProviderScriptError)
+        assert issubclass(ProviderTimeoutError, RuntimeError)
 
     def test_non_timeout_error_counts_as_error_only(self):
         p = MailAppProvider()

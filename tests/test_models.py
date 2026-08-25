@@ -160,12 +160,37 @@ class TestLabelAction:
         merged = a.merge(b)
         assert merged.flag_color == FlagColor.NO_FLAG
 
+    def test_merge_preserves_message_ref_other_wins(self):
+        """4b #6: merged colored actions keep a qualified reference
+        (other-wins), else downstream validation would reject the product."""
+        a = LabelAction(message_id="1", flag_color=FlagColor.RED,
+                        message_ref=_vref())
+        b = LabelAction(message_id="1", flag_color=FlagColor.BLUE,
+                        message_ref=_vref(provider_id="2"))
+        merged = a.merge(b)
+        assert merged.message_ref is b.message_ref
 
-def _vref(evidence=True):
+    def test_merge_keeps_self_ref_when_other_lacks_one(self):
+        a = LabelAction(message_id="1", flag_color=FlagColor.RED,
+                        message_ref=_vref())
+        b = LabelAction(message_id="1", flag_color=FlagColor.BLUE)
+        merged = a.merge(b)
+        assert merged.message_ref is a.message_ref
+
+    def test_merged_action_with_ref_passes_validation(self):
+        """End-to-end: merge product of two ref'd actions still validates."""
+        a = LabelAction(message_id="1", message_ref=_vref())
+        b = LabelAction(message_id="1", flag_color=FlagColor.ORANGE,
+                        message_ref=_vref(provider_id="2"))
+        merged = a.merge(b)
+        merged.validate()          # must not raise
+
+
+def _vref(evidence=True, provider_id="1"):
     """Valid scoped reference for validation tests."""
     from core.models import MessageReference
     r = MessageReference(provider="mailapp", account="acct",
-                         mailbox="INBOX", provider_id="1")
+                         mailbox="INBOX", provider_id=provider_id)
     if evidence:
         return r.with_resolved_evidence("2026-01-01T00:00:00",
                                         "a@b.com", "Subject")

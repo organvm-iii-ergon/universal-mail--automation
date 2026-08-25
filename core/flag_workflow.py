@@ -377,14 +377,50 @@ def build_snapshot(
     return snap
 
 
+def _chmod_0700_best_effort(path: Path) -> None:
+    """Best-effort 0700; never blocks the snapshot write."""
+    try:
+        if path.is_dir():
+            os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def _harden_private_dir(path: Path) -> None:
+    """Harden the leaf dir to 0700 plus MANAGED ancestors.
+
+    Managed ancestors are precisely the ``uma`` namespace this application
+    owns: a directory named ``uma``, and ``flags`` / ``snapshots`` components
+    DIRECTLY INSIDE that uma chain. A directory elsewhere that merely happens
+    to be named "flags" is never touched.
+    """
+    resolved = path.resolve()
+    parts = resolved.parts
+    for i, name in enumerate(parts):
+        if name != "uma":
+            continue
+        cand = Path(*parts[: i + 1])
+        _chmod_0700_best_effort(cand)
+        if i + 1 < len(parts) and parts[i + 1] == "flags":
+            cand2 = Path(*parts[: i + 2])
+            _chmod_0700_best_effort(cand2)
+            if i + 2 < len(parts) and parts[i + 2] == "snapshots":
+                _chmod_0700_best_effort(Path(*parts[: i + 3]))
+    _chmod_0700_best_effort(resolved)
+
+
 def write_private_snapshot(snapshot: FlagSnapshot, directory: Path) -> Path:
     """Atomically write the PRIVATE snapshot (mode 0600) under *directory*.
 
-    The directory is created user-private (0700). Atomicity via temp file +
-    os.replace in the same directory.
+    The directory tree is created user-private AND hardened: even when an
+    ancestor (e.g. ~/.local/share/uma/flags) already exists with looser
+    permissions left by another tool, the leaf and every managed ``uma``
+    component are re-chmodded to 0700 before writing. Atomicity via temp
+    file + os.replace in the same directory.
     """
     directory = Path(directory).expanduser()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _harden_private_dir(directory)
     payload = json.dumps(snapshot.to_dict(), indent=2, default=str)
     fd, tmp_name = tempfile.mkstemp(
         dir=directory, prefix=".tmp-snap-", suffix=".json"
@@ -467,10 +503,26 @@ def enumerate_estate(
     recorded and DO break estate completeness. Rows are deduplicated by
     qualified-reference digest across surfaces.
 
-    Returns a typed aggregate — never raises for surface-level failure.
+    Returns a typed aggregate — never raises for surface-level OR discovery
+    failure.
     """
     if surfaces is None:
-        surfaces = provider.discover_surfaces()
+        try:
+            surfaces = provider.discover_surfaces()
+        except Exception as e:   # ProviderScriptError and any transport layer
+            return {
+                "rows": [],
+                "deduplicated_removed": 0,
+                "estate_complete": False,
+                "status": "failed",
+                "errors": [f"discovery_failed: {e}"],
+                "inaccessible_count": 0,
+                "timeout_count": 0,
+                "unknown_index_count": 0,
+                "hidden_by_limit_total": 0,
+                "total_matched_all_surfaces": 0,
+                "surfaces": [],
+            }
     surface_reports: List[Dict[str, Any]] = []
     all_rows: List[Any] = []           # transport rows from provider
     seen_refs: set = set()
@@ -481,6 +533,24 @@ def enumerate_estate(
     unknown_total = 0
     hidden_total = 0
     total_matched_all = 0
+
+    if not surfaces:
+        # Discovery succeeded but found NOTHING: nothing was scanned, so this
+        # is a FAILED estate scan with an explicit reason — never the
+        # misleading "bounded_partial" (which implies partial work happened).
+        return {
+            "rows": [],
+            "deduplicated_removed": 0,
+            "estate_complete": False,
+            "status": "failed",
+            "errors": ["discovery returned zero surfaces"],
+            "inaccessible_count": 0,
+            "timeout_count": 0,
+            "unknown_index_count": 0,
+            "hidden_by_limit_total": 0,
+            "total_matched_all_surfaces": 0,
+            "surfaces": [],
+        }
 
     for surface in surfaces:
         try:
