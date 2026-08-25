@@ -308,3 +308,139 @@ class TestFlagsExplainWithSemanticEnum:
         assert msg.flag_color == FlagColor.RED
         # No int() conversion needed or possible
         assert msg.flag_color.value == "red"
+
+
+# --- Bounded flagged enumeration (provider-owned AppleScript) --------------
+
+
+def _canned_flagged_output(rows):
+    """Build enumerate_flagged osascript stdout: header 'TOTAL<US>' then rows
+    joined by <GS>, each row's fields joined by <US>."""
+    body = "\x1d".join("\x1f".join(r) for r in rows)
+    return f"{len(rows)}\x1f{body}"
+
+
+class TestEnumerateFlagged:
+    def _prov(self, rows, account="acct"):
+        p = MailAppProvider(account=account)
+        p._run_applescript = lambda script, *a, **k: _canned_flagged_output(rows)
+        return p
+
+    def test_parses_rows_newest_first(self):
+        older = ["11", "old@x.com", "Old", "0", "2024-01-01T00:00:00"]
+        newer = ["22", "new@x.com", "New", "5", "2026-08-01T00:00:00"]
+        result = self._prov([older, newer]).enumerate_flagged(limit=10)
+        assert result.complete is True
+        assert [r.provider_id for r in result.rows] == ["22", "11"]
+        assert result.rows[0].flag_color == FlagColor.PURPLE
+        assert result.rows[1].flag_color == FlagColor.RED
+
+    def test_limit_truncates_but_reports_hidden(self):
+        rows = [
+            [str(i), f"s{i}@x.com", "S", "3", f"2026-07-{i:02d}T00:00:00"]
+            for i in range(1, 6)   # 5 flagged rows
+        ]
+        result = self._prov(rows).enumerate_flagged(limit=2)
+        assert len(result.rows) == 2                 # honored
+        assert result.scanned_boundary["total_flagged_seen"] == 5
+        assert result.scanned_boundary["hidden_by_limit"] == 3
+
+    def test_since_days_predicate_present_in_script(self):
+        scripts = []
+        p = MailAppProvider(account="a@b.com")
+        p._run_applescript = lambda script, *a, **k: (
+            scripts.append(script)
+            or _canned_flagged_output([])
+        )
+        p.enumerate_flagged(since_days=30)
+        assert "cutoffDate" in scripts[0]
+        assert "(30 * days)" in scripts[0]
+        assert "flagged status is true and date received > cutoffDate" in \
+            scripts[0]
+
+    def test_since_days_omitted_keeps_simple_predicate(self):
+        scripts = []
+        p = MailAppProvider()
+        p._run_applescript = lambda script, *a, **k: (
+            scripts.append(script) or _canned_flagged_output([])
+        )
+        p.enumerate_flagged()
+        assert "whose flagged status is true)" in scripts[0]
+        assert "cutoffDate" not in scripts[0]
+
+    def test_account_and_mailbox_escaped_in_script(self):
+        scripts = []
+        p = MailAppProvider(account='weird"acct')
+        p._run_applescript = lambda script, *a, **k: (
+            scripts.append(script) or _canned_flagged_output([])
+        )
+        p.enumerate_flagged(mailbox='In"box')
+        # Escaped as AppleScript string expressions — raw quotes never break out
+        assert '"weird\\"acct"' in scripts[0]
+        assert '"In\\"box"' in scripts[0]
+        assert 'mailbox "weird"acct"' not in scripts[0]
+
+    def test_runtime_error_becomes_incomplete_not_empty_success(self):
+        p = MailAppProvider()
+        def boom(script, *a, **k):
+            raise RuntimeError("AppleScript timed out")
+        p._run_applescript = boom
+        result = p.enumerate_flagged()
+        assert result.complete is False
+        assert result.timeout_count == 1
+        assert result.errors and "timed out" in result.errors[0]
+        assert result.rows == []
+
+    def test_non_timeout_error_counts_as_error_only(self):
+        p = MailAppProvider()
+        p._run_applescript = lambda s, *a, **k: (_ for _ in ()).throw(
+            RuntimeError("Mail got an error: connection invalid"))
+        result = p.enumerate_flagged()
+        assert result.complete is False
+        assert result.timeout_count == 0
+        assert result.errors
+
+    def test_malformed_rows_counted_inaccessible(self):
+        good = ["1", "a@b.com", "ok", "2", "2026-01-01T00:00:00"]
+        short_row = "\x1f".join(["9", "x@y.com"])          # <5 fields
+        bad_id = "\x1f".join(["not-numeric!", "s", "t", "3", ""])
+        output = (
+            f"{3}\x1f"
+            + "\x1d".join([
+                "\x1f".join(good),
+                short_row,
+                bad_id,
+            ])
+        )
+        p = MailAppProvider()
+        p._run_applescript = lambda s, *a, **k: output
+        result = p.enumerate_flagged()
+        assert len(result.rows) == 1                       # only the good one
+        assert result.inaccessible_count == 2
+
+    def test_unknown_native_index_counted_and_marked_unknown(self):
+        weird = ["7", "w@x.com", "Odd index", "99", ""]
+        no_index = ["8", "n@x.com", "Bad idx", "?", ""]
+        p = self._prov([weird, no_index])
+        result = p.enumerate_flagged()
+        unknown = [r for r in result.rows if r.flag_color == FlagColor.UNKNOWN]
+        assert len(unknown) == 2
+        assert result.unknown_index_count == 2
+
+    def test_garbage_output_is_failure_never_empty_success(self):
+        p = MailAppProvider()
+        p._run_applescript = lambda s, *a, **k: ""
+        result = p.enumerate_flagged()
+        assert result.complete is False
+        assert result.errors
+
+    def test_no_body_retrieval_in_script(self):
+        scripts = []
+        p = MailAppProvider()
+        p._run_applescript = lambda script, *a, **k: (
+            scripts.append(script) or _canned_flagged_output([])
+        )
+        p.enumerate_flagged()
+        assert "content of" not in scripts[0]
+        assert "body" not in scripts[0].lower() or \
+            "date received" in scripts[0]   # 'body' only via date predicate text

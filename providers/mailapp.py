@@ -8,8 +8,9 @@ categorization and organization.
 import logging
 import subprocess
 import sys
-from datetime import datetime
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from providers.base import (
     EmailProvider,
@@ -62,6 +63,46 @@ def mailapp_index_from_flag(flag: FlagColor) -> int:
 # the single headers column (a raw header block's own newlines would break the row protocol).
 _FIELD_SEP = "\x1f"   # unit separator — between columns
 _HDR_SEP = "\x1e"     # record separator — between header lines in the headers column
+_ROW_SEP = "\x1d"     # group separator — between flagged-enumeration rows
+
+
+@dataclass(frozen=True)
+class FlaggedRow:
+    """One flagged message as observed at enumeration time (transport level).
+
+    ``native_index`` is None when Mail.app returned something non-numeric;
+    ``flag_color`` is UNKNOWN when the index is missing or unmapped. Both
+    failure shapes are counted separately by :class:`EnumerationResult`.
+    """
+    provider_id: str
+    account: str
+    mailbox: str
+    sender: str
+    subject: str
+    native_index: Optional[int]
+    flag_color: FlagColor
+    received_iso: Optional[str] = None
+
+
+@dataclass
+class EnumerationResult:
+    """Typed result of a flagged-message enumeration. Never a bare list.
+
+    ``complete=False`` means the scan did not finish honestly (timeout,
+    AppleScript error, partial parse) — callers must not treat the rows as
+    the full flagged estate, and must not label the run "no messages found".
+    """
+    rows: List[FlaggedRow]
+    complete: bool
+    errors: List[str]
+    inaccessible_count: int
+    timeout_count: int
+    unknown_index_count: int
+    scanned_boundary: Dict[str, Any]
+
+    @property
+    def total_rows(self) -> int:
+        return len(self.rows)
 
 
 def _parse_bulk_headers(blob: str) -> Dict[str, str]:
@@ -710,3 +751,188 @@ class MailAppProvider(EmailProvider):
             return [name.strip() for name in output.split("\n") if name.strip()]
         except RuntimeError:
             return []
+
+    # --- Bounded flagged-message enumeration ---------------------------------
+    #
+    # Owns the AppleScript for flagged-estate scans so no CLI/workflow layer
+    # ever constructs AppleScript or touches _run_applescript. The flagged
+    # `whose` predicate bounds what Mail.app materializes; a date window can
+    # further bound it. Rows come back newest-first (sorted client-side on
+    # received date) and are truncated to `limit` AFTER the full honest count,
+    # so the result can report how much a limit hid.
+
+    def _build_flagged_script(
+        self,
+        mailbox: str,
+        account: str,
+        since_days: Optional[int],
+    ) -> str:
+        """Build the flagged-enumeration AppleScript. PURE (no I/O).
+
+        Account and mailbox names go through _as_applescript so quotes and
+        newlines in either cannot break out of the string literal. Each row
+        field degrades independently (empty placeholder) so one bad property
+        never drops the whole message.
+        """
+        mailbox_e = self._as_applescript(mailbox)
+        account_e = self._as_applescript(account)
+        if since_days is not None:
+            predicate = (
+                "set cutoffDate to (current date) - "
+                f"({int(since_days)} * days)\n"
+                "            set flaggedMsgs to (messages of targetMailbox "
+                "whose flagged status is true and date received > cutoffDate)"
+            )
+        else:
+            predicate = (
+                "set flaggedMsgs to (messages of targetMailbox "
+                "whose flagged status is true)"
+            )
+        return (
+            '        set fieldSep to (ASCII character 31)\n'
+            '        set recSep to (ASCII character 29)\n'
+            '        tell application "Mail"\n'
+            f'            set targetMailbox to mailbox {mailbox_e} of account {account_e}\n'
+            f'            {predicate}\n'
+            '            set rowCount to count of flaggedMsgs\n'
+            '            set outRows to {}\n'
+            '            repeat with m in flaggedMsgs\n'
+            '                set rowText to (id of m as string)\n'
+            '                try\n'
+            '                    set rowText to rowText & fieldSep & (sender of m)\n'
+            '                on error\n'
+            '                    set rowText to rowText & fieldSep & ""\n'
+            '                end try\n'
+            '                try\n'
+            '                    set rowText to rowText & fieldSep & (subject of m)\n'
+            '                on error\n'
+            '                    set rowText to rowText & fieldSep & ""\n'
+            '                end try\n'
+            '                try\n'
+            '                    set rowText to rowText & fieldSep & (flag index of m as string)\n'
+            '                on error\n'
+            '                    set rowText to rowText & fieldSep & "?"\n'
+            '                end try\n'
+            '                try\n'
+            '                    set rowText to rowText & fieldSep & '
+            '((date received of m) as «class isot» as string)\n'
+            '                on error\n'
+            '                    set rowText to rowText & fieldSep & ""\n'
+            '                end try\n'
+            '                set end of outRows to rowText\n'
+            '            end repeat\n'
+            '            set AppleScript\'s text item delimiters to recSep\n'
+            '            return (rowCount as string) & fieldSep & (outRows as string)\n'
+            '        end tell\n'
+            '        '
+        )
+
+    def enumerate_flagged(
+        self,
+        mailbox: str = "INBOX",
+        limit: int = 500,
+        since_days: Optional[int] = None,
+        timeout_seconds: int = 600,
+    ) -> EnumerationResult:
+        """Enumerate flagged messages in one account-scoped mailbox surface.
+
+        Honors ``limit`` (rows truncated newest-first AFTER counting the full
+        predicate-bounded set, so truncation is visible) and ``since_days``
+        (Mail.app-side date predicate). A failure raises nothing and returns
+        an INCOMPLETE result with the error recorded — never an empty success.
+        """
+        account = self.account or ""
+        boundary: Dict[str, object] = {
+            "provider": self.name,
+            "account": account,
+            "mailbox": mailbox,
+            "limit": int(limit),
+            "since_days": since_days,
+        }
+        errors: List[str] = []
+        inaccessible = 0
+        unknown_index = 0
+        timeout_count = 0
+
+        script = self._build_flagged_script(mailbox, account, since_days)
+        try:
+            output = self._run_applescript(script, timeout=timeout_seconds)
+        except RuntimeError as e:
+            msg = str(e)
+            if "timed out" in msg.lower():
+                timeout_count = 1
+            errors.append(f"enumeration failed: {msg}")
+            return EnumerationResult(
+                rows=[], complete=False, errors=errors,
+                inaccessible_count=0, timeout_count=timeout_count,
+                unknown_index_count=0, scanned_boundary=boundary,
+            )
+
+        rows: List[FlaggedRow] = []
+        total_seen = -1
+        if _FIELD_SEP not in output:
+            errors.append("malformed enumeration output (missing header)")
+            return EnumerationResult(
+                rows=[], complete=False, errors=errors,
+                inaccessible_count=0, timeout_count=0,
+                unknown_index_count=0, scanned_boundary=boundary,
+            )
+        header, _, body = output.partition(_FIELD_SEP)
+        try:
+            total_seen = int(header.strip())
+        except ValueError:
+            errors.append("malformed enumeration header count")
+
+        parsed_rows: List[FlaggedRow] = []
+        for raw in body.split(_ROW_SEP):
+            line = raw.strip("\n")
+            if not line:
+                continue
+            parts = line.split(_FIELD_SEP)
+            if len(parts) < 5:
+                inaccessible += 1
+                continue
+            provider_id, sender, subject, index_s, received_iso = parts[:5]
+            if not provider_id.strip().lstrip("-").isdigit():
+                inaccessible += 1
+                continue
+            try:
+                native_index: Optional[int] = int(index_s.strip())
+            except ValueError:
+                native_index = None
+            color = flag_from_mailapp_index(native_index) if native_index is not None \
+                else FlagColor.UNKNOWN
+            if color == FlagColor.UNKNOWN:
+                unknown_index += 1
+            parsed_rows.append(FlaggedRow(
+                provider_id=provider_id.strip(),
+                account=account,
+                mailbox=mailbox,
+                sender=sender,
+                subject=subject,
+                native_index=native_index,
+                flag_color=color,
+                received_iso=received_iso or None,
+            ))
+
+        # Newest-first by received date where parseable; unparseable dates sink.
+        def _sort_key(r: FlaggedRow):
+            if r.received_iso:
+                try:
+                    return datetime.fromisoformat(
+                        r.received_iso.replace("Z", "+00:00"))
+                except ValueError:
+                    pass
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+        parsed_rows.sort(key=_sort_key, reverse=True)
+        hidden_by_limit = max(0, len(parsed_rows) - int(limit))
+        rows = parsed_rows[:max(0, int(limit))]
+        boundary["total_flagged_seen"] = total_seen
+        boundary["hidden_by_limit"] = hidden_by_limit
+        complete = total_seen >= 0 and not errors
+        return EnumerationResult(
+            rows=rows, complete=complete, errors=errors,
+            inaccessible_count=inaccessible, timeout_count=timeout_count,
+            unknown_index_count=unknown_index, scanned_boundary=boundary,
+        )
