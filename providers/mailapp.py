@@ -52,39 +52,13 @@ class SurfaceRef:
     mailbox: str
 
 # --- Mail.app native index <-> semantic FlagColor mapping ---
-# Mail.app owns these tables. Unknown native indices map to UNKNOWN,
-# never to NO_FLAG — absence of a flag is a distinct state from an
-# unrecognized one.
-MAILAPP_INDEX_TO_FLAG: Dict[int, FlagColor] = {
-    -1: FlagColor.NO_FLAG,
-    0: FlagColor.RED,
-    1: FlagColor.ORANGE,
-    2: FlagColor.YELLOW,
-    3: FlagColor.GREEN,
-    4: FlagColor.BLUE,
-    5: FlagColor.PURPLE,
-    6: FlagColor.GRAY,
-}
-
-MAILAPP_FLAG_TO_INDEX: Dict[FlagColor, int] = {
-    v: k for k, v in MAILAPP_INDEX_TO_FLAG.items() if v != FlagColor.UNKNOWN
-}
-
-
-def flag_from_mailapp_index(index: int) -> FlagColor:
-    """Convert a Mail.app flag index to a semantic FlagColor.
-
-    Unknown indices map to FlagColor.UNKNOWN, never to NO_FLAG.
-    """
-    return MAILAPP_INDEX_TO_FLAG.get(index, FlagColor.UNKNOWN)
-
-
-def mailapp_index_from_flag(flag: FlagColor) -> int:
-    """Convert a semantic FlagColor to a Mail.app flag index.
-
-    Raises KeyError for UNKNOWN — there is no valid native index for it.
-    """
-    return MAILAPP_FLAG_TO_INDEX[flag]
+# The mapping is OWNED by the pure, I/O-free module providers.flag_codecs so
+# artifact validation can work in a fresh process without importing this
+# runtime provider. Names are re-exported here for existing consumers.
+from providers.flag_codecs import MAILAPP_FLAG_TO_INDEX  # noqa: F401 E402
+from providers.flag_codecs import MAILAPP_INDEX_TO_FLAG  # noqa: F401 E402
+from providers.flag_codecs import flag_from_mailapp_index  # noqa: F401 E402
+from providers.flag_codecs import mailapp_index_from_flag  # noqa: F401 E402
 
 # In-band delimiters for the AppleScript pseudo-JSON transport. Chosen from the C0 control
 # range so they can never collide with a header value, subject, or sender. FIELD_SEP splits
@@ -1228,19 +1202,3 @@ class MailAppProvider(EmailProvider):
             hidden_by_limit=hidden_by_limit,
             scanned_boundary=boundary,
         )
-
-
-# Provider-aware snapshot validation: register the EXACT Mail.app native
-# transport mapping so flag_workflow.validate() can prove that every
-# (native_index, observed_flag) pair in a snapshot is a physically possible
-# observation. Fail-closed for any provider without a registration.
-from core.flag_workflow import register_native_flag_validator  # noqa: E402
-
-register_native_flag_validator(
-    MailAppProvider.name,
-    lambda native_index: (
-        FlagColor.UNKNOWN
-        if native_index is None
-        else flag_from_mailapp_index(native_index)
-    ),
-)

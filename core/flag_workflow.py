@@ -103,15 +103,51 @@ def compute_plan_hash(plan: Dict[str, Any]) -> str:
 NativeFlagValidator = Callable[[Optional[int]], FlagColor]
 _NATIVE_FLAG_VALIDATORS: Dict[str, NativeFlagValidator] = {}
 
+# Declarative bootstrap map: provider name -> PURE codec module path.
+# Codec modules are I/O-free by contract (no provider construction, no
+# connections, no AppleScript/osascript, no enumeration) and are imported
+# lazily ONLY when a snapshot for that provider must be validated — so
+# artifact-only planning works in a completely fresh process.
+_PROVIDER_CODEC_MODULES: Dict[str, str] = {
+    "mailapp": "providers.flag_codecs",
+}
+
 
 def register_native_flag_validator(provider_name: str,
                                    validator: NativeFlagValidator) -> None:
-    """Register a provider's native-index transport validator."""
+    """Register a provider's native-index transport validator.
+
+    NON-OVERWRITING: registering a DIFFERENT validator for an already
+    registered provider raises — a mutable global that later code could
+    silently replace would weaken the artifact-validation boundary.
+    Registering the IDENTICAL function is an accepted no-op (idempotent).
+    """
+    existing = _NATIVE_FLAG_VALIDATORS.get(provider_name)
+    if existing is not None:
+        if existing is validator:
+            return                      # idempotent re-registration: harmless
+        raise FlagWorkflowError(
+            f"a different native-flag validator is already registered "
+            f"for provider {provider_name!r} — conflicting registration "
+            f"refused")
     _NATIVE_FLAG_VALIDATORS[provider_name] = validator
 
 
 def _native_validator_for(provider_name: str) -> NativeFlagValidator:
     validator = _NATIVE_FLAG_VALIDATORS.get(provider_name)
+    if validator is None:
+        # Bootstrap the PURE codec (I/O-free) if one is declared. This
+        # never constructs a runtime provider nor touches Mail.app. The
+        # explicit register() call handles already-cached modules (importlib
+        # does not re-run module bodies on cache hits).
+        import importlib
+        codec_path = _PROVIDER_CODEC_MODULES.get(provider_name)
+        if codec_path is not None:
+            codec = importlib.import_module(codec_path)
+            register_hook = getattr(codec, "register", None)
+            if callable(register_hook):
+                register_hook()
+            validator = _NATIVE_FLAG_VALIDATORS.get(provider_name)
     if validator is None:
         raise FlagWorkflowError(
             f"no native-flag validator registered for provider "
