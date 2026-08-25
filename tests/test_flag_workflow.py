@@ -11,10 +11,18 @@ from core.models import FlagColor
 from core import flag_workflow as fw
 from core.flag_policy import (
     MIGRATION_POLICY_VERSION,
+    POLICY_SHA256,
     propose,
-    RC_CAREER_SIGNAL_ORANGE,
-    RC_AMBIGUOUS_PURPLE,
+    RC_LOW_CONFIDENCE_PURPLE,
 )
+from providers.mailapp import mailapp_index_from_flag
+
+
+def _native(color=FlagColor.RED):
+    """Consistent native index for a semantic color (None only for UNKNOWN)."""
+    if color == FlagColor.UNKNOWN:
+        return None
+    return mailapp_index_from_flag(color)
 
 
 def _msg(provider_id="1", sender="a@b.com", subject="Hi",
@@ -22,7 +30,7 @@ def _msg(provider_id="1", sender="a@b.com", subject="Hi",
     return fw.SnapshotMessage(
         provider="mailapp", account=account, mailbox=mailbox,
         provider_id=provider_id, sender=sender, subject=subject,
-        native_index=None, observed_flag=color, received_iso=None,
+        native_index=_native(color), observed_flag=color, received_iso=None,
     )
 
 
@@ -33,7 +41,7 @@ def _row(provider_id="1", sender="a@b.com", subject="Hi",
     from types import SimpleNamespace
     return SimpleNamespace(
         provider_id=provider_id, account=account, mailbox=mailbox,
-        sender=sender, subject=subject, native_index=None,
+        sender=sender, subject=subject, native_index=_native(color),
         flag_color=color, received_iso=received_iso)
 
 
@@ -263,17 +271,26 @@ class TestPlanBuildingAndValidation:
             _msg("2", "unknown@y.com", "mystery"),
         ])
 
-    def test_plan_binds_full_snapshot_hash_and_is_review_only(self):
+    def test_plan_binds_full_snapshot_hash_and_policy_digest(self):
         snap = self._complete_snapshot()
         plan = fw.build_plan(snap)
         assert plan["snapshot_sha256"] == snap.to_dict()["content_hash"]
         assert len(plan["plan_hash"]) == 64
         assert plan["policy_version"] == MIGRATION_POLICY_VERSION
+        assert plan["policy_sha256"] == POLICY_SHA256
         assert plan["zero_write_declaration"] is True
         for m in plan["mutations"]:
-            assert m["review_required"] is True       # legacy policy gate
-            assert m["confidence"] is None             # no fake 0.7
-            assert "sender" not in m and "subject" not in m   # no PII
+            # Measured confidence — never None-by-laziness, never fake 0.7.
+            assert isinstance(m["confidence"], float)
+            assert 0.0 <= m["confidence"] <= 1.0
+            if m["confidence"] < fw.AUTO_ELIGIBLE_THRESHOLD:
+                assert m["review_required"] is True
+            # Durable private bindings ride along for Commit 6 preflight.
+            for key in ("provider", "account", "mailbox", "provider_id",
+                        "snapshot_id", "evidence_digest"):
+                assert key in m
+            assert m["snapshot_id"] == snap.snapshot_id
+            assert "sender" not in m and "subject" not in m   # no raw PII
 
     def test_incomplete_snapshot_cannot_produce_plan(self):
         snap = self._complete_snapshot()
@@ -452,7 +469,11 @@ class TestRollbackReceipt:
 
 
 class TestLegacyPolicyContract:
-    def test_all_proposals_review_only_without_fake_confidence(self):
+    """Commit 5: the legacy heuristic is REPLACED; this suite now pins the
+    evidence-classifier contract (deterministic, review-gated, no fake
+    confidence, legacy color never drives semantics)."""
+
+    def test_all_proposals_carry_measured_confidence(self):
         for sender, subject, observed in [
             ("recruiter@x.com", "job opportunity", FlagColor.RED),
             ("a@b.com", "", FlagColor.RED),
@@ -461,15 +482,21 @@ class TestLegacyPolicyContract:
         ]:
             p = propose(sender, subject, observed)
             if not p.is_identity:
-                assert p.review_required is True
-                assert p.confidence is None
+                # Confidence is always a real measured number now.
+                assert isinstance(p.confidence, float)
+                assert 0.0 <= p.confidence <= 1.0
+                if p.confidence < 0.80:      # below AUTO threshold
+                    assert p.review_required is True
 
-    def test_reason_codes_are_deterministic(self):
-        p1 = propose("recruiter@x.com", "interview", FlagColor.RED)
-        p2 = propose("RECRUITER@X.COM", "INTERVIEW", FlagColor.RED)
-        assert p1.reason_code == p2.reason_code == RC_CAREER_SIGNAL_ORANGE
+    def test_reason_codes_are_deterministic_and_case_insensitive(self):
+        p1 = propose("recruiter@x.com", "Please choose an interview slot",
+                     FlagColor.RED)
+        p2 = propose("RECRUITER@X.COM", "PLEASE CHOOSE AN INTERVIEW SLOT",
+                     FlagColor.NO_FLAG)
+        assert p1.reason_code == p2.reason_code
+        assert p1.proposed_flag == p2.proposed_flag == FlagColor.ORANGE
         p3 = propose("nothing@matches.here", "no signals at all", FlagColor.RED)
-        assert p3.reason_code == RC_AMBIGUOUS_PURPLE
+        assert p3.reason_code == RC_LOW_CONFIDENCE_PURPLE
 
 
 class TestEstateEnumeration:

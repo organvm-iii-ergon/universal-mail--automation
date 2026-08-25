@@ -28,13 +28,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.models import FlagColor, MessageReference
-from core.flag_policy import MIGRATION_POLICY_VERSION, Proposal, propose
+from core.flag_policy import (
+    AUTO_ELIGIBLE_THRESHOLD,
+    MIGRATION_POLICY_VERSION,
+    POLICY_SHA256,
+    Proposal,
+    propose,
+)
 
 # --- Schema names ----------------------------------------------------------
 
 SNAPSHOT_SCHEMA = "uma.flags.snapshot.v1"
 PUBLIC_RECEIPT_SCHEMA = "uma.flags.public_receipt.v1"
-PLAN_SCHEMA = "uma.flags.migration.plan.v2"
+PLAN_SCHEMA = "uma.flags.migration.plan.v3"       # v3: durable ref bindings + policy_sha256
+PUBLIC_PLAN_SCHEMA = "uma.flags.migration.plan.public.v1"
 APPROVAL_SCHEMA = "uma.flags.approval.v1"
 APPLY_RECEIPT_SCHEMA = "uma.flags.apply_receipt.v1"
 ROLLBACK_RECEIPT_SCHEMA = "uma.flags.rollback_receipt.v1"
@@ -151,6 +158,70 @@ class FlagSnapshot:
     next_cursor: Optional[str]
     messages: List[SnapshotMessage]
     content_hash: str                 # sha256 over everything except itself
+
+    def validate(self) -> None:
+        """Semantic validation — hash integrity is NOT enough.
+
+        An attacker (or buggy producer) can recompute a valid content_hash
+        over semantically impossible content. Every invariant that makes a
+        snapshot MEANINGFUL is re-checked here; build_snapshot() and
+        load_snapshot() both call this.
+        """
+        if self.zero_write_mode is False:
+            raise FlagWorkflowError(
+                "snapshot zero_write_mode must be True — snapshots from a "
+                "mutating producer are untrustworthy")
+        if self.complete:
+            if self.errors:
+                raise FlagWorkflowError(
+                    "cannot mark snapshot complete while errors are recorded")
+            if self.timeout_count:
+                raise FlagWorkflowError(
+                    "cannot mark snapshot complete after timeout")
+            if self.inaccessible_count:
+                raise FlagWorkflowError(
+                    "cannot mark snapshot complete with inaccessible rows")
+            if self.hidden_by_limit:
+                raise FlagWorkflowError(
+                    "cannot mark snapshot complete while rows are hidden by "
+                    "limit (status must be bounded_partial)")
+            if not self.scope_complete:
+                raise FlagWorkflowError(
+                    "cannot mark snapshot complete without scope_complete")
+            if self.status != "complete":
+                raise FlagWorkflowError(
+                    f"complete=True requires status 'complete', "
+                    f"got {self.status!r}")
+        if self.returned_count != len(self.messages):
+            raise FlagWorkflowError(
+                f"returned_count {self.returned_count} != actual message "
+                f"count {len(self.messages)}")
+        if self.total_matched < self.returned_count:
+            raise FlagWorkflowError(
+                f"total_matched {self.total_matched} < returned_count "
+                f"{self.returned_count}")
+        unknown_actual = sum(
+            1 for m in self.messages if m.observed_flag == FlagColor.UNKNOWN)
+        if unknown_actual != self.unknown_index_count:
+            raise FlagWorkflowError(
+                f"unknown_index_count {self.unknown_index_count} != actual "
+                f"UNKNOWN messages {unknown_actual}")
+        seen_refs = set()
+        for m in self.messages:
+            # Native/semantic consistency: UNKNOWN <=> no native index.
+            if (m.native_index is None) != (
+                    m.observed_flag == FlagColor.UNKNOWN):
+                raise FlagWorkflowError(
+                    f"message {m.provider_id}: native_index="
+                    f"{m.native_index!r} inconsistent with observed_flag="
+                    f"{m.observed_flag.value!r} "
+                    "(UNKNOWN <=> missing native index required)")
+            ref = m.ref_digest
+            if ref in seen_refs:
+                raise FlagWorkflowError(
+                    f"duplicate qualified reference in deduplicated "
+                    f"snapshot: {ref[:16]}…")
+            seen_refs.add(ref)
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
@@ -303,26 +374,6 @@ def build_snapshot(
     """
     generated_at = generated_at or datetime.now(timezone.utc).isoformat()
 
-    # Strict completeness contract — mirrors EnumerationResult.build and is
-    # re-verified here because snapshots are the plan-eligibility boundary.
-    if complete:
-        if errors:
-            raise FlagWorkflowError(
-                "cannot mark snapshot complete while errors are recorded")
-        if timeout_count:
-            raise FlagWorkflowError(
-                "cannot mark snapshot complete after timeout")
-        if inaccessible_count:
-            raise FlagWorkflowError(
-                "cannot mark snapshot complete with inaccessible rows")
-        if hidden_by_limit:
-            raise FlagWorkflowError(
-                "cannot mark snapshot complete while rows are hidden by "
-                "limit (status must be bounded_partial)")
-        if not scope_complete:
-            raise FlagWorkflowError(
-                "cannot mark snapshot complete without scope_complete")
-
     messages = [
         SnapshotMessage(
             provider=getattr(r, "provider", None) or provider_name,
@@ -374,6 +425,9 @@ def build_snapshot(
         content_hash="",
     )
     snap.content_hash = snap.to_dict()["content_hash"]
+    # Semantic validation (same contract load_snapshot enforces) — snapshots
+    # are the plan-eligibility boundary, so the producer side re-checks too.
+    snap.validate()
     return snap
 
 
@@ -461,7 +515,7 @@ def load_snapshot(path: Path) -> FlagSnapshot:
         )
         for m in raw.get("messages", [])
     ]
-    return FlagSnapshot(
+    snapshot = FlagSnapshot(
         schema=raw["schema"], snapshot_id=raw["snapshot_id"],
         generated_at=raw["generated_at"], provider=raw["provider"],
         account=raw["account"], mailbox=raw["mailbox"],
@@ -483,7 +537,10 @@ def load_snapshot(path: Path) -> FlagSnapshot:
         next_cursor=raw.get("next_cursor"),
         messages=messages, content_hash=stored,
     )
-
+    # Hash verified above; now verify SEMANTICS — a valid hash over
+    # impossible content (e.g. complete=True with errors) must fail closed.
+    snapshot.validate()
+    return snapshot
 
 # --- Estate-wide enumeration (multi-surface) ---------------------------------
 
@@ -657,7 +714,14 @@ def build_estate_snapshot(estate: Dict[str, Any], *, provider_name: str,
 
 @dataclass(frozen=True)
 class PlannedMutation:
-    """One proposed flag change, review-gated by construction."""
+    """One proposed flag change, review-gated by construction.
+
+    Commit 5: carries the DURABLE PRIVATE BINDINGS Commit 6's preflight
+    will need to reconstruct the exact qualified target — provider,
+    account, mailbox, provider_id, snapshot_id, observed native flag,
+    evidence digest (and the RFC Message-ID digest when the provider has
+    captured one). These NEVER enter the public-safe projection.
+    """
     mutation_id: str
     ref_digest: str
     observed_flag: FlagColor
@@ -666,6 +730,14 @@ class PlannedMutation:
     reason: str
     confidence: Optional[float]
     review_required: bool
+    provider: str = ""
+    account: str = ""
+    mailbox: str = ""
+    provider_id: str = ""
+    snapshot_id: str = ""
+    observed_native_flag: Optional[int] = None
+    evidence_digest: Optional[str] = None
+    message_id_digest: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -677,6 +749,14 @@ class PlannedMutation:
             "reason": self.reason,
             "confidence": self.confidence,
             "review_required": self.review_required,
+            "provider": self.provider,
+            "account": self.account,
+            "mailbox": self.mailbox,
+            "provider_id": self.provider_id,
+            "snapshot_id": self.snapshot_id,
+            "observed_native_flag": self.observed_native_flag,
+            "evidence_digest": self.evidence_digest,
+            "message_id_digest": self.message_id_digest,
         }
 
 
@@ -685,6 +765,9 @@ def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
     for key in (
         "mutation_id", "ref_digest", "observed_flag",
         "proposed_flag", "reason_code", "review_required",
+        # v3 durable bindings — required, not optional.
+        "provider", "account", "mailbox", "provider_id", "snapshot_id",
+        "observed_native_flag", "evidence_digest", "message_id_digest",
     ):
         if key not in d:
             raise FlagWorkflowError(f"{prefix}: missing required key {key!r}")
@@ -693,6 +776,7 @@ def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
         isinstance(confidence, (int, float)) and 0.0 <= float(confidence) <= 1.0
     ):
         raise FlagWorkflowError(f"{prefix}: confidence must be null or in [0,1]")
+    native = d["observed_native_flag"]
     return PlannedMutation(
         mutation_id=str(d["mutation_id"]),
         ref_digest=require_hex256(d["ref_digest"], f"{prefix}.ref_digest"),
@@ -702,16 +786,37 @@ def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
         reason=str(d.get("reason", "")),
         confidence=None if confidence is None else float(confidence),
         review_required=bool(d["review_required"]),
+        provider=str(d["provider"]),
+        account=str(d["account"]),
+        mailbox=str(d["mailbox"]),
+        provider_id=str(d["provider_id"]),
+        snapshot_id=str(d["snapshot_id"]),
+        observed_native_flag=None if native is None else int(native),
+        evidence_digest=(
+            None if d["evidence_digest"] is None
+            else str(require_hex256(
+                d["evidence_digest"], f"{prefix}.evidence_digest"))
+        ),
+        message_id_digest=(
+            None if d["message_id_digest"] is None
+            else str(require_hex256(
+                d["message_id_digest"], f"{prefix}.message_id_digest"))
+        ),
     )
 
 
 def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
     """Build a plan bound to ONE snapshot. Refuses incomplete snapshots.
 
-    The plan carries NO raw PII: mutations reference messages by ref_digest.
-    Every proposal from the legacy policy is review-only; none is
-    apply-eligible until a future classifier supplies real confidence AND an
-    approval receipt exists (apply path, later commit).
+    Every mutation carries its DURABLE PRIVATE BINDING (provider/account/
+    mailbox/provider_id/snapshot_id/observed native flag/evidence digest)
+    so Commit 6 can preflight the exact qualified target without ever
+    searching for identity. The plan hash covers those bindings.
+
+    ``policy_sha256`` (digest of POLICY_RULES) participates in plan_hash:
+    if policy code/configuration changes after planning, the stored hash
+    no longer matches and validation fails — approval cannot cross a
+    policy change silently.
     """
     if not snapshot.complete or snapshot.status != "complete":
         raise FlagWorkflowError(
@@ -729,12 +834,27 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
     for m, p in zip(snapshot.messages, proposals):
         if p.is_identity and p.reason_code == "no_change":
             continue
+        # UNKNOWN observations are NEVER mutation-eligible.
+        review_required = True if m.observed_flag == FlagColor.UNKNOWN \
+            else p.review_required
+        evidence_digest = (
+            MessageReference.compute_evidence_digest(
+                m.received_iso, m.sender, m.subject)
+            if (m.received_iso or m.sender or m.subject) else None
+        )
         mutations.append(PlannedMutation(
+            # Mutation id binds the FULL durable context, not just colors:
+            # changing any binding (or the source snapshot) changes ids.
             mutation_id="mut-" + sha256_hex({
                 "ref": m.ref_digest,
                 "observed": p.observed_flag.value,
                 "proposed": p.proposed_flag.value,
                 "reason_code": p.reason_code,
+                "snapshot_id": snapshot.snapshot_id,
+                "account": m.account,
+                "mailbox": m.mailbox,
+                "provider_id": m.provider_id,
+                "evidence": evidence_digest,
             })[:24],
             ref_digest=m.ref_digest,
             observed_flag=p.observed_flag,
@@ -742,11 +862,22 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
             reason_code=p.reason_code,
             reason=p.reason,
             confidence=p.confidence,
-            review_required=True,   # legacy policy: ALWAYS review-gated
+            review_required=review_required,
+            provider=m.provider,
+            account=m.account,
+            mailbox=m.mailbox,
+            provider_id=m.provider_id,
+            snapshot_id=snapshot.snapshot_id,
+            observed_native_flag=m.native_index,
+            evidence_digest=evidence_digest,
+            message_id_digest=None,   # populated once provider captures it
         ))
     plan: Dict[str, Any] = {
         "schema": PLAN_SCHEMA,
         "policy_version": MIGRATION_POLICY_VERSION,
+        # Digest of the exact rule configuration used — tamper-evident
+        # companion to the human-readable version string.
+        "policy_sha256": POLICY_SHA256,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "snapshot_id": snapshot.snapshot_id,
         # Derive from to_dict(), never the possibly-stale dataclass field.
@@ -756,9 +887,85 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
         "total_scanned": snapshot.total_matched,
         "mutations": [m.to_dict() for m in mutations],
         "unchanged_count": len(snapshot.messages) - len(mutations),
+        # Plan-level visibility into the threshold split. Writes stay
+        # impossible regardless of this count until Commit 6 gates exist.
+        "auto_eligible_count": sum(
+            1 for m in mutations
+            if m.confidence is not None
+            and m.confidence >= AUTO_ELIGIBLE_THRESHOLD
+            and not m.review_required
+        ),
     }
     plan["plan_hash"] = compute_plan_hash(plan)
     return plan
+
+
+# --- Public-safe plan projection ---------------------------------------------
+
+
+def to_public_safe_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """EXPLICIT ALLOWLIST projection of a private plan.
+
+    Retains ONLY digests: raw account/mailbox/provider_id/snapshot-scoped
+    bindings (native flag, evidence digest, message-id digest), sender,
+    subject never appear. Cryptographically linked to the source plan via
+    source_plan_sha256; plan_public_hash computed LAST over all fields.
+    """
+    require_hex256(plan.get("plan_hash"), "plan_hash")
+    public: Dict[str, Any] = {
+        "schema": PUBLIC_PLAN_SCHEMA,
+        "projection": "public_safe",
+        "source_plan_sha256": plan["plan_hash"],
+        "policy_version": plan["policy_version"],
+        "policy_sha256": plan["policy_sha256"],
+        "generated_at": plan["generated_at"],
+        "snapshot_id": plan["snapshot_id"],
+        "snapshot_sha256": plan["snapshot_sha256"],
+        "zero_write_declaration": plan["zero_write_declaration"],
+        "total_scanned": plan["total_scanned"],
+        "unchanged_count": plan["unchanged_count"],
+        "mutations": [
+            {
+                "mutation_id": m["mutation_id"],
+                "ref_digest": m["ref_digest"],
+                "observed_flag": m["observed_flag"],
+                "proposed_flag": m["proposed_flag"],
+                "reason_code": m["reason_code"],
+                "confidence": m["confidence"],
+                "review_required": m["review_required"],
+            }
+            for m in plan["mutations"]
+        ],
+    }
+    public["plan_public_hash"] = sha256_hex(public)   # LAST
+    return public
+
+
+def validate_public_plan(raw: Any) -> None:
+    """Fail-closed check: forbidden keys absent, then hash integrity."""
+    if not isinstance(raw, dict):
+        raise FlagWorkflowError("public plan must be a JSON object")
+    if raw.get("schema") != PUBLIC_PLAN_SCHEMA:
+        raise FlagWorkflowError(
+            f"public plan schema must be {PUBLIC_PLAN_SCHEMA}")
+    forbidden = {
+        "account", "mailbox", "provider_id", "native_index",
+        "observed_native_flag", "evidence_digest", "message_id_digest",
+        "sender", "subject", "errors",
+    }
+    present = forbidden.intersection(raw.keys())
+    if present:
+        raise FlagWorkflowError(f"forbidden keys present: {sorted(present)}")
+    for m in raw.get("mutations", []):
+        leak = forbidden.intersection(m.keys())
+        if leak:
+            raise FlagWorkflowError(
+                f"forbidden keys in mutation projection: {sorted(leak)}")
+    stored = require_hex256(
+        raw.get("plan_public_hash"), "plan_public_hash")
+    body = {k: v for k, v in raw.items() if k != "plan_public_hash"}
+    if sha256_hex(body) != stored:
+        raise FlagWorkflowError("public plan hash mismatch (tampered)")
 
 
 def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
@@ -782,6 +989,14 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
         raise FlagWorkflowError(
             f"policy_version must be {MIGRATION_POLICY_VERSION}, "
             f"got {plan.get('policy_version')!r}"
+        )
+    # The digest is the tamper-evident half of policy identity: a plan
+    # stamped with the right version string but generated under DIFFERENT
+    # rules cannot pass.
+    if plan.get("policy_sha256") != POLICY_SHA256:
+        raise FlagWorkflowError(
+            "policy_sha256 mismatch — plan was generated under different "
+            "rule configuration (or digest tampered)"
         )
     mutations_raw = plan.get("mutations")
     if not isinstance(mutations_raw, list):

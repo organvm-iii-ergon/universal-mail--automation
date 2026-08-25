@@ -2327,69 +2327,41 @@ def _print_csv(rows: list):
 
 
 def cmd_flags_plan(args: argparse.Namespace) -> int:
-    """Generate migration/reclassification plan.
+    """Generate migration/reclassification plan — ARTIFACT-ONLY.
 
-    Thin layer: enumeration via the provider, planning via
-    core.flag_workflow.build_plan (bound to a full snapshot hash). NOTE:
-    until the Commit 5 change, this still scans live; Commit 5 makes
-    --snapshot <file> REQUIRED so plans can never rescan Mail.app.
+    Commit 5 contract: this command REQUIRES --snapshot <private.json> and
+    NEVER instantiates or connects a provider. There is NO live-rescan
+    fallback; planning from a live Mail.app scan is structurally impossible
+    here (the provider/enumeration symbols are not referenced at all).
+
+    The snapshot is revalidated semantically on load (a valid hash over
+    impossible content is rejected), and the produced plan is bound to the
+    full snapshot hash plus the policy digest.
     """
-    if args.provider != "mailapp":
-        print("flags plan: only supported for mailapp provider", file=sys.stderr)
-        return 1
-
     if not args.output:
         print("flags plan: --output is required", file=sys.stderr)
         return 1
 
-    from providers.mailapp import MailAppProvider
     from core import flag_workflow
 
-    provider = get_provider(args.provider, account=args.account)
-    if not isinstance(provider, MailAppProvider):
-        print("flags plan: mailapp provider required", file=sys.stderr)
+    snap_arg = getattr(args, "snapshot", None)
+    if not snap_arg:
+        # argparse enforces required=True; this is defense in depth.
+        print("flags plan: --snapshot is required "
+              "(planning never rescans Mail.app)", file=sys.stderr)
+        return 2
+    snap_path = Path(snap_arg).expanduser()
+    if not snap_path.is_file():
+        print(f"flags plan: snapshot not found: {snap_path}",
+              file=sys.stderr)
         return 1
 
-    logger.info(
-        f"Generating migration plan for {args.mailbox} (limit={args.limit})"
-    )
-
-    with provider:
-        try:
-            result = provider.enumerate_flagged(
-                mailbox=args.mailbox,
-                limit=args.limit,
-                since_days=args.since_days,
-            )
-        except RuntimeError as e:
-            print(f"flags plan: enumeration failed: {e}", file=sys.stderr)
-            return 1
-
-    snapshot = flag_workflow.build_snapshot(
-        provider_name=provider.name,
-        account=args.account or "",
-        mailbox=args.mailbox,
-        rows=result.rows,
-        complete=result.complete,
-        scope_complete=result.scope_complete,
-        status=result.status,
-        errors=result.errors,
-        inaccessible_count=result.inaccessible_count,
-        timeout_count=result.timeout_count,
-        unknown_index_count=result.unknown_index_count,
-        limit=args.limit,
-        since_days=args.since_days,
-        total_matched=result.scanned_boundary.get(
-            "total_flagged_seen", len(result.rows)),
-        returned_count=len(result.rows),
-        hidden_by_limit=result.scanned_boundary.get("hidden_by_limit", 0),
-        next_cursor=result.next_cursor,
-    )
-
     try:
+        snapshot = flag_workflow.load_snapshot(snap_path)
         plan = flag_workflow.build_plan(snapshot)
     except flag_workflow.FlagWorkflowError as e:
-        # Incomplete/bounded_partial snapshots are structurally ineligible.
+        # Tampered hashes, semantically invalid snapshots, and incomplete
+        # snapshots are all structurally plan-ineligible.
         print(f"flags plan: {e}", file=sys.stderr)
         return 20
 
@@ -2400,17 +2372,22 @@ def cmd_flags_plan(args: argparse.Namespace) -> int:
 
     mutations = plan["mutations"]
     review_only = sum(1 for m in mutations if m["review_required"])
+    auto_eligible = sum(
+        1 for m in mutations if not m["review_required"])
     print(f"\nMigration Plan Generated: {args.output}")
     print(f"  Plan Hash (full sha256): {plan['plan_hash']}")
     print(f"  Snapshot Hash (full sha256): {plan['snapshot_sha256']}")
     print(f"  Policy Version: {plan['policy_version']}")
+    print(f"  Policy Digest (sha256): {plan['policy_sha256']}")
     print(f"  Total Scanned: {plan['total_scanned']}")
     print(f"  Unchanged: {plan['unchanged_count']}")
     print(f"  To Recolor: {len(mutations)}")
     print(f"  Review-only (apply-ineligible): {review_only}/{len(mutations)}")
-    print("  NOTE: every proposal from the legacy policy is review-only; "
-          "none is apply-eligible until a measured-confidence classifier "
-          "and an approval receipt exist.")
+    print(f"  Auto-classified (Commit 6 approval+preflight gate applies): "
+          f"{auto_eligible}/{len(mutations)}")
+    print("  NOTE: no mutation can execute yet — apply remains hard-disabled "
+          "(exit 89) pending approval binding, preflight, idempotency, and "
+          "rollback verification.")
     return 0
 
 
@@ -3029,33 +3006,17 @@ Examples:
     )
     flags_audit_parser.set_defaults(func=cmd_flags_audit)
 
-    # flags plan
+    # flags plan — ARTIFACT-ONLY since Commit 5: requires a private
+    # snapshot; no provider args, no mailbox/limit/since-days, no rescan.
     flags_plan_parser = flags_subparsers.add_parser(
         "plan",
-        parents=[provider_group],
-        help="Generate migration/reclassification plan for legacy flags",
+        help="Generate migration plan from a PRIVATE SNAPSHOT (artifact-only)",
     )
     flags_plan_parser.add_argument(
-        "--legacy-migration",
-        action="store_true",
-        help="Plan migration from legacy red/purple flags to seven-color system",
-    )
-    flags_plan_parser.add_argument(
-        "--mailbox", "-m",
-        default="INBOX",
-        help="Mailbox to plan for (default: INBOX)",
-    )
-    flags_plan_parser.add_argument(
-        "--limit", "-l",
-        type=int,
-        default=500,
-        help="Maximum messages to include in plan (default: 500)",
-    )
-    flags_plan_parser.add_argument(
-        "--since-days",
-        type=int,
-        default=None,
-        help="Bound scan to messages received in last N days",
+        "--snapshot",
+        required=True,
+        help="Path to a private snapshot JSON (mode 0600 artifact of "
+             "`flags audit`); REQUIRED — planning never rescans Mail.app",
     )
     flags_plan_parser.add_argument(
         "--output", "-o",
