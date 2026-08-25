@@ -2,7 +2,15 @@
 
 from datetime import datetime, timezone
 
-from core.models import ActionType, EmailMessage, LabelAction, ProcessingResult
+from core.models import (
+    ActionType,
+    EmailMessage,
+    LabelAction,
+    ProcessingResult,
+    FlagColor,
+    StateSource,
+    FlagMutation,
+)
 
 
 class TestActionType:
@@ -151,3 +159,129 @@ class TestProcessingResult:
         result.error_count += 1
         assert result.error_count == 1
         assert len(result.errors) == 1
+
+
+class TestFlagColor:
+    def test_enum_values(self):
+        assert FlagColor.NO_FLAG == -1
+        assert FlagColor.RED == 0
+        assert FlagColor.ORANGE == 1
+        assert FlagColor.YELLOW == 2
+        assert FlagColor.GREEN == 3
+        assert FlagColor.BLUE == 4
+        assert FlagColor.PURPLE == 5
+        assert FlagColor.GRAY == 6
+
+    def test_name_str(self):
+        assert FlagColor.NO_FLAG.name_str == "No Flag"
+        assert FlagColor.RED.name_str == "Red"
+        assert FlagColor.ORANGE.name_str == "Orange"
+        assert FlagColor.YELLOW.name_str == "Yellow"
+        assert FlagColor.GREEN.name_str == "Green"
+        assert FlagColor.BLUE.name_str == "Blue"
+        assert FlagColor.PURPLE.name_str == "Purple"
+        assert FlagColor.GRAY.name_str == "Gray"
+
+    def test_operator_posture(self):
+        assert FlagColor.NO_FLAG.operator_posture == "CLOSED / COMPLETED / NO OPEN LOOP"
+        assert FlagColor.RED.operator_posture == "CRITICAL / ACT NOW"
+        assert FlagColor.ORANGE.operator_posture == "ACTION OWED"
+        assert FlagColor.YELLOW.operator_posture == "WAITING / FOLLOW-UP"
+        assert FlagColor.GREEN.operator_posture == "SCHEDULED / COMMITTED"
+        assert FlagColor.BLUE.operator_posture == "ACTIVE REFERENCE"
+        assert FlagColor.PURPLE.operator_posture == "HUMAN JUDGMENT REQUIRED"
+        assert FlagColor.GRAY.operator_posture == "DELIBERATELY DEFERRED"
+
+    def test_queue_label(self):
+        assert FlagColor.NO_FLAG.queue_label == "DONE"
+        assert FlagColor.RED.queue_label == "NOW"
+        assert FlagColor.ORANGE.queue_label == "ACTION"
+        assert FlagColor.YELLOW.queue_label == "WAITING"
+        assert FlagColor.GREEN.queue_label == "SCHEDULED"
+        assert FlagColor.BLUE.queue_label == "REFERENCE"
+        assert FlagColor.PURPLE.queue_label == "REVIEW"
+        assert FlagColor.GRAY.queue_label == "LATER"
+
+    def test_from_index(self):
+        assert FlagColor.from_index(-1) == FlagColor.NO_FLAG
+        assert FlagColor.from_index(0) == FlagColor.RED
+        assert FlagColor.from_index(1) == FlagColor.ORANGE
+        assert FlagColor.from_index(2) == FlagColor.YELLOW
+        assert FlagColor.from_index(3) == FlagColor.GREEN
+        assert FlagColor.from_index(4) == FlagColor.BLUE
+        assert FlagColor.from_index(5) == FlagColor.PURPLE
+        assert FlagColor.from_index(6) == FlagColor.GRAY
+        # Out of range defaults to NO_FLAG
+        assert FlagColor.from_index(7) == FlagColor.NO_FLAG
+        assert FlagColor.from_index(-2) == FlagColor.NO_FLAG
+
+    def test_from_string(self):
+        assert FlagColor.from_string("none") == FlagColor.NO_FLAG
+        assert FlagColor.from_string("no flag") == FlagColor.NO_FLAG
+        assert FlagColor.from_string("no-flag") == FlagColor.NO_FLAG
+        assert FlagColor.from_string("red") == FlagColor.RED
+        assert FlagColor.from_string("orange") == FlagColor.ORANGE
+        assert FlagColor.from_string("yellow") == FlagColor.YELLOW
+        assert FlagColor.from_string("green") == FlagColor.GREEN
+        assert FlagColor.from_string("blue") == FlagColor.BLUE
+        assert FlagColor.from_string("purple") == FlagColor.PURPLE
+        assert FlagColor.from_string("gray") == FlagColor.GRAY
+        assert FlagColor.from_string("grey") == FlagColor.GRAY
+        assert FlagColor.from_string("unknown") == FlagColor.NO_FLAG
+        assert FlagColor.from_string("RED") == FlagColor.RED
+        assert FlagColor.from_string("  purple  ") == FlagColor.PURPLE
+
+
+class TestFlagMutation:
+    def test_defaults(self):
+        mut = FlagMutation(message_id="1")
+        assert mut.message_id == "1"
+        assert mut.current_flag == FlagColor.NO_FLAG
+        assert mut.proposed_flag == FlagColor.NO_FLAG
+        assert mut.confidence == 1.0
+        assert mut.state_source == StateSource.MIGRATION
+        assert mut.is_noop() is True
+
+    def test_is_noop(self):
+        mut = FlagMutation(message_id="1", current_flag=FlagColor.RED, proposed_flag=FlagColor.RED)
+        assert mut.is_noop() is True
+        mut2 = FlagMutation(message_id="1", current_flag=FlagColor.RED, proposed_flag=FlagColor.ORANGE)
+        assert mut2.is_noop() is False
+
+    def test_with_all_fields(self):
+        from datetime import datetime, timezone
+        mut = FlagMutation(
+            message_id="1",
+            sender="test@example.com",
+            current_flag=FlagColor.RED,
+            proposed_flag=FlagColor.ORANGE,
+            reason="Test reason",
+            confidence=0.8,
+            state_source=StateSource.MODEL,
+            due_at=datetime.now(timezone.utc),
+            follow_up_at=datetime.now(timezone.utc),
+            next_action="Reply",
+            urgency=5,
+            human_override=False,
+            transaction_id="txn_123",
+        )
+        assert mut.sender == "test@example.com"
+        assert mut.current_flag == FlagColor.RED
+        assert mut.proposed_flag == FlagColor.ORANGE
+        assert mut.reason == "Test reason"
+        assert mut.confidence == 0.8
+        assert mut.state_source == StateSource.MODEL
+        assert mut.next_action == "Reply"
+        assert mut.urgency == 5
+        assert mut.human_override is False
+        assert mut.transaction_id == "txn_123"
+        assert mut.is_noop() is False
+
+
+class TestStateSource:
+    def test_values(self):
+        assert StateSource.HUMAN == "human"
+        assert StateSource.DETERMINISTIC_RULE == "deterministic_rule"
+        assert StateSource.MODEL == "model"
+        assert StateSource.MIGRATION == "migration"
+        assert StateSource.LEGACY_UNKNOWN == "legacy_unknown"
