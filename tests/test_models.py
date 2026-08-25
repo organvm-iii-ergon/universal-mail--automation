@@ -216,7 +216,7 @@ class TestLabelActionValidation:
         action = LabelAction(message_id="1", flag_color=FlagColor.RED, archive=True)
         with pytest.raises(
             LabelActionValidationError,
-            match="flag_color mutation cannot be combined with add_labels",
+            match="flag mutation cannot be combined with add_labels",
         ):
             action.validate()
 
@@ -224,7 +224,7 @@ class TestLabelActionValidation:
         action = LabelAction(message_id="1", flag_color=FlagColor.RED, target_folder="Archive")
         with pytest.raises(
             LabelActionValidationError,
-            match="flag_color mutation cannot be combined with add_labels",
+            match="flag mutation cannot be combined with add_labels",
         ):
             action.validate()
 
@@ -232,7 +232,7 @@ class TestLabelActionValidation:
         action = LabelAction(message_id="1", flag_color=FlagColor.RED, category="Work")
         with pytest.raises(
             LabelActionValidationError,
-            match="flag_color mutation cannot be combined with category",
+            match="flag mutation cannot be combined with category",
         ):
             action.validate()
 
@@ -240,7 +240,7 @@ class TestLabelActionValidation:
         action = LabelAction(message_id="1", flag_color=FlagColor.RED, add_labels=["Work"])
         with pytest.raises(
             LabelActionValidationError,
-            match="flag_color mutation cannot be combined with add_labels",
+            match="flag mutation cannot be combined with add_labels",
         ):
             action.validate()
 
@@ -248,9 +248,53 @@ class TestLabelActionValidation:
         action = LabelAction(message_id="1", flag_color=FlagColor.RED, remove_labels=["Inbox"])
         with pytest.raises(
             LabelActionValidationError,
-            match="flag_color mutation cannot be combined with add_labels",
+            match="flag mutation cannot be combined with add_labels",
         ):
             action.validate()
+
+    def test_clear_flag_with_add_labels_rejected(self):
+        action = LabelAction(message_id="1", clear_flag=True, add_labels=["Work"])
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag mutation cannot be combined with add_labels",
+        ):
+            action.validate()
+
+    def test_clear_flag_with_remove_labels_rejected(self):
+        action = LabelAction(message_id="1", clear_flag=True, remove_labels=["INBOX"])
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag mutation cannot be combined with add_labels",
+        ):
+            action.validate()
+
+    def test_clear_flag_with_archive_rejected(self):
+        action = LabelAction(message_id="1", clear_flag=True, archive=True)
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag mutation cannot be combined with add_labels",
+        ):
+            action.validate()
+
+    def test_clear_flag_with_target_folder_rejected(self):
+        action = LabelAction(message_id="1", clear_flag=True, target_folder="Archive")
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag mutation cannot be combined with add_labels",
+        ):
+            action.validate()
+
+    def test_clear_flag_with_category_rejected(self):
+        action = LabelAction(message_id="1", clear_flag=True, category="Work")
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag mutation cannot be combined with category",
+        ):
+            action.validate()
+
+    def test_clear_flag_alone_stays_valid_after_all_exclusions(self):
+        action = LabelAction(message_id="1", clear_flag=True)
+        action.validate()
 
 
 class TestFlagColorCanonicalRoundTrip:

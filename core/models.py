@@ -340,21 +340,23 @@ class LabelAction:
             raise LabelActionValidationError(
                 "star and flag_color are mutually exclusive; use one or the other"
             )
-        # Flag mutations must not be mixed with mailbox-changing operations.
-        # A flag mutation is a pure state change; adding/moving/archiving a message
-        # is a separate operation that must be done independently.
-        if self.flag_color is not None and (
+        # Flag mutations (either form) must not be mixed with mailbox-changing
+        # operations. A flag mutation is a pure state change; adding/moving/
+        # archiving a message is a separate operation that must be done
+        # independently. Applies to BOTH clear_flag and flag_color forms.
+        is_flag_mutation = self.clear_flag or self.flag_color is not None
+        if is_flag_mutation and (
             self.add_labels or self.remove_labels or self.archive or self.target_folder
         ):
             raise LabelActionValidationError(
-                "flag_color mutation cannot be combined with add_labels, "
+                "flag mutation cannot be combined with add_labels, "
                 "remove_labels, archive, or target_folder"
             )
-        # Category is a separate axis (Outlook); reject mixing with colored flags
+        # Category is a separate axis (Outlook); reject mixing with flag mutations
         # unless an explicit compatibility rule is added later.
-        if self.flag_color is not None and self.category:
+        if is_flag_mutation and self.category:
             raise LabelActionValidationError(
-                "flag_color mutation cannot be combined with category"
+                "flag mutation cannot be combined with category"
             )
 
 

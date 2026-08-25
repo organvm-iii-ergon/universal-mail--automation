@@ -13,6 +13,7 @@ from enum import Flag, auto
 from core.models import (
     EmailMessage,
     LabelAction,
+    LabelActionValidationError,
     ProcessingResult,
     FlagColor,
 )
@@ -391,18 +392,24 @@ class EmailProvider(ABC):
         result = ProcessingResult()
         is_folder = bool(self.capabilities & ProviderCapabilities.FOLDERS)
         for action in actions:
-            protected = self._drop_if_protected(action)
-            # For providers where apply_label IS a move (Outlook/Mail.app), a
-            # protected sender must not have labels applied either — that would
-            # itself move the message out of the inbox.
-            move_via_label = protected and self.LABEL_IS_MOVE
-            # Observe what ACTUALLY happens, so the audit is a post-hoc witness of
-            # real operations rather than a re-reading of the (gate-mutated) action.
+            # Initialize observation state BEFORE validation so the audit block
+            # below is well-defined even when validation rejects the action.
+            protected = False
             did_leave_inbox = False     # archive() or INBOX-removal actually ran
             did_label_move = False      # a move-on-label apply_label() actually ran
             applied_labels = []
+            # Validate FIRST, before the protected-sender gate can mutate the
+            # action in place. Validation must assess what the caller REQUESTED,
+            # not the gate-normalized representation — otherwise an invalid
+            # archive+flag combination on a protected sender could be silently
+            # normalized into a valid-looking flag-only operation.
             try:
                 action.validate()
+                protected = self._drop_if_protected(action)
+                # For providers where apply_label IS a move (Outlook/Mail.app), a
+                # protected sender must not have labels applied either — that would
+                # itself move the message out of the inbox.
+                move_via_label = protected and self.LABEL_IS_MOVE
                 if not move_via_label:
                     for label in action.add_labels:
                         self.ensure_label_exists(label)
@@ -428,19 +435,18 @@ class EmailProvider(ABC):
                         action.category_color or "blue",
                     ):
                         raise RuntimeError("provider failed to apply category")
-                # Colored flag operations (do not move messages)
-                if action.clear_flag:
+                # Colored flag operations (do not move messages). Capability gate
+                # runs BEFORE any provider call so an unsupported provider never
+                # reaches its (default-raising) flag methods.
+                if action.clear_flag or action.flag_color is not None:
                     if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
                         raise LabelActionValidationError(
                             "provider does not support COLORED_FLAGS capability"
                         )
+                if action.clear_flag:
                     if not self.clear_flag(action.message_id):
                         raise RuntimeError("provider failed to clear flag")
                 elif action.flag_color is not None:
-                    if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
-                        raise LabelActionValidationError(
-                            "provider does not support COLORED_FLAGS capability"
-                        )
                     if not self.set_flag_color(action.message_id, action.flag_color):
                         raise RuntimeError("provider failed to set flag color")
                 result.success_count += 1

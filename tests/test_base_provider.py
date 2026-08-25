@@ -298,6 +298,136 @@ class TestFlagOperationFailuresCounted:
         assert result.success_count == 0
 
 
+class TestValidationBeforeGateNormalization:
+    """Validation must assess the caller's REQUEST, not the gate-mutated action.
+
+    A blank sender fails closed (protected), and _drop_if_protected() would
+    neutralize archive=True in place — silently converting an invalid
+    archive+flag combination into a valid-looking flag-only operation.
+    Validation runs FIRST, so the original request is what gets judged.
+    """
+
+    def _gate_mutating_provider(self):
+        """LABEL_IS_MOVE provider whose gate would rewrite archive=True -> False."""
+        class MoveProvider(FakeProvider):
+            LABEL_IS_MOVE = True
+
+        return MoveProvider(
+            capabilities=ProviderCapabilities.FOLDERS
+            | ProviderCapabilities.COLORED_FLAGS
+        )
+
+    def test_archive_plus_flag_rejected_even_for_protected_sender(self):
+        p = self._gate_mutating_provider()
+        result = p.apply_actions([
+            LabelAction(message_id="m1", sender="", archive=True, flag_color=FlagColor.RED),
+        ])
+        # Rejected as invalid combination — NOT silently normalized to a
+        # flag-only action by the protected-sender gate.
+        assert result.error_count == 1
+        assert result.success_count == 0
+        assert any("flag mutation cannot be combined" in e for e in result.errors)
+        # The error names the caller's contradiction, not a protection hold.
+        assert not any("protected" in e.lower() for e in result.errors)
+
+
+class TestUnsupportedProviderThroughApplyActions:
+    """The unsupported-capability branch inside apply_actions must raise the
+    intended LabelActionValidationError (imported!), not NameError."""
+
+    def test_flag_color_unsupported_records_capability_error(self):
+        p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
+        result = p.apply_actions([
+            LabelAction(message_id="m1", sender="a@b.com", flag_color=FlagColor.RED),
+        ])
+        assert result.error_count == 1
+        assert result.success_count == 0
+        assert any("does not support COLORED_FLAGS capability" in e for e in result.errors)
+        assert not any("NameError" in e for e in result.errors)
+
+    def test_clear_flag_unsupported_records_capability_error(self):
+        p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
+        result = p.apply_actions([
+            LabelAction(message_id="m1", sender="a@b.com", clear_flag=True),
+        ])
+        assert result.error_count == 1
+        assert result.success_count == 0
+        assert any("does not support COLORED_FLAGS capability" in e for e in result.errors)
+        assert not any("NameError" in e for e in result.errors)
+
+
+class TestRejectedActionsMakeZeroProviderCalls:
+    """Every rejected action must reach NO provider mutation method."""
+
+    def test_no_provider_calls_on_validation_failure(self):
+        calls = []
+
+        class RecordingProvider(FakeProvider):
+            def apply_label(self, message_id, label):
+                calls.append(f"apply_label:{label}")
+                return True
+
+            def remove_label(self, message_id, label):
+                calls.append(f"remove_label:{label}")
+                return True
+
+            def archive(self, message_id):
+                calls.append("archive")
+                return True
+
+            def star(self, message_id, due_date=None):
+                calls.append("star")
+                return True
+
+            def ensure_label_exists(self, label):
+                calls.append(f"ensure_label_exists:{label}")
+                return label
+
+            def set_flag_color(self, message_id, color):
+                calls.append(f"set_flag_color:{color}")
+                return True
+
+            def clear_flag(self, message_id):
+                calls.append("clear_flag")
+                return True
+
+        p = RecordingProvider(
+            capabilities=(
+                ProviderCapabilities.COLORED_FLAGS | ProviderCapabilities.STAR
+                | ProviderCapabilities.ARCHIVE
+            )
+        )
+        result = p.apply_actions([
+            LabelAction(message_id="m1", sender="a@b.com",
+                        flag_color=FlagColor.RED, archive=True),
+            LabelAction(message_id="m2", sender="a@b.com", clear_flag=True,
+                        add_labels=["Work"]),
+            LabelAction(message_id="m3", sender="a@b.com", flag_color=FlagColor.UNKNOWN),
+            LabelAction(message_id="m4", sender="a@b.com", clear_flag=True, category="Work"),
+        ])
+        assert result.error_count == 4
+        assert result.success_count == 0
+        assert calls == [], f"provider methods were called on rejected actions: {calls}"
+
+    def test_valid_action_still_executes_after_rejected_sibling(self):
+        calls = []
+
+        class RecordingProvider(FakeProvider):
+            def set_flag_color(self, message_id, color):
+                calls.append(f"set_flag_color:{message_id}:{color}")
+                return True
+
+        p = RecordingProvider(capabilities=ProviderCapabilities.COLORED_FLAGS)
+        result = p.apply_actions([
+            LabelAction(message_id="bad", sender="a@b.com",
+                        flag_color=FlagColor.RED, archive=True),
+            LabelAction(message_id="good", sender="a@b.com", flag_color=FlagColor.RED),
+        ])
+        assert result.error_count == 1
+        assert result.success_count == 1
+        assert calls == [f"set_flag_color:good:{FlagColor.RED}"]
+
+
 class TestProviderCapabilitiesFlag:
     def test_flags_compose_and_test_membership(self):
         caps = ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE
