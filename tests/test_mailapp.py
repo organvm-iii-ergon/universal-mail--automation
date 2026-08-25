@@ -264,3 +264,47 @@ def test_list_messages_parses_flag_index_to_flag_color():
     assert by_id["1"].flag_color == FlagColor.RED
     assert by_id["2"].flag_color == FlagColor.NO_FLAG
     assert by_id["3"].flag_color == FlagColor.UNKNOWN
+
+
+class TestMailAppFlagReadFailure:
+    """Mail.app flag read failures propagate as exceptions, not UNKNOWN."""
+
+    def test_get_flag_color_applescript_error_raises(self):
+        provider = MailAppProvider()
+        provider._run_applescript = lambda script: (_ for _ in ()).throw(RuntimeError("AppleScript timeout"))
+        with pytest.raises(RuntimeError, match="AppleScript timeout"):
+            provider.get_flag_color("msg1")
+
+    def test_get_flag_color_malformed_output_raises(self):
+        provider = MailAppProvider()
+        provider._run_applescript = lambda script: "not an integer"
+        with pytest.raises(ValueError):
+            provider.get_flag_color("msg1")
+
+
+class TestMailAppUnknownIndexHandling:
+    """Successfully read but unrecognized native index returns UNKNOWN."""
+
+    def test_unknown_index_returns_unknown(self):
+        provider = MailAppProvider()
+        provider._run_applescript = lambda script: "99"
+        assert provider.get_flag_color("msg1") is FlagColor.UNKNOWN
+
+
+class TestFlagsExplainWithSemanticEnum:
+    """flags explain CLI works with semantic FlagColor, no int() call."""
+
+    def test_explain_uses_flagcolor_not_native_index(self):
+        provider = MailAppProvider()
+        # AppleScript output: sender, subject, read, flagged, flagIndex, mailbox
+        provider._run_applescript = lambda script: "\t".join([
+            "sender@example.com", "Test Subject", "true", "true", "0", "INBOX"
+        ])
+        msg = provider.get_message_details("msg1")
+        assert msg is not None
+        assert msg.flag_color == FlagColor.RED
+        # The flag_color is a semantic FlagColor, not a native index
+        assert isinstance(msg.flag_color, FlagColor)
+        assert msg.flag_color == FlagColor.RED
+        # No int() conversion needed or possible
+        assert msg.flag_color.value == "red"

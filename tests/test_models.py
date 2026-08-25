@@ -188,9 +188,86 @@ class TestLabelActionValidation:
         action = LabelAction(message_id="1", flag_color=FlagColor.RED)
         action.validate()
 
-    def test_star_with_flag_color_is_valid(self):
+    def test_star_with_flag_color_rejected(self):
         action = LabelAction(message_id="1", star=True, flag_color=FlagColor.RED)
-        action.validate()
+        with pytest.raises(
+            LabelActionValidationError,
+            match="star and flag_color are mutually exclusive",
+        ):
+            action.validate()
+
+    def test_flag_color_no_flag_rejected(self):
+        action = LabelAction(message_id="1", flag_color=FlagColor.NO_FLAG)
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag_color='no_flag' cannot be used as a mutation target",
+        ):
+            action.validate()
+
+    def test_flag_color_unknown_rejected(self):
+        action = LabelAction(message_id="1", flag_color=FlagColor.UNKNOWN)
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag_color='unknown' cannot be used as a mutation target",
+        ):
+            action.validate()
+
+    def test_flag_mutation_with_archive_rejected(self):
+        action = LabelAction(message_id="1", flag_color=FlagColor.RED, archive=True)
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag_color mutation cannot be combined with add_labels",
+        ):
+            action.validate()
+
+    def test_flag_mutation_with_target_folder_rejected(self):
+        action = LabelAction(message_id="1", flag_color=FlagColor.RED, target_folder="Archive")
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag_color mutation cannot be combined with add_labels",
+        ):
+            action.validate()
+
+    def test_flag_mutation_with_category_rejected(self):
+        action = LabelAction(message_id="1", flag_color=FlagColor.RED, category="Work")
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag_color mutation cannot be combined with category",
+        ):
+            action.validate()
+
+    def test_flag_mutation_with_add_labels_rejected(self):
+        action = LabelAction(message_id="1", flag_color=FlagColor.RED, add_labels=["Work"])
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag_color mutation cannot be combined with add_labels",
+        ):
+            action.validate()
+
+    def test_flag_mutation_with_remove_labels_rejected(self):
+        action = LabelAction(message_id="1", flag_color=FlagColor.RED, remove_labels=["Inbox"])
+        with pytest.raises(
+            LabelActionValidationError,
+            match="flag_color mutation cannot be combined with add_labels",
+        ):
+            action.validate()
+
+
+class TestFlagColorCanonicalRoundTrip:
+    def test_no_flag_canonical_roundtrip(self):
+        assert FlagColor.from_string(FlagColor.NO_FLAG.value) is FlagColor.NO_FLAG
+
+    def test_all_colors_canonical_roundtrip(self):
+        for color in FlagColor:
+            if color == FlagColor.NO_FLAG:
+                continue
+            assert FlagColor.from_string(color.value) is color
+
+    def test_aliases_work(self):
+        assert FlagColor.from_string("none") is FlagColor.NO_FLAG
+        assert FlagColor.from_string("no flag") is FlagColor.NO_FLAG
+        assert FlagColor.from_string("no-flag") is FlagColor.NO_FLAG
+        assert FlagColor.from_string("grey") is FlagColor.GRAY
 
 
 class TestProcessingResult:
@@ -242,7 +319,7 @@ class TestFlagColor:
         assert FlagColor.UNKNOWN.name_str == "Unknown"
 
     def test_operator_posture(self):
-        assert FlagColor.NO_FLAG.operator_posture == "CLOSED / COMPLETED / NO OPEN LOOP"
+        assert FlagColor.NO_FLAG.operator_posture == "NO ACTIVE FLAG / WORKFLOW STATE SEPARATE"
         assert FlagColor.RED.operator_posture == "CRITICAL / ACT NOW"
         assert FlagColor.ORANGE.operator_posture == "ACTION OWED"
         assert FlagColor.YELLOW.operator_posture == "WAITING / FOLLOW-UP"
@@ -253,7 +330,7 @@ class TestFlagColor:
         assert FlagColor.UNKNOWN.operator_posture == "UNKNOWN / UNMAPPED NATIVE INDEX"
 
     def test_queue_label(self):
-        assert FlagColor.NO_FLAG.queue_label == "DONE"
+        assert FlagColor.NO_FLAG.queue_label == "UNFLAGGED"
         assert FlagColor.RED.queue_label == "NOW"
         assert FlagColor.ORANGE.queue_label == "ACTION"
         assert FlagColor.YELLOW.queue_label == "WAITING"

@@ -23,7 +23,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.audit import AuditLog
@@ -2422,7 +2422,7 @@ def cmd_flags_queue(args: argparse.Namespace) -> int:
         rows = _audit_flagged_messages(provider, args.account, mailbox)
 
     queue_order = [FlagColor.RED, FlagColor.ORANGE, FlagColor.YELLOW, FlagColor.GREEN, FlagColor.BLUE, FlagColor.PURPLE, FlagColor.GRAY]
-    queue_data = {fc: [] for fc in queue_order}
+    queue_data: Dict[FlagColor, list] = {fc: [] for fc in queue_order}
 
     for r in rows:
         fc = flag_from_mailapp_index(r["flag_index"])
@@ -2566,7 +2566,7 @@ def cmd_flags_explain(args: argparse.Namespace) -> int:
     print(f"Starred:     {is_starred} (boolean)")
     print(f"Flag Color:  {flag_color.name_str} ({flag_color.operator_posture})")
 
-    proposed = _propose_reclassification({"sender": msg.sender, "subject": msg.subject, "flag_index": int(flag_color)}, flag_color)
+    proposed = _propose_reclassification({"sender": msg.sender, "subject": msg.subject}, flag_color)
     if proposed != flag_color:
         print(f"Automation would propose: {proposed.name_str} ({proposed.operator_posture})")
     else:

@@ -11,7 +11,7 @@ All tests use lightweight fakes — no network, no real accounts.
 
 import pytest
 
-from core.models import EmailMessage, LabelAction
+from core.models import EmailMessage, LabelAction, FlagColor
 from providers.base import (
     EmailProvider,
     ProviderCapabilities,
@@ -227,14 +227,75 @@ class TestApplyActionsDispatch:
         assert result.processed_count == 1
         assert any("boom" in e and "API 500" in e for e in result.errors)
 
-    def test_star_silently_skipped_without_capability(self):
-        # A star action on a non-star provider must not raise; it is a no-op.
+    def test_star_fails_without_capability(self):
+        # A star action on a non-star provider now fails (returns False) and
+        # is counted as an error, not silently skipped.
         p = FakeProvider(capabilities=ProviderCapabilities.TRUE_LABELS)
         result = p.apply_actions([
             LabelAction(message_id="m1", sender="a@b.com", star=True),
         ])
-        assert result.success_count == 1
+        assert result.error_count == 1
+        assert result.success_count == 0
         assert ("m1", "STARRED") not in p.applied
+
+
+class TestFlagOperationsOnUnsupportedProvider:
+    """Providers without COLORED_FLAGS must reject flag operations."""
+
+    def test_get_flag_color_raises_on_unsupported(self):
+        p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
+        with pytest.raises(NotImplementedError, match="does not support COLORED_FLAGS"):
+            p.get_flag_color("m1")
+
+    def test_set_flag_color_raises_on_unsupported(self):
+        p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
+        with pytest.raises(NotImplementedError, match="does not support COLORED_FLAGS"):
+            p.set_flag_color("m1", FlagColor.RED)
+
+    def test_clear_flag_raises_on_unsupported(self):
+        p = FakeProvider(capabilities=ProviderCapabilities.STAR | ProviderCapabilities.ARCHIVE)
+        with pytest.raises(NotImplementedError, match="does not support COLORED_FLAGS"):
+            p.clear_flag("m1")
+
+
+class TestFlagOperationFailuresCounted:
+    """Failed flag operations must increment error_count, not success_count."""
+
+    def test_set_flag_color_false_is_error(self):
+        class FailingProvider(FakeProvider):
+            def set_flag_color(self, message_id, color):
+                return False
+
+        p = FailingProvider(capabilities=ProviderCapabilities.COLORED_FLAGS)
+        result = p.apply_actions([
+            LabelAction(message_id="m1", sender="a@b.com", flag_color=FlagColor.RED),
+        ])
+        assert result.error_count == 1
+        assert result.success_count == 0
+
+    def test_clear_flag_false_is_error(self):
+        class FailingProvider(FakeProvider):
+            def clear_flag(self, message_id):
+                return False
+
+        p = FailingProvider(capabilities=ProviderCapabilities.COLORED_FLAGS)
+        result = p.apply_actions([
+            LabelAction(message_id="m1", sender="a@b.com", clear_flag=True),
+        ])
+        assert result.error_count == 1
+        assert result.success_count == 0
+
+    def test_star_false_is_error(self):
+        class FailingProvider(FakeProvider):
+            def star(self, message_id, due_date=None):
+                return False
+
+        p = FailingProvider(capabilities=ProviderCapabilities.STAR)
+        result = p.apply_actions([
+            LabelAction(message_id="m1", sender="a@b.com", star=True),
+        ])
+        assert result.error_count == 1
+        assert result.success_count == 0
 
 
 class TestProviderCapabilitiesFlag:

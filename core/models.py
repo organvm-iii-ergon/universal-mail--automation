@@ -62,27 +62,22 @@ class FlagColor(str, Enum):
     def from_string(cls, s: str) -> "FlagColor":
         """Parse flag color from string (case-insensitive).
 
-        Raises ValueError for unrecognized strings — never silently
-        returns NO_FLAG for an unknown color name.
+        Canonical enum values (e.g., "no_flag", "red") are accepted directly.
+        Aliases are normalized. Unrecognized strings raise ValueError —
+        never silently returns NO_FLAG for an unknown color name.
         """
         s = s.lower().strip()
-        mapping = {
-            "none": cls.NO_FLAG,
-            "no flag": cls.NO_FLAG,
-            "no-flag": cls.NO_FLAG,
-            "red": cls.RED,
-            "orange": cls.ORANGE,
-            "yellow": cls.YELLOW,
-            "green": cls.GREEN,
-            "blue": cls.BLUE,
-            "purple": cls.PURPLE,
-            "gray": cls.GRAY,
-            "grey": cls.GRAY,
-            "unknown": cls.UNKNOWN,
+        # Normalize aliases to canonical values first
+        aliases = {
+            "none": "no_flag",
+            "no flag": "no_flag",
+            "no-flag": "no_flag",
+            "grey": "gray",
         }
+        normalized = aliases.get(s, s)
         try:
-            return mapping[s]
-        except KeyError:
+            return cls(normalized)
+        except ValueError:
             raise ValueError(f"Unknown flag color: {s!r}") from None
 
 
@@ -99,7 +94,7 @@ _NAME_MAP = {
 }
 
 _POSTURE_MAP = {
-    FlagColor.NO_FLAG: "CLOSED / COMPLETED / NO OPEN LOOP",
+    FlagColor.NO_FLAG: "NO ACTIVE FLAG / WORKFLOW STATE SEPARATE",
     FlagColor.RED: "CRITICAL / ACT NOW",
     FlagColor.ORANGE: "ACTION OWED",
     FlagColor.YELLOW: "WAITING / FOLLOW-UP",
@@ -111,7 +106,7 @@ _POSTURE_MAP = {
 }
 
 _QUEUE_MAP = {
-    FlagColor.NO_FLAG: "DONE",
+    FlagColor.NO_FLAG: "UNFLAGGED",
     FlagColor.RED: "NOW",
     FlagColor.ORANGE: "ACTION",
     FlagColor.YELLOW: "WAITING",
@@ -335,6 +330,31 @@ class LabelAction:
         if self.clear_flag and self.star:
             raise LabelActionValidationError(
                 "clear_flag and star are mutually exclusive"
+            )
+        if self.flag_color in {FlagColor.NO_FLAG, FlagColor.UNKNOWN}:
+            raise LabelActionValidationError(
+                f"flag_color={self.flag_color.value!r} cannot be used as a mutation target; "
+                "use clear_flag=True to clear a flag"
+            )
+        if self.star and self.flag_color is not None:
+            raise LabelActionValidationError(
+                "star and flag_color are mutually exclusive; use one or the other"
+            )
+        # Flag mutations must not be mixed with mailbox-changing operations.
+        # A flag mutation is a pure state change; adding/moving/archiving a message
+        # is a separate operation that must be done independently.
+        if self.flag_color is not None and (
+            self.add_labels or self.remove_labels or self.archive or self.target_folder
+        ):
+            raise LabelActionValidationError(
+                "flag_color mutation cannot be combined with add_labels, "
+                "remove_labels, archive, or target_folder"
+            )
+        # Category is a separate axis (Outlook); reject mixing with colored flags
+        # unless an explicit compatibility rule is added later.
+        if self.flag_color is not None and self.category:
+            raise LabelActionValidationError(
+                "flag_color mutation cannot be combined with category"
             )
 
 

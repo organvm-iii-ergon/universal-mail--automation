@@ -502,6 +502,9 @@ class MailAppProvider(EmailProvider):
 
         Reads Mail.app's `flag index` property which maps to FlagColor enum:
         -1 = NO_FLAG, 0 = RED, 1 = ORANGE, 2 = YELLOW, 3 = GREEN, 4 = BLUE, 5 = PURPLE, 6 = GRAY
+
+        Raises:
+            RuntimeError: If AppleScript execution fails (timeout, message not found, etc.)
         """
         script = f'''
         tell application "Mail"
@@ -509,13 +512,9 @@ class MailAppProvider(EmailProvider):
             return flag index of targetMsg
         end tell
         '''
-        try:
-            output = self._run_applescript(script)
-            index = int(output.strip())
-            return flag_from_mailapp_index(index)
-        except (RuntimeError, ValueError) as e:
-            logger.error(f"Failed to get flag color for message {message_id}: {e}")
-            return FlagColor.UNKNOWN
+        output = self._run_applescript(script)
+        index = int(output.strip())
+        return flag_from_mailapp_index(index)
 
     def set_flag_color(self, message_id: str, color: FlagColor) -> bool:
         """

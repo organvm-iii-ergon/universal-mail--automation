@@ -280,52 +280,58 @@ class EmailProvider(ABC):
         Get the current flag color of a message.
 
         Only supported by providers with COLORED_FLAGS capability.
-        Default implementation returns NO_FLAG.
 
         Args:
             message_id: Message to query
 
         Returns:
-            FlagColor of the message, or NO_FLAG if not supported/unflagged
+            FlagColor of the message
+
+        Raises:
+            NotImplementedError: If provider does not support COLORED_FLAGS
         """
         if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
-            return FlagColor.NO_FLAG
-        return FlagColor.NO_FLAG  # Subclasses override
+            raise NotImplementedError(
+                f"{self.name} does not support COLORED_FLAGS capability"
+            )
+        raise NotImplementedError("subclass must implement get_flag_color")
 
     def set_flag_color(self, message_id: str, color: FlagColor) -> bool:
         """
         Set a specific flag color on a message.
 
         Only supported by providers with COLORED_FLAGS capability.
-        Default implementation returns False.
 
         Args:
             message_id: Message to flag
             color: FlagColor to apply (NO_FLAG clears the flag)
 
-        Returns:
-            True if successful, False otherwise
+        Raises:
+            NotImplementedError: If provider does not support COLORED_FLAGS
         """
         if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
-            return False
-        return False  # Subclasses override
+            raise NotImplementedError(
+                f"{self.name} does not support COLORED_FLAGS capability"
+            )
+        raise NotImplementedError("subclass must implement set_flag_color")
 
     def clear_flag(self, message_id: str) -> bool:
         """
         Clear the flag from a message (set to NO_FLAG).
 
         Only supported by providers with COLORED_FLAGS capability.
-        Default implementation returns False.
 
         Args:
             message_id: Message to unflag
 
-        Returns:
-            True if successful, False otherwise
+        Raises:
+            NotImplementedError: If provider does not support COLORED_FLAGS
         """
         if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
-            return False
-        return self.set_flag_color(message_id, FlagColor.NO_FLAG)
+            raise NotImplementedError(
+                f"{self.name} does not support COLORED_FLAGS capability"
+            )
+        raise NotImplementedError("subclass must implement clear_flag")
 
     @abstractmethod
     def ensure_label_exists(self, label: str) -> str:
@@ -413,18 +419,30 @@ class EmailProvider(ABC):
                     if self.archive(action.message_id):
                         did_leave_inbox = True
                 if action.star:
-                    self.star(action.message_id, due_date=action.due_date)
+                    if not self.star(action.message_id, due_date=action.due_date):
+                        raise RuntimeError("provider failed to star message")
                 if action.category:
-                    self.apply_category(
+                    if not self.apply_category(
                         action.message_id,
                         action.category,
                         action.category_color or "blue",
-                    )
+                    ):
+                        raise RuntimeError("provider failed to apply category")
                 # Colored flag operations (do not move messages)
                 if action.clear_flag:
-                    self.clear_flag(action.message_id)
+                    if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
+                        raise LabelActionValidationError(
+                            "provider does not support COLORED_FLAGS capability"
+                        )
+                    if not self.clear_flag(action.message_id):
+                        raise RuntimeError("provider failed to clear flag")
                 elif action.flag_color is not None:
-                    self.set_flag_color(action.message_id, action.flag_color)
+                    if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
+                        raise LabelActionValidationError(
+                            "provider does not support COLORED_FLAGS capability"
+                        )
+                    if not self.set_flag_color(action.message_id, action.flag_color):
+                        raise RuntimeError("provider failed to set flag color")
                 result.success_count += 1
             except Exception as e:
                 result.error_count += 1
