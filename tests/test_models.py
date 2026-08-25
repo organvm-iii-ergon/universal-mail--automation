@@ -2,10 +2,13 @@
 
 from datetime import datetime, timezone
 
+import pytest
+
 from core.models import (
     ActionType,
     EmailMessage,
     LabelAction,
+    LabelActionValidationError,
     ProcessingResult,
     FlagColor,
     StateSource,
@@ -135,6 +138,60 @@ class TestLabelAction:
         merged = a.merge(b)
         assert merged.target_folder == "Keep"
 
+    def test_merge_preserves_red_flag_color(self):
+        """Regression: the old 'or' truthiness discarded explicit flag_color
+        values. With the new str enum, NO_FLAG is truthy — the fix uses
+        'is not None' instead of boolean or."""
+        a = LabelAction(message_id="1", flag_color=FlagColor.BLUE)
+        b = LabelAction(message_id="1", flag_color=FlagColor.RED)
+        merged = a.merge(b)
+        assert merged.flag_color == FlagColor.RED
+
+    def test_merge_keeps_self_flag_when_other_none(self):
+        a = LabelAction(message_id="1", flag_color=FlagColor.RED)
+        b = LabelAction(message_id="1")
+        merged = a.merge(b)
+        assert merged.flag_color == FlagColor.RED
+
+    def test_merge_other_no_flag_overrides_self(self):
+        """Explicit NO_FLAG from other should override, not be treated as None."""
+        a = LabelAction(message_id="1", flag_color=FlagColor.RED)
+        b = LabelAction(message_id="1", flag_color=FlagColor.NO_FLAG)
+        merged = a.merge(b)
+        assert merged.flag_color == FlagColor.NO_FLAG
+
+
+class TestLabelActionValidation:
+    def test_clear_flag_with_flag_color_raises(self):
+        action = LabelAction(
+            message_id="1", clear_flag=True, flag_color=FlagColor.RED
+        )
+        with pytest.raises(
+            LabelActionValidationError,
+            match="clear_flag and flag_color are mutually exclusive",
+        ):
+            action.validate()
+
+    def test_clear_flag_with_star_raises(self):
+        action = LabelAction(message_id="1", clear_flag=True, star=True)
+        with pytest.raises(
+            LabelActionValidationError,
+            match="clear_flag and star are mutually exclusive",
+        ):
+            action.validate()
+
+    def test_clear_flag_alone_is_valid(self):
+        action = LabelAction(message_id="1", clear_flag=True)
+        action.validate()
+
+    def test_flag_color_alone_is_valid(self):
+        action = LabelAction(message_id="1", flag_color=FlagColor.RED)
+        action.validate()
+
+    def test_star_with_flag_color_is_valid(self):
+        action = LabelAction(message_id="1", star=True, flag_color=FlagColor.RED)
+        action.validate()
+
 
 class TestProcessingResult:
     def test_defaults(self):
@@ -163,14 +220,15 @@ class TestProcessingResult:
 
 class TestFlagColor:
     def test_enum_values(self):
-        assert FlagColor.NO_FLAG == -1
-        assert FlagColor.RED == 0
-        assert FlagColor.ORANGE == 1
-        assert FlagColor.YELLOW == 2
-        assert FlagColor.GREEN == 3
-        assert FlagColor.BLUE == 4
-        assert FlagColor.PURPLE == 5
-        assert FlagColor.GRAY == 6
+        assert FlagColor.NO_FLAG == "no_flag"
+        assert FlagColor.RED == "red"
+        assert FlagColor.ORANGE == "orange"
+        assert FlagColor.YELLOW == "yellow"
+        assert FlagColor.GREEN == "green"
+        assert FlagColor.BLUE == "blue"
+        assert FlagColor.PURPLE == "purple"
+        assert FlagColor.GRAY == "gray"
+        assert FlagColor.UNKNOWN == "unknown"
 
     def test_name_str(self):
         assert FlagColor.NO_FLAG.name_str == "No Flag"
@@ -181,6 +239,7 @@ class TestFlagColor:
         assert FlagColor.BLUE.name_str == "Blue"
         assert FlagColor.PURPLE.name_str == "Purple"
         assert FlagColor.GRAY.name_str == "Gray"
+        assert FlagColor.UNKNOWN.name_str == "Unknown"
 
     def test_operator_posture(self):
         assert FlagColor.NO_FLAG.operator_posture == "CLOSED / COMPLETED / NO OPEN LOOP"
@@ -191,6 +250,7 @@ class TestFlagColor:
         assert FlagColor.BLUE.operator_posture == "ACTIVE REFERENCE"
         assert FlagColor.PURPLE.operator_posture == "HUMAN JUDGMENT REQUIRED"
         assert FlagColor.GRAY.operator_posture == "DELIBERATELY DEFERRED"
+        assert FlagColor.UNKNOWN.operator_posture == "UNKNOWN / UNMAPPED NATIVE INDEX"
 
     def test_queue_label(self):
         assert FlagColor.NO_FLAG.queue_label == "DONE"
@@ -201,19 +261,7 @@ class TestFlagColor:
         assert FlagColor.BLUE.queue_label == "REFERENCE"
         assert FlagColor.PURPLE.queue_label == "REVIEW"
         assert FlagColor.GRAY.queue_label == "LATER"
-
-    def test_from_index(self):
-        assert FlagColor.from_index(-1) == FlagColor.NO_FLAG
-        assert FlagColor.from_index(0) == FlagColor.RED
-        assert FlagColor.from_index(1) == FlagColor.ORANGE
-        assert FlagColor.from_index(2) == FlagColor.YELLOW
-        assert FlagColor.from_index(3) == FlagColor.GREEN
-        assert FlagColor.from_index(4) == FlagColor.BLUE
-        assert FlagColor.from_index(5) == FlagColor.PURPLE
-        assert FlagColor.from_index(6) == FlagColor.GRAY
-        # Out of range defaults to NO_FLAG
-        assert FlagColor.from_index(7) == FlagColor.NO_FLAG
-        assert FlagColor.from_index(-2) == FlagColor.NO_FLAG
+        assert FlagColor.UNKNOWN.queue_label == "UNKNOWN"
 
     def test_from_string(self):
         assert FlagColor.from_string("none") == FlagColor.NO_FLAG
@@ -227,9 +275,22 @@ class TestFlagColor:
         assert FlagColor.from_string("purple") == FlagColor.PURPLE
         assert FlagColor.from_string("gray") == FlagColor.GRAY
         assert FlagColor.from_string("grey") == FlagColor.GRAY
-        assert FlagColor.from_string("unknown") == FlagColor.NO_FLAG
+        assert FlagColor.from_string("unknown") == FlagColor.UNKNOWN
         assert FlagColor.from_string("RED") == FlagColor.RED
         assert FlagColor.from_string("  purple  ") == FlagColor.PURPLE
+
+    def test_from_string_unknown_raises(self):
+        with pytest.raises(ValueError, match="Unknown flag color"):
+            FlagColor.from_string("notacolor")
+        with pytest.raises(ValueError, match="Unknown flag color"):
+            FlagColor.from_string("magenta")
+        with pytest.raises(ValueError, match="Unknown flag color"):
+            FlagColor.from_string("")
+
+    def test_is_str_enum(self):
+        assert isinstance(FlagColor.RED, str)
+        assert FlagColor.RED == "red"
+        assert str(FlagColor.RED) == "FlagColor.RED"
 
 
 class TestFlagMutation:

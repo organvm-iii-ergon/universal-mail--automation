@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
 from enum import Flag, auto
 
-from core.models import EmailMessage, LabelAction, ProcessingResult, FlagColor
+from core.models import (
+    EmailMessage,
+    LabelAction,
+    ProcessingResult,
+    FlagColor,
+)
 from core.rules import is_protected_sender
 
 if TYPE_CHECKING:  # avoid any import-time coupling; AuditLog is duck-typed at runtime
@@ -391,6 +396,7 @@ class EmailProvider(ABC):
             did_label_move = False      # a move-on-label apply_label() actually ran
             applied_labels = []
             try:
+                action.validate()
                 if not move_via_label:
                     for label in action.add_labels:
                         self.ensure_label_exists(label)

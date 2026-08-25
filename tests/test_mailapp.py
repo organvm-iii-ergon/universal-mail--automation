@@ -2,8 +2,18 @@
 
 from datetime import datetime
 
-from core.models import LabelAction
-from providers.mailapp import MailAppProvider, _FIELD_SEP, _HDR_SEP
+import pytest
+
+from core.models import FlagColor, LabelAction
+from providers.mailapp import (
+    MailAppProvider,
+    MAILAPP_INDEX_TO_FLAG,
+    MAILAPP_FLAG_TO_INDEX,
+    flag_from_mailapp_index,
+    mailapp_index_from_flag,
+    _FIELD_SEP,
+    _HDR_SEP,
+)
 
 
 def _canned_list_output(rows):
@@ -188,3 +198,69 @@ def test_classify_inbox_threads_since_days_only_when_set():
     inbox_sweep.classify_inbox(make_prov(seen), "Archive", limit=10)
     inbox_sweep.classify_inbox(make_prov(seen), "Archive", limit=10, since_days=180)
     assert seen == ["OMITTED", 180]
+
+
+# --- Provider-owned native index mapping ------------------------------------------
+
+
+class TestMailAppFlagMapping:
+    """Bidirectional mapping between Mail.app native flag indices and
+    provider-agnostic FlagColor semantics. Unknown indices fail closed
+    to UNKNOWN, never to NO_FLAG."""
+
+    def test_known_indices_map_correctly(self):
+        assert flag_from_mailapp_index(-1) == FlagColor.NO_FLAG
+        assert flag_from_mailapp_index(0) == FlagColor.RED
+        assert flag_from_mailapp_index(1) == FlagColor.ORANGE
+        assert flag_from_mailapp_index(2) == FlagColor.YELLOW
+        assert flag_from_mailapp_index(3) == FlagColor.GREEN
+        assert flag_from_mailapp_index(4) == FlagColor.BLUE
+        assert flag_from_mailapp_index(5) == FlagColor.PURPLE
+        assert flag_from_mailapp_index(6) == FlagColor.GRAY
+
+    def test_unknown_index_returns_unknown(self):
+        assert flag_from_mailapp_index(7) == FlagColor.UNKNOWN
+        assert flag_from_mailapp_index(99) == FlagColor.UNKNOWN
+        assert flag_from_mailapp_index(-2) == FlagColor.UNKNOWN
+
+    def test_known_flags_map_to_correct_indices(self):
+        assert mailapp_index_from_flag(FlagColor.NO_FLAG) == -1
+        assert mailapp_index_from_flag(FlagColor.RED) == 0
+        assert mailapp_index_from_flag(FlagColor.ORANGE) == 1
+        assert mailapp_index_from_flag(FlagColor.YELLOW) == 2
+        assert mailapp_index_from_flag(FlagColor.GREEN) == 3
+        assert mailapp_index_from_flag(FlagColor.BLUE) == 4
+        assert mailapp_index_from_flag(FlagColor.PURPLE) == 5
+        assert mailapp_index_from_flag(FlagColor.GRAY) == 6
+
+    def test_unknown_flag_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            mailapp_index_from_flag(FlagColor.UNKNOWN)
+
+    def test_roundtrip_known_flags(self):
+        for flag in (FlagColor.NO_FLAG, FlagColor.RED, FlagColor.ORANGE,
+                     FlagColor.YELLOW, FlagColor.GREEN, FlagColor.BLUE,
+                     FlagColor.PURPLE, FlagColor.GRAY):
+            index = mailapp_index_from_flag(flag)
+            assert flag_from_mailapp_index(index) == flag
+
+    def test_mapping_tables_are_inverses(self):
+        for index, flag in MAILAPP_INDEX_TO_FLAG.items():
+            if flag == FlagColor.UNKNOWN:
+                continue
+            assert MAILAPP_FLAG_TO_INDEX[flag] == index
+
+
+def test_list_messages_parses_flag_index_to_flag_color():
+    """list_messages uses the provider mapping, not FlagColor.from_index."""
+    provider = MailAppProvider()
+    provider._run_applescript = lambda script: _canned_list_output([
+        ("1", "a@b.com", "Red msg", "false", "false", "0", []),
+        ("2", "c@d.com", "No flag", "false", "false", "-1", []),
+        ("3", "e@f.com", "Unknown", "false", "false", "99", []),
+    ])
+    result = provider.list_messages(limit=10)
+    by_id = {m.id: m for m in result.messages}
+    assert by_id["1"].flag_color == FlagColor.RED
+    assert by_id["2"].flag_color == FlagColor.NO_FLAG
+    assert by_id["3"].flag_color == FlagColor.UNKNOWN

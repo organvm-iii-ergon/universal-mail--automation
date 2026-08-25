@@ -7,7 +7,7 @@ Provides provider-agnostic data structures for email messages and label actions.
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Set, Dict
-from enum import Enum, IntEnum
+from enum import Enum
 
 
 class ActionType(Enum):
@@ -24,86 +24,47 @@ class ActionType(Enum):
     CLEAR_FLAG = "clear_flag"
 
 
-class FlagColor(IntEnum):
-    """
-    Seven native Mail.app flag colors plus no flag.
+class FlagColor(str, Enum):
+    """Provider-agnostic semantic flag colors.
 
     These represent universal operator posture, never subject matter.
-    Mapping matches Mail.app's flag index property:
-    - -1 = NO_FLAG (closed/completed/no open loop)
-    - 0 = RED (CRITICAL / ACT NOW)
-    - 1 = ORANGE (ACTION OWED)
-    - 2 = YELLOW (WAITING / FOLLOW-UP)
-    - 3 = GREEN (SCHEDULED / COMMITTED)
-    - 4 = BLUE (ACTIVE REFERENCE)
-    - 5 = PURPLE (HUMAN JUDGMENT REQUIRED)
-    - 6 = GRAY (DELIBERATELY DEFERRED)
+    Provider-native integer indices (e.g. Mail.app flag index) are NOT
+    encoded here — each provider owns an explicit bidirectional mapping.
+    Unknown native values map to UNKNOWN, never to NO_FLAG.
     """
-    NO_FLAG = -1
-    RED = 0
-    ORANGE = 1
-    YELLOW = 2
-    GREEN = 3
-    BLUE = 4
-    PURPLE = 5
-    GRAY = 6
+
+    NO_FLAG = "no_flag"
+    RED = "red"
+    ORANGE = "orange"
+    YELLOW = "yellow"
+    GREEN = "green"
+    BLUE = "blue"
+    PURPLE = "purple"
+    GRAY = "gray"
+    UNKNOWN = "unknown"
 
     @property
     def name_str(self) -> str:
         """Human-readable name for the flag color."""
-        names = {
-            FlagColor.NO_FLAG: "No Flag",
-            FlagColor.RED: "Red",
-            FlagColor.ORANGE: "Orange",
-            FlagColor.YELLOW: "Yellow",
-            FlagColor.GREEN: "Green",
-            FlagColor.BLUE: "Blue",
-            FlagColor.PURPLE: "Purple",
-            FlagColor.GRAY: "Gray",
-        }
-        return names[self]
+        return _NAME_MAP[self]
 
     @property
     def operator_posture(self) -> str:
         """Universal operator posture this flag represents."""
-        postures = {
-            FlagColor.NO_FLAG: "CLOSED / COMPLETED / NO OPEN LOOP",
-            FlagColor.RED: "CRITICAL / ACT NOW",
-            FlagColor.ORANGE: "ACTION OWED",
-            FlagColor.YELLOW: "WAITING / FOLLOW-UP",
-            FlagColor.GREEN: "SCHEDULED / COMMITTED",
-            FlagColor.BLUE: "ACTIVE REFERENCE",
-            FlagColor.PURPLE: "HUMAN JUDGMENT REQUIRED",
-            FlagColor.GRAY: "DELIBERATELY DEFERRED",
-        }
-        return postures[self]
+        return _POSTURE_MAP[self]
 
     @property
     def queue_label(self) -> str:
         """Short label for flags queue display."""
-        labels = {
-            FlagColor.NO_FLAG: "DONE",
-            FlagColor.RED: "NOW",
-            FlagColor.ORANGE: "ACTION",
-            FlagColor.YELLOW: "WAITING",
-            FlagColor.GREEN: "SCHEDULED",
-            FlagColor.BLUE: "REFERENCE",
-            FlagColor.PURPLE: "REVIEW",
-            FlagColor.GRAY: "LATER",
-        }
-        return labels[self]
-
-    @classmethod
-    def from_index(cls, index: int) -> "FlagColor":
-        """Convert Mail.app flag index to FlagColor."""
-        try:
-            return cls(index)
-        except ValueError:
-            return cls.NO_FLAG
+        return _QUEUE_MAP[self]
 
     @classmethod
     def from_string(cls, s: str) -> "FlagColor":
-        """Parse flag color from string (case-insensitive)."""
+        """Parse flag color from string (case-insensitive).
+
+        Raises ValueError for unrecognized strings — never silently
+        returns NO_FLAG for an unknown color name.
+        """
         s = s.lower().strip()
         mapping = {
             "none": cls.NO_FLAG,
@@ -117,8 +78,49 @@ class FlagColor(IntEnum):
             "purple": cls.PURPLE,
             "gray": cls.GRAY,
             "grey": cls.GRAY,
+            "unknown": cls.UNKNOWN,
         }
-        return mapping.get(s, cls.NO_FLAG)
+        try:
+            return mapping[s]
+        except KeyError:
+            raise ValueError(f"Unknown flag color: {s!r}") from None
+
+
+_NAME_MAP = {
+    FlagColor.NO_FLAG: "No Flag",
+    FlagColor.RED: "Red",
+    FlagColor.ORANGE: "Orange",
+    FlagColor.YELLOW: "Yellow",
+    FlagColor.GREEN: "Green",
+    FlagColor.BLUE: "Blue",
+    FlagColor.PURPLE: "Purple",
+    FlagColor.GRAY: "Gray",
+    FlagColor.UNKNOWN: "Unknown",
+}
+
+_POSTURE_MAP = {
+    FlagColor.NO_FLAG: "CLOSED / COMPLETED / NO OPEN LOOP",
+    FlagColor.RED: "CRITICAL / ACT NOW",
+    FlagColor.ORANGE: "ACTION OWED",
+    FlagColor.YELLOW: "WAITING / FOLLOW-UP",
+    FlagColor.GREEN: "SCHEDULED / COMMITTED",
+    FlagColor.BLUE: "ACTIVE REFERENCE",
+    FlagColor.PURPLE: "HUMAN JUDGMENT REQUIRED",
+    FlagColor.GRAY: "DELIBERATELY DEFERRED",
+    FlagColor.UNKNOWN: "UNKNOWN / UNMAPPED NATIVE INDEX",
+}
+
+_QUEUE_MAP = {
+    FlagColor.NO_FLAG: "DONE",
+    FlagColor.RED: "NOW",
+    FlagColor.ORANGE: "ACTION",
+    FlagColor.YELLOW: "WAITING",
+    FlagColor.GREEN: "SCHEDULED",
+    FlagColor.BLUE: "REFERENCE",
+    FlagColor.PURPLE: "REVIEW",
+    FlagColor.GRAY: "LATER",
+    FlagColor.UNKNOWN: "UNKNOWN",
+}
 
 
 class StateSource(str, Enum):
@@ -246,6 +248,10 @@ class EmailMessage:
         return self.subject
 
 
+class LabelActionValidationError(ValueError):
+    """Raised when a LabelAction contains contradictory flag combinations."""
+
+
 @dataclass
 class LabelAction:
     """
@@ -285,7 +291,12 @@ class LabelAction:
     due_date: Optional[datetime] = None
 
     def merge(self, other: "LabelAction") -> "LabelAction":
-        """Merge another action into this one (same message_id assumed)."""
+        """Merge another action into this one (same message_id assumed).
+
+        Uses ``is not None`` for flag_color and other Optional fields so that
+        explicit values (including NO_FLAG whose str value is truthy) are never
+        silently discarded by boolean truthiness.
+        """
         return LabelAction(
             message_id=self.message_id,
             sender=self.sender or other.sender,
@@ -293,13 +304,38 @@ class LabelAction:
             remove_labels=list(set(self.remove_labels + other.remove_labels)),
             archive=self.archive or other.archive,
             star=self.star or other.star,
-            flag_color=other.flag_color or self.flag_color,
+            flag_color=(
+                other.flag_color if other.flag_color is not None else self.flag_color
+            ),
             clear_flag=other.clear_flag or self.clear_flag,
-            target_folder=other.target_folder or self.target_folder,
-            category=other.category or self.category,
-            category_color=other.category_color or self.category_color,
+            target_folder=(
+                other.target_folder
+                if other.target_folder is not None
+                else self.target_folder
+            ),
+            category=other.category if other.category is not None else self.category,
+            category_color=(
+                other.category_color
+                if other.category_color is not None
+                else self.category_color
+            ),
             due_date=other.due_date or self.due_date,
         )
+
+    def validate(self) -> None:
+        """Reject contradictory flag-action combinations before provider execution.
+
+        Raises LabelActionValidationError on any invalid combination.
+        Call this inside apply_actions before dispatching to provider methods.
+        """
+        if self.clear_flag and self.flag_color is not None:
+            raise LabelActionValidationError(
+                "clear_flag and flag_color are mutually exclusive"
+            )
+        if self.clear_flag and self.star:
+            raise LabelActionValidationError(
+                "clear_flag and star are mutually exclusive"
+            )
 
 
 @dataclass

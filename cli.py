@@ -42,6 +42,7 @@ from core.rules import (
 from core import __version__
 from core.state import StateManager
 from core.models import LabelAction, ProcessingResult, FlagColor
+from providers.mailapp import flag_from_mailapp_index
 from core.config import load_config, apply_vip_senders_from_config
 from providers.base import EmailProvider, ProviderCapabilities
 
@@ -2219,7 +2220,7 @@ def _audit_flagged_messages(provider: EmailProvider, account: str, mailbox: str)
         parts = line.split("\t")
         if len(parts) >= 4:
             msg_id, sender, subject, flag_index = parts[:4]
-            flag_color = FlagColor.from_index(int(flag_index))
+            flag_color = flag_from_mailapp_index(int(flag_index))
             rows.append({
                 "id": msg_id,
                 "sender": sender,
@@ -2325,7 +2326,7 @@ def cmd_flags_plan(args: argparse.Namespace) -> int:
 
     plan_mutations = []
     for r in rows:
-        observed = FlagColor.from_index(r["flag_index"])
+        observed = flag_from_mailapp_index(r["flag_index"])
         proposed = _propose_reclassification(r, observed)
         if proposed != observed:
             plan_mutations.append({
@@ -2424,7 +2425,7 @@ def cmd_flags_queue(args: argparse.Namespace) -> int:
     queue_data = {fc: [] for fc in queue_order}
 
     for r in rows:
-        fc = FlagColor.from_index(r["flag_index"])
+        fc = flag_from_mailapp_index(r["flag_index"])
         if fc in queue_data:
             queue_data[fc].append(r)
 
@@ -2505,7 +2506,7 @@ def cmd_flags_overrides(args: argparse.Namespace) -> int:
 
     overrides = []
     for r in rows:
-        observed = FlagColor.from_index(r["flag_index"])
+        observed = flag_from_mailapp_index(r["flag_index"])
         proposed = _propose_reclassification(r, observed)
         if proposed != observed:
             overrides.append({

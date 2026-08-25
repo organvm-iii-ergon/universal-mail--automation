@@ -21,6 +21,41 @@ from core.protocols import CAPTURE_HEADERS
 
 logger = logging.getLogger(__name__)
 
+# --- Mail.app native index <-> semantic FlagColor mapping ---
+# Mail.app owns these tables. Unknown native indices map to UNKNOWN,
+# never to NO_FLAG — absence of a flag is a distinct state from an
+# unrecognized one.
+MAILAPP_INDEX_TO_FLAG: Dict[int, FlagColor] = {
+    -1: FlagColor.NO_FLAG,
+    0: FlagColor.RED,
+    1: FlagColor.ORANGE,
+    2: FlagColor.YELLOW,
+    3: FlagColor.GREEN,
+    4: FlagColor.BLUE,
+    5: FlagColor.PURPLE,
+    6: FlagColor.GRAY,
+}
+
+MAILAPP_FLAG_TO_INDEX: Dict[FlagColor, int] = {
+    v: k for k, v in MAILAPP_INDEX_TO_FLAG.items() if v != FlagColor.UNKNOWN
+}
+
+
+def flag_from_mailapp_index(index: int) -> FlagColor:
+    """Convert a Mail.app flag index to a semantic FlagColor.
+
+    Unknown indices map to FlagColor.UNKNOWN, never to NO_FLAG.
+    """
+    return MAILAPP_INDEX_TO_FLAG.get(index, FlagColor.UNKNOWN)
+
+
+def mailapp_index_from_flag(flag: FlagColor) -> int:
+    """Convert a semantic FlagColor to a Mail.app flag index.
+
+    Raises KeyError for UNKNOWN — there is no valid native index for it.
+    """
+    return MAILAPP_FLAG_TO_INDEX[flag]
+
 # In-band delimiters for the AppleScript pseudo-JSON transport. Chosen from the C0 control
 # range so they can never collide with a header value, subject, or sender. FIELD_SEP splits
 # the per-message tuple columns; HDR_SEP splits captured "name: value" header lines within
@@ -329,7 +364,7 @@ class MailAppProvider(EmailProvider):
                     subject=subject,
                     is_read=is_read.lower() == "true",
                     is_starred=is_flagged.lower() == "true",
-                    flag_color=FlagColor.from_index(int(flag_index)),
+                    flag_color=flag_from_mailapp_index(int(flag_index)),
                     headers=_parse_bulk_headers(bulk_blob),
                 ))
 
@@ -381,7 +416,7 @@ class MailAppProvider(EmailProvider):
             subject=subject,
             is_read=is_read.lower() == "true",
             is_starred=is_flagged.lower() == "true",
-            flag_color=FlagColor.from_index(int(flag_index)),
+            flag_color=flag_from_mailapp_index(int(flag_index)),
             labels={mailbox} if mailbox else set(),
         )
 
@@ -477,25 +512,27 @@ class MailAppProvider(EmailProvider):
         try:
             output = self._run_applescript(script)
             index = int(output.strip())
-            return FlagColor.from_index(index)
+            return flag_from_mailapp_index(index)
         except (RuntimeError, ValueError) as e:
             logger.error(f"Failed to get flag color for message {message_id}: {e}")
-            return FlagColor.NO_FLAG
+            return FlagColor.UNKNOWN
 
     def set_flag_color(self, message_id: str, color: FlagColor) -> bool:
         """
         Set a specific flag color on a message.
 
-        Uses Mail.app's `flag index` property. Setting to NO_FLAG (-1) clears the flag.
-        Boolean `flagged status` is NOT used here to preserve colored flag semantics.
+        Uses Mail.app's `flag index` property via the explicit mapping table.
+        Setting to NO_FLAG clears the flag. UNKNOWN raises KeyError — there is
+        no valid native index for it.
         """
         if color == FlagColor.NO_FLAG:
             return self.clear_flag(message_id)
 
+        index = mailapp_index_from_flag(color)
         script = f'''
         tell application "Mail"
             set targetMsg to first message whose id is {message_id}
-            set flag index of targetMsg to {int(color)}
+            set flag index of targetMsg to {index}
             return "ok"
         end tell
         '''
