@@ -359,49 +359,181 @@ class TestPlanBuildingAndValidation:
 
 
 class TestApprovalValidation:
-    def _approval(self, plan, mutations, canary_limit=10):
-        now = datetime.now(timezone.utc)
-        return fw.ApprovalReceipt(
-            schema=fw.APPROVAL_SCHEMA,
-            snapshot_sha256=plan["snapshot_sha256"],
+    """Commit 6 v2 contract: approval is a signed-off artifact with its own
+    integrity hash, bound to the ACTUAL loaded plan. Fixtures use subjects
+    the classifier rates structurally auto-eligible (0.95 confidence,
+    deadline+consequence evidence) so approvals have something legal to
+    approve."""
+
+    ELIG = dict(sender="billing@corp.example",
+                subject="Payment due tomorrow — account suspension otherwise")
+
+    def _approval(self, plan, mutations, canary_limit=10, **kw):
+        ids = [m.mutation_id for m in mutations][:canary_limit]
+        return fw.ApprovalReceipt.create(
             plan_hash=plan["plan_hash"],
-            approved_mutation_ids=[m.mutation_id for m in mutations][:canary_limit],
-            issued_at=(now - timedelta(minutes=1)).isoformat(),
-            expires_at=(now + timedelta(hours=8)).isoformat(),
+            snapshot_sha256=plan["snapshot_sha256"],
+            policy_sha256=plan["policy_sha256"],
+            approved_mutation_ids=ids,
             approving_operator="operator",
             canary_limit=canary_limit,
+            **kw,
         )
 
-    def test_valid_approval_passes(self):
-        plan = fw.build_plan(_snapshot([_msg()]))
+    @staticmethod
+    def _rehash(approval):
+        """Simulate an attacker rewriting fields AND their hash — lets the
+        SPECIFIC rule under test fire instead of the generic tamper gate."""
+        approval.content_hash = approval.to_dict()["content_hash"]
+
+    def _eligible_snapshot(self, *pids):
+        return _snapshot([
+            _msg(pid, color=FlagColor.ORANGE, **self.ELIG) for pid in pids
+        ])
+
+    def test_valid_approval_passes_and_has_own_integrity_hash(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
         muts = fw.validate_plan_schema(plan)
-        approval = self._approval(plan, muts, canary_limit=min(10, max(1, len(muts))))
-        approval.validate(plan_mutations=muts)
+        assert muts and all(m.auto_eligible for m in muts)
+        n = min(10, max(1, len(muts)))
+        approval = self._approval(plan, muts, canary_limit=n)
+        assert len(approval.content_hash) == 64      # own SHA-256
+        assert approval.to_dict()["approval_id"].startswith("appr-")
+        approval.validate(plan=dict(plan), plan_mutations=muts)
+
+    def test_tampered_content_hash_rejected(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        approval = self._approval(plan, muts)
+        approval.canary_limit = 9                    # mutate AFTER hashing
+        with pytest.raises(fw.FlagWorkflowError,
+                           match="content_hash mismatch"):
+            approval.validate(plan=dict(plan), plan_mutations=muts)
+
+    def test_plan_hash_mismatch_rejected(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        approval = self._approval(plan, muts)
+        other = fw.build_plan(self._eligible_snapshot("7"))
+        with pytest.raises(fw.FlagWorkflowError, match="wrong plan"):
+            approval.validate(plan=dict(other), plan_mutations=muts)
+
+    def test_snapshot_lineage_mismatch_rejected(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        approval = self._approval(plan, muts)
+        approval.snapshot_sha256 = "f" * 64
+        self._rehash(approval)                       # isolate the rule
+        with pytest.raises(fw.FlagWorkflowError, match="wrong snapshot"):
+            approval.validate(plan=dict(plan), plan_mutations=muts)
+
+    def test_policy_hash_mismatch_rejected(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        approval = self._approval(plan, muts)
+        approval.policy_sha256 = "0" * 64
+        self._rehash(approval)
+        with pytest.raises(fw.FlagWorkflowError, match="policy"):
+            approval.validate(plan=dict(plan), plan_mutations=muts)
+
+    def test_review_required_mutation_cannot_be_approved(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        if not muts:
+            pytest.skip("no mutations")
+        target = muts[0]
+        approval = self._approval(plan, [target])
+        object.__setattr__(target, "review_required", True)   # attacker edit
+        with pytest.raises(fw.FlagWorkflowError,
+                           match="review_required mutation"):
+            approval.validate(plan=dict(plan), plan_mutations=muts)
+
+    def test_unknown_observation_cannot_be_approved(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        if not muts:
+            pytest.skip("no mutations")
+        target = muts[0]
+        approval = self._approval(plan, [target])
+        object.__setattr__(target, "observed_flag", FlagColor.UNKNOWN)
+        object.__setattr__(target, "auto_eligible", True)
+        with pytest.raises(fw.FlagWorkflowError, match="UNKNOWN"):
+            approval.validate(plan=dict(plan), plan_mutations=muts)
 
     @pytest.mark.parametrize("bad_limit", [0, -1, 11, 100])
     def test_canary_bounds_hard_enforced(self, bad_limit):
-        plan = fw.build_plan(_snapshot([_msg("1"), _msg("2")]))
+        plan = fw.build_plan(self._eligible_snapshot("1", "2"))
         muts = fw.validate_plan_schema(plan)
-        approval = self._approval(plan, muts, canary_limit=bad_limit)
+        ids = [m.mutation_id for m in muts][:1]
+        now = datetime.now(timezone.utc)
+        approval = fw.ApprovalReceipt.create(
+            plan_hash=plan["plan_hash"],
+            snapshot_sha256=plan["snapshot_sha256"],
+            policy_sha256=plan["policy_sha256"],
+            approved_mutation_ids=ids,
+            approving_operator="operator",
+            canary_limit=10,
+            issued_at=(now - timedelta(minutes=1)).isoformat(),
+        )
+        object.__setattr__(approval, "canary_limit", bad_limit)
+        self._rehash(approval)                       # isolate the rule
         with pytest.raises(fw.FlagWorkflowError, match="canary_limit"):
-            approval.validate(plan_mutations=muts)
+            approval.validate(plan=dict(plan), plan_mutations=muts)
+
+    def test_zero_approved_ids_rejected(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        approval = self._approval(plan, muts)
+        approval.approved_mutation_ids = []
+        self._rehash(approval)
+        with pytest.raises(fw.FlagWorkflowError, match="NONEMPTY"):
+            approval.validate(plan=dict(plan), plan_mutations=muts)
+
+    def test_duplicate_approved_ids_rejected(self):
+        plan = fw.build_plan(self._eligible_snapshot("1", "2"))
+        muts = fw.validate_plan_schema(plan)
+        if len(muts) < 1:
+            pytest.skip("no mutations")
+        mid = muts[0].mutation_id
+        approval = self._approval(plan, [muts[0]], canary_limit=2)
+        approval.approved_mutation_ids = [mid, mid]
+        self._rehash(approval)
+        with pytest.raises(fw.FlagWorkflowError, match="duplicates"):
+            approval.validate(plan=dict(plan), plan_mutations=muts)
+
+    def test_approved_count_exceeding_canary_rejected(self):
+        plan = fw.build_plan(self._eligible_snapshot("1", "2", "3"))
+        muts = fw.validate_plan_schema(plan)
+        if len(muts) < 2:
+            pytest.skip("need >=2 mutations")
+        approval = self._approval(plan, muts, canary_limit=10)
+        approval.approved_mutation_ids = [
+            m.mutation_id for m in muts]             # more than limit below
+        object.__setattr__(approval, "canary_limit", 1)
+        self._rehash(approval)
+        with pytest.raises(fw.FlagWorkflowError, match="exceed canary"):
+            approval.validate(plan=dict(plan), plan_mutations=muts)
 
     def test_expired_approval_rejected(self):
-        plan = fw.build_plan(_snapshot([_msg()]))
+        plan = fw.build_plan(self._eligible_snapshot("1"))
         muts = fw.validate_plan_schema(plan)
         now = datetime.now(timezone.utc)
-        approval = self._approval(plan, muts)
+        approval = self._approval(plan, muts, ttl_seconds=3600)
+        # Keep issued<expires coherent; make the WINDOW fully past instead.
+        approval.issued_at = (now - timedelta(hours=2)).isoformat()
         approval.expires_at = (now - timedelta(seconds=1)).isoformat()
+        self._rehash(approval)
         with pytest.raises(fw.FlagWorkflowError, match="expired"):
-            approval.validate(plan_mutations=muts, now=now)
+            approval.validate(plan=dict(plan), plan_mutations=muts, now=now)
 
     def test_unknown_mutation_id_rejected(self):
-        plan = fw.build_plan(_snapshot([_msg()]))
+        plan = fw.build_plan(self._eligible_snapshot("1"))
         muts = fw.validate_plan_schema(plan)
         approval = self._approval(plan, muts)
         approval.approved_mutation_ids = ["mut-doesnotexist"]
+        self._rehash(approval)
         with pytest.raises(fw.FlagWorkflowError, match="absent from plan"):
-            approval.validate(plan_mutations=muts)
+            approval.validate(plan=dict(plan), plan_mutations=muts)
 
 
 class TestAppliedPlanLedger:
@@ -427,16 +559,25 @@ class TestOverrideStore:
         store.record_override(ref, "human changed RED -> GRAY after apply")
         assert store.is_overridden(ref) is True
         assert store.is_suppressed(ref) is True
-        store.unlock(ref)
+        store.unlock(ref, actor="human-operator")
         assert store.is_suppressed(ref) is False
-        assert store.is_overridden(ref) is False
+        # History (with unlock audit fields) persists after unlock.
+        history = store.list_overrides()[ref]
+        assert history["unlock_actor"] == "human-operator"
+        assert history["unlocked_at"] is not None
 
-    def test_verified_automation_state_clears_override(self, tmp_path):
+    def test_automation_state_does_NOT_clear_override(self, tmp_path):
+        """Commit 6 UNLOCK-ONLY contract: only explicit operator unlock
+        clears suppression — automation verifying its own write can never
+        silently resurrect authority over a human-touched message."""
         store = fw.OverrideStore(tmp_path / "o.json")
         ref = fw.sha256_hex("ref-2")
         store.record_override(ref, "diff")
         store.record_automation_state(ref, "orange", verified=True)
-        assert store.is_overridden(ref) is False
+        assert store.is_suppressed(ref) is True      # STILL suppressed
+        assert store.is_overridden(ref) is True
+        store.unlock(ref, actor="operator")
+        assert store.is_suppressed(ref) is False     # only unlock clears
 
     def test_corrupt_store_fails_closed(self, tmp_path):
         p = tmp_path / "o.json"

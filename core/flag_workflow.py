@@ -23,7 +23,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -40,9 +40,9 @@ from core.flag_policy import (
 
 SNAPSHOT_SCHEMA = "uma.flags.snapshot.v1"
 PUBLIC_RECEIPT_SCHEMA = "uma.flags.public_receipt.v1"
-PLAN_SCHEMA = "uma.flags.migration.plan.v3"       # v3: durable ref bindings + policy_sha256
+PLAN_SCHEMA = "uma.flags.migration.plan.v4"       # v4: structural auto_eligible
 PUBLIC_PLAN_SCHEMA = "uma.flags.migration.plan.public.v1"
-APPROVAL_SCHEMA = "uma.flags.approval.v1"
+APPROVAL_SCHEMA = "uma.flags.approval.v2"   # v2: approval_id + policy_sha256 + own content_hash
 APPLY_RECEIPT_SCHEMA = "uma.flags.apply_receipt.v1"
 ROLLBACK_RECEIPT_SCHEMA = "uma.flags.rollback_receipt.v1"
 
@@ -845,6 +845,7 @@ class PlannedMutation:
     reason: str
     confidence: Optional[float]
     review_required: bool
+    auto_eligible: bool = False
     provider: str = ""
     account: str = ""
     mailbox: str = ""
@@ -864,6 +865,7 @@ class PlannedMutation:
             "reason": self.reason,
             "confidence": self.confidence,
             "review_required": self.review_required,
+            "auto_eligible": self.auto_eligible,
             "provider": self.provider,
             "account": self.account,
             "mailbox": self.mailbox,
@@ -880,7 +882,8 @@ def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
     for key in (
         "mutation_id", "ref_digest", "observed_flag",
         "proposed_flag", "reason_code", "review_required",
-        # v3 durable bindings — required, not optional.
+        # v4 durable bindings + structural eligibility — required keys.
+        "auto_eligible",
         "provider", "account", "mailbox", "provider_id", "snapshot_id",
         "observed_native_flag", "evidence_digest", "message_id_digest",
     ):
@@ -892,15 +895,32 @@ def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
     ):
         raise FlagWorkflowError(f"{prefix}: confidence must be null or in [0,1]")
     native = d["observed_native_flag"]
+    review_required = bool(d["review_required"])
+    auto_eligible = bool(d["auto_eligible"])
+    # Structural eligibility invariants — hash-valid but impossible plans
+    # must fail closed at parse time, exactly like snapshots do.
+    if review_required and auto_eligible:
+        raise FlagWorkflowError(
+            f"{prefix}: auto_eligible=True is incompatible with "
+            "review_required=True")
+    proposed = FlagColor.from_string(str(d["proposed_flag"]))
+    if proposed == FlagColor.UNKNOWN:
+        raise FlagWorkflowError(
+            f"{prefix}: UNKNOWN is not a writable proposed flag")
+    observed = FlagColor.from_string(str(d["observed_flag"]))
+    if observed == FlagColor.UNKNOWN and auto_eligible:
+        raise FlagWorkflowError(
+            f"{prefix}: UNKNOWN observations can never be auto_eligible")
     return PlannedMutation(
         mutation_id=str(d["mutation_id"]),
         ref_digest=require_hex256(d["ref_digest"], f"{prefix}.ref_digest"),
-        observed_flag=FlagColor.from_string(str(d["observed_flag"])),
-        proposed_flag=FlagColor.from_string(str(d["proposed_flag"])),
+        observed_flag=observed,
+        proposed_flag=proposed,
         reason_code=str(d["reason_code"]),
         reason=str(d.get("reason", "")),
         confidence=None if confidence is None else float(confidence),
-        review_required=bool(d["review_required"]),
+        review_required=review_required,
+        auto_eligible=auto_eligible,
         provider=str(d["provider"]),
         account=str(d["account"]),
         mailbox=str(d["mailbox"]),
@@ -957,9 +977,19 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
                 m.received_iso, m.sender, m.subject)
             if (m.received_iso or m.sender or m.subject) else None
         )
+        # Structural eligibility: derived from Proposal.auto_eligible (the
+        # typed gate), NEVER reconstructed from confidence. UNKNOWN
+        # observations can never be eligible; review-required implies not
+        # auto-eligible. The invariant is enforced again at parse time.
+        auto = (
+            p.auto_eligible
+            and m.observed_flag != FlagColor.UNKNOWN
+            and not p.review_required
+        )
         mutations.append(PlannedMutation(
             # Mutation id binds the FULL durable context, not just colors:
-            # changing any binding (or the source snapshot) changes ids.
+            # changing any binding — including structural eligibility —
+            # changes ids.
             mutation_id="mut-" + sha256_hex({
                 "ref": m.ref_digest,
                 "observed": p.observed_flag.value,
@@ -970,6 +1000,7 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
                 "mailbox": m.mailbox,
                 "provider_id": m.provider_id,
                 "evidence": evidence_digest,
+                "auto_eligible": auto,
             })[:24],
             ref_digest=m.ref_digest,
             observed_flag=p.observed_flag,
@@ -978,6 +1009,7 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
             reason=p.reason,
             confidence=p.confidence,
             review_required=review_required,
+            auto_eligible=auto,
             provider=m.provider,
             account=m.account,
             mailbox=m.mailbox,
@@ -1048,6 +1080,7 @@ def to_public_safe_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
                 "reason_code": m["reason_code"],
                 "confidence": m["confidence"],
                 "review_required": m["review_required"],
+                "auto_eligible": m.get("auto_eligible", False),
             }
             for m in plan["mutations"]
         ],
@@ -1121,42 +1154,96 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
     ]
 
 
-# --- Approval receipt --------------------------------------------------------
+# --- Approval receipt (v2: signed-off artifact with own integrity hash) -------
 
 
 @dataclass
 class ApprovalReceipt:
-    """Separate explicit operator approval bound to snapshot+plan+canary."""
+    """Explicit operator approval — a REAL signed-off artifact.
+
+    v2 contract:
+    - carries its own full SHA-256 content_hash (tamper-evident artifact);
+    - binds plan_sha256 AND snapshot_sha256 AND policy_sha256;
+    - validation compares against the ACTUAL loaded plan dict and parsed
+      mutations, not merely field shapes;
+    - approved ids must be nonempty, unique, present in the plan, and every
+      one of them must be structurally auto_eligible=True with
+      review_required=False;
+    - 1 <= canary_limit <= CANARY_MAX and len(approved) <= canary_limit;
+    - no force flag, no bypass path exists anywhere.
+    """
     schema: str
+    approval_id: str
     snapshot_sha256: str
     plan_hash: str
+    policy_sha256: str
     approved_mutation_ids: List[str]
     issued_at: str
     expires_at: str
     approving_operator: str
     canary_limit: int
+    content_hash: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "schema": self.schema,
+            "approval_id": self.approval_id,
             "snapshot_sha256": self.snapshot_sha256,
             "plan_hash": self.plan_hash,
+            "policy_sha256": self.policy_sha256,
             "approved_mutation_ids": list(self.approved_mutation_ids),
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
             "approving_operator": self.approving_operator,
             "canary_limit": self.canary_limit,
         }
+        d["content_hash"] = sha256_hex(d)
+        return d
 
-    def validate(self, *, plan_mutations: List[PlannedMutation],
+    @classmethod
+    def create(cls, *, plan_hash: str, snapshot_sha256: str,
+               policy_sha256: str, approved_mutation_ids: List[str],
+               approving_operator: str, canary_limit: int,
+               issued_at: Optional[str] = None,
+               ttl_seconds: int = 3600) -> "ApprovalReceipt":
+        """Single construction path computing approval_id + content_hash."""
+        now = datetime.now(timezone.utc)
+        receipt = cls(
+            schema=APPROVAL_SCHEMA,
+            approval_id="appr-" + sha256_hex({
+                "plan_hash": plan_hash,
+                "approved": sorted(approved_mutation_ids),
+                "issued_hint": issued_at or now.isoformat(),
+            })[:32],
+            snapshot_sha256=snapshot_sha256,
+            plan_hash=plan_hash,
+            policy_sha256=policy_sha256,
+            approved_mutation_ids=list(approved_mutation_ids),
+            issued_at=issued_at or now.isoformat(),
+            expires_at=(now + timedelta(seconds=ttl_seconds)).isoformat(),
+            approving_operator=approving_operator,
+            canary_limit=int(canary_limit),
+        )
+        receipt.content_hash = receipt.to_dict()["content_hash"]
+        return receipt
+
+    def validate(self, *, plan: Dict[str, Any],
+                 plan_mutations: List[PlannedMutation],
                  now: Optional[datetime] = None) -> None:
-        """Fail-closed approval checks against an already-validated plan."""
+        """Fail-closed checks against the ACTUAL loaded plan."""
         if self.schema != APPROVAL_SCHEMA:
             raise FlagWorkflowError(
-                f"approval schema must be {APPROVAL_SCHEMA}, got {self.schema!r}"
+                f"approval schema must be {APPROVAL_SCHEMA}, "
+                f"got {self.schema!r}"
             )
-        require_hex256(self.snapshot_sha256, "approval.snapshot_sha256")
-        require_hex256(self.plan_hash, "approval.plan_hash")
+        # Own-integrity FIRST: a tampered approval is rejected before any
+        # cross-binding comparison can be gamed.
+        stored = require_hex256(self.content_hash, "approval.content_hash")
+        body = self.to_dict()
+        body.pop("content_hash")
+        if sha256_hex(body) != stored:
+            raise FlagWorkflowError(
+                "approval content_hash mismatch (tampered)")
         if not self.approving_operator.strip():
             raise FlagWorkflowError("approving_operator must be named")
         issued = datetime.fromisoformat(self.issued_at)
@@ -1166,18 +1253,59 @@ class ApprovalReceipt:
         now = now or datetime.now(timezone.utc)
         if expires <= now:
             raise FlagWorkflowError("approval has expired")
+
+        # Cross-bindings against the ACTUAL plan artifact:
+        if self.plan_hash != plan.get("plan_hash"):
+            raise FlagWorkflowError(
+                "approval.plan_hash != plan.plan_hash — wrong plan")
+        if self.snapshot_sha256 != plan.get("snapshot_sha256"):
+            raise FlagWorkflowError(
+                "approval.snapshot_sha256 != plan.snapshot_sha256 — "
+                "wrong snapshot lineage")
+        if self.policy_sha256 != plan.get("policy_sha256"):
+            raise FlagWorkflowError(
+                "approval.policy_sha256 != plan.policy_sha256 — policy "
+                "changed between planning and approval")
+
         if not (CANARY_MIN <= self.canary_limit <= CANARY_MAX):
             raise FlagWorkflowError(
                 f"canary_limit must be within [{CANARY_MIN},{CANARY_MAX}], "
                 f"got {self.canary_limit}"
             )
-        known_ids = {m.mutation_id for m in plan_mutations}
-        unknown = set(self.approved_mutation_ids) - known_ids
+        ids = self.approved_mutation_ids
+        if not ids:
+            raise FlagWorkflowError(
+                "approved_mutation_ids must be NONEMPTY — silent full-batch "
+                "approvals are forbidden")
+        if len(ids) != len(set(ids)):
+            raise FlagWorkflowError(
+                "approved_mutation_ids contains duplicates")
+        if len(ids) > self.canary_limit:
+            raise FlagWorkflowError(
+                f"{len(ids)} approved mutations exceed canary_limit "
+                f"{self.canary_limit}")
+        by_id = {m.mutation_id: m for m in plan_mutations}
+        unknown = [i for i in ids if i not in by_id]
         if unknown:
             raise FlagWorkflowError(
                 f"approval references mutation ids absent from plan: "
                 f"{sorted(unknown)}"
             )
+        for mid in ids:
+            m = by_id[mid]
+            if m.auto_eligible is not True:
+                raise FlagWorkflowError(
+                    f"{mid}: auto_eligible is not True — confidence alone "
+                    "can NEVER grant mutation eligibility")
+            if m.review_required is not False:
+                raise FlagWorkflowError(
+                    f"{mid}: review_required mutation cannot be approved")
+            if m.observed_flag == FlagColor.UNKNOWN:
+                raise FlagWorkflowError(
+                    f"{mid}: UNKNOWN observations can never be approved")
+            if m.proposed_flag == FlagColor.UNKNOWN:
+                raise FlagWorkflowError(
+                    f"{mid}: proposed UNKNOWN is not writable")
 
 
 # --- Transaction ledger (append-only idempotency guard) ----------------------
@@ -1284,22 +1412,49 @@ class OverrideStore:
 
     def record_automation_state(self, ref_digest: str, flag_value: str,
                                 verified: bool) -> None:
+        """Record last verified automation state.
+
+        UNLOCK-ONLY CONTRACT (Commit 6): this method NEVER clears a
+        detected human override. Overrides are cleared exclusively by
+        :meth:`unlock` — an explicit operator action. Automation verifying
+        its own write cannot silently resurrect its authority over a
+        message a human has touched.
+        """
         data = self._load()
-        data["overrides"].pop(self._key(ref_digest), None)   # cleared by verify
-        data.setdefault("last_automation", {})[self._key(ref_digest)] = {
+        k = self._key(ref_digest)
+        data.setdefault("last_automation", {})[k] = {
             "flag": flag_value, "verified": bool(verified),
             "recorded_at": datetime.now(timezone.utc).isoformat(),
         }
+        # NOTE: no pop of overrides/suppressed here — unlock-only.
+        self._save(data)
+
+    def detect_override(self, ref_digest: str,
+                        automation_expected_state: str,
+                        human_observed_state: str) -> None:
+        """Persist a detected human override and SUPPRESS the ref.
+
+        Lifecycle: current != last verified automation state AND no
+        approved transaction explains the change => override recorded,
+        automation suppressed until an explicit operator unlock.
+        """
+        data = self._load()
+        k = self._key(ref_digest)
+        data["overrides"][k] = {
+            "ref_digest": k,
+            "detected_at": datetime.now(timezone.utc).isoformat(),
+            "automation_expected_state": automation_expected_state,
+            "human_observed_state": human_observed_state,
+            "suppressed": True,
+            "unlocked_at": None,
+            "unlock_actor": None,
+        }
+        data["suppressed"][k] = True
         self._save(data)
 
     def record_override(self, ref_digest: str, detail: str) -> None:
-        data = self._load()
-        data["overrides"][self._key(ref_digest)] = {
-            "detail": detail,
-            "detected_at": datetime.now(timezone.utc).isoformat(),
-        }
-        data["suppressed"][self._key(ref_digest)] = True
-        self._save(data)
+        """Legacy detail-shaped detection (kept for existing callers)."""
+        self.detect_override(ref_digest, "unknown", f"detail:{detail}")
 
     def is_overridden(self, ref_digest: str) -> bool:
         return self._key(ref_digest) in self._load()["overrides"]
@@ -1307,11 +1462,19 @@ class OverrideStore:
     def is_suppressed(self, ref_digest: str) -> bool:
         return self._key(ref_digest) in self._load()["suppressed"]
 
-    def unlock(self, ref_digest: str) -> None:
+    def unlock(self, ref_digest: str, actor: str = "") -> None:
+        """EXPLICIT operator action — the ONLY path that clears suppression.
+
+        Records who unlocked and when (audit trail persists in overrides
+        history), then clears the active suppression.
+        """
         data = self._load()
         k = self._key(ref_digest)
+        if k in data["overrides"]:
+            data["overrides"][k]["unlocked_at"] = (
+                datetime.now(timezone.utc).isoformat())
+            data["overrides"][k]["unlock_actor"] = actor or "unnamed-operator"
         data["suppressed"].pop(k, None)
-        data["overrides"].pop(k, None)
         self._save(data)
 
     def list_overrides(self) -> Dict[str, Any]:
