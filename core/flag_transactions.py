@@ -236,9 +236,9 @@ class TransactionLedger:
             return []
         try:
             raw = self.path.read_text(encoding="utf-8")
-        except OSError as e:
+        except OSError as exc:
             raise LedgerCorrupted(
-                f"ledger unreadable ({self.path}): {e}") from e
+                f"ledger unreadable ({self.path}): {exc}") from exc
         out: List[Dict[str, Any]] = []
         for lineno, line in enumerate(raw.splitlines(), start=1):
             if not line.strip():
