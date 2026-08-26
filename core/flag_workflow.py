@@ -1399,12 +1399,13 @@ class OverrideStore:
 
     def _save(self, data: Dict[str, Any]) -> None:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)   # re-harden pre-existing dirs
         payload = json.dumps(data, indent=2, sort_keys=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(payload, encoding="utf-8")
         os.chmod(tmp, 0o600)
         os.replace(tmp, self.path)
-        os.chmod(self.path, 0o600)
+        os.chmod(self.path, 0o600)          # every write — pre-existing too
 
     @staticmethod
     def _key(ref_digest: str) -> str:

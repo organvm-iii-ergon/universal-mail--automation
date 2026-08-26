@@ -65,10 +65,19 @@ ST_PARTIALLY_FAILED = "partially_failed"
 ST_BLOCKED = "blocked"
 ST_AMBIGUOUS = "ambiguous"
 ST_FROZEN_UNATTEMPTED = "frozen_unattempted"
-ST_ALREADY_VERIFIED = "already_verified"          # idempotent skip marker
+ST_ALREADY_VERIFIED = "already_verified"          # EVENT ONLY (see below)
 ST_ROLLBACK_PENDING = "rollback_pending"
 ST_ROLLED_BACK = "rolled_back"
 ST_ROLLBACK_BLOCKED = "rollback_blocked"
+
+# AUTHORITATIVE mutation states vs EVENT records.
+#
+# `already_verified` is an informational REPLAY EVENT. It must NEVER
+# supersede the authoritative `verified` state: treating last-row-wins over
+# a mixed stream let a third apply re-execute (P0 6b), and dropped verified
+# mutations from rollback candidacy. Authority is computed from the LAST
+# authoritative row; event rows are skipped entirely.
+AUTHORITATIVE_STATUSES = frozenset({ST_VERIFIED, ST_ROLLED_BACK})
 
 
 class TransactionLocked(FlagWorkflowError):
@@ -95,13 +104,19 @@ class AdvisoryFileLock:
 
     def __enter__(self) -> "AdvisoryFileLock":
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)   # re-harden pre-existing dirs
         fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
+            os.fchmod(fd, 0o600)            # EVERY open — pre-existing
+            # 0644 lock files must be hardened too (P0 6b FIX 3).
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as e:
             os.close(fd)
             raise TransactionLocked(
                 f"another process holds {self.path.name}") from e
+        except Exception:
+            os.close(fd)
+            raise
         self._fd = fd
         return self
 
@@ -161,13 +176,12 @@ class TransactionLedger:
 
     def _append(self, record: TransactionRecord) -> None:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self.path.parent, 0o700)          # harden pre-existing dirs
+        os.chmod(self.path.parent, 0o700)   # re-harden pre-existing dirs
         line = json.dumps(record.to_dict(), sort_keys=True) + "\n"
-        new_file = not self.path.exists()
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            if new_file:
-                os.fchmod(fd, 0o600)
+            os.fchmod(fd, 0o600)            # EVERY open — pre-existing
+            # 0644 ledgers must be hardened too (P0 6b FIX 3).
             os.write(fd, line.encode("utf-8"))
             os.fsync(fd)
         finally:
@@ -184,7 +198,11 @@ class TransactionLedger:
         return out
 
     def latest_status(self, plan_hash: str, mutation_id: str) -> Optional[str]:
-        """Most recent lifecycle status for this plan+mutation."""
+        """Most recent EVENT row for this plan+mutation (raw stream view).
+
+        NEVER use for authority decisions — replay events would poison it.
+        Use :meth:`authoritative_state`.
+        """
         found = None
         for e in self.entries():
             if e.get("plan_sha256") == plan_hash \
@@ -192,19 +210,50 @@ class TransactionLedger:
                 found = e.get("status")
         return found
 
+    def authoritative_state(self, plan_hash: str,
+                            mutation_id: str) -> Optional[str]:
+        """The authoritative applied-state: last AUTHORITATIVE row wins.
+
+        Event rows (already_verified replays, preflight noise) are skipped.
+        verified → rolled_back transitions are honored; a replay event
+        between them changes nothing.
+        """
+        state = None
+        for e in self.entries():
+            if e.get("plan_sha256") != plan_hash \
+                    or e.get("mutation_id") != mutation_id:
+                continue
+            if e.get("status") in AUTHORITATIVE_STATUSES:
+                state = e["status"]
+        return state
+
     def has_verified(self, plan_hash: str, mutation_id: str) -> bool:
-        return self.latest_status(plan_hash, mutation_id) == ST_VERIFIED
+        return self.authoritative_state(
+            plan_hash, mutation_id) == ST_VERIFIED
+
+    def is_rolled_back(self, plan_hash: str, mutation_id: str) -> bool:
+        return self.authoritative_state(
+            plan_hash, mutation_id) == ST_ROLLED_BACK
 
     def verified_transactions(self, plan_hash: str) -> List[Dict[str, Any]]:
-        """Latest VERIFIED record per mutation for this plan (for rollback)."""
-        latest: Dict[str, Dict[str, Any]] = {}
+        """Mutations whose AUTHORITATIVE state is verified (rollback pool).
+
+        Replay events never remove a mutation from this set; an explicit
+        rolled_back transition does.
+        """
+        out = []
+        seen_mids = set()
         for e in self.entries():
             if e.get("plan_sha256") != plan_hash:
                 continue
             mid = str(e.get("mutation_id"))
-            if mid not in latest or e["timestamp"] > latest[mid]["timestamp"]:
-                latest[mid] = e
-        return [e for e in latest.values() if e.get("status") == ST_VERIFIED]
+            if mid in seen_mids:
+                continue
+            if self.authoritative_state(plan_hash, mid) == ST_VERIFIED \
+                    and e.get("status") == ST_VERIFIED:
+                out.append(e)
+                seen_mids.add(mid)
+        return out
 
     def record(self, rec: TransactionRecord) -> None:
         self._append(rec)
@@ -409,9 +458,15 @@ class TransactionEngine:
 
         if live.evidence_digest != mutation.evidence_digest:
             return "evidence_drift"
-        if live.observed_native_flag is None or \
-                int(live.observed_native_flag) != (
-                    mutation.observed_native_flag or -999):
+        # NATIVE INDEX COMPARISON — explicit None checks ONLY. Mail.app RED
+        # is native index 0; truthiness (`x or -999`) would treat a live or
+        # bound RED as "missing" and structurally block every legacy red.
+        expected_native = mutation.observed_native_flag
+        if expected_native is None:
+            return "missing_observed_native_flag"
+        if live.observed_native_flag is None:
+            return "native_flag_unavailable"
+        if int(live.observed_native_flag) != int(expected_native):
             return "native_flag_drift"
         live_semantic = self._semantic_for_native(
             mutation.provider, int(live.observed_native_flag))
@@ -452,11 +507,16 @@ class TransactionEngine:
                       provider: Any) -> ApplyResult:
         result = ApplyResult(status="applied")
         approval_sha = approval.content_hash
+        by_id = {m.mutation_id: m for m in approved}
 
-        # IDEMPOTENCY PASS — zero-write skips first.
+        # IDEMPOTENCY PASS (authority-based) + POST-ROLLBACK DOCTRINE.
+        # Replay events appended here are EVENT records; they never erase
+        # the authoritative verified state (P0 6b fix).
         pending: List[PlannedMutation] = []
+        rolled_back_ids: List[str] = []
         for m in approved:
-            if self.ledger.has_verified(plan_hash, m.mutation_id):
+            state = self.ledger.authoritative_state(plan_hash, m.mutation_id)
+            if state == ST_VERIFIED:
                 txid = self._txid(plan_hash, m, approval)
                 self.ledger.record(TransactionRecord(
                     transaction_id=txid, plan_sha256=plan_hash,
@@ -466,8 +526,32 @@ class TransactionEngine:
                     verified_post_state=None,
                     timestamp=_now(), status=ST_ALREADY_VERIFIED))
                 result.already_applied.append({"mutation_id": m.mutation_id})
+            elif state == ST_ROLLED_BACK:
+                # A rolled-back mutation is NOT currently applied. Re-running
+                # an undone migration requires a NEW plan/approval cycle —
+                # deterministic refusal, zero writes.
+                rolled_back_ids.append(m.mutation_id)
             else:
                 pending.append(m)
+        if rolled_back_ids:
+            for mid in rolled_back_ids:
+                self.ledger.record(TransactionRecord(
+                    transaction_id=self._txid(
+                        plan_hash, by_id[mid], approval),
+                    plan_sha256=plan_hash, approval_sha256=approval_sha,
+                    mutation_id=mid,
+                    ref_digest=by_id[mid].ref_digest,
+                    pre_state=None,
+                    intended_state=by_id[mid].proposed_flag.value,
+                    verified_post_state=None, timestamp=_now(),
+                    status=ST_BLOCKED, error_code="previously_rolled_back"))
+            result.status = "blocked"
+            result.blocked_reason = "mutation_previously_rolled_back"
+            result.error_code = "previously_rolled_back"
+            result.failed.extend({"mutation_id": i,
+                                  "error_code": "previously_rolled_back"}
+                                 for i in rolled_back_ids)
+            return result
         if not pending:
             result.status = "already_applied"
             return result
@@ -654,10 +738,11 @@ class ScopedRollbackEngine(TransactionEngine):
     def _scoped_rollback_locked(
             self, receipt: TransactionRollbackReceipt,
             provider: Any) -> RollbackResult:
-        # Idempotency: already rolled back → ZERO-write no-op.
-        latest = self.ledger.latest_status(receipt.plan_sha256,
-                                           receipt.mutation_id)
-        if latest == ST_ROLLED_BACK:
+        # Idempotency on AUTHORITATIVE state: already rolled back →
+        # ZERO-write no-op. Replay/event rows can never flip this.
+        state = self.ledger.authoritative_state(receipt.plan_sha256,
+                                                receipt.mutation_id)
+        if state == ST_ROLLED_BACK:
             self.ledger.record(TransactionRecord(
                 transaction_id=receipt.transaction_id,
                 plan_sha256=receipt.plan_sha256,
@@ -671,10 +756,10 @@ class ScopedRollbackEngine(TransactionEngine):
                 error_code="idempotent_noop"))
             return RollbackResult(status="already_rolled_back",
                                   writes_performed=0)
-        if latest not in (ST_VERIFIED,):
+        if state != ST_VERIFIED:
             return RollbackResult(
                 status="blocked", writes_performed=0,
-                error_code=f"transaction_not_verified({latest})")
+                error_code=f"transaction_not_verified({state})")
 
         mutation = self._by_id[receipt.mutation_id]
         ref = self._ref_for(mutation)
