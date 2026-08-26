@@ -493,10 +493,15 @@ class TransactionEngine:
     # -- apply ------------------------------------------------------------------------
 
     def apply_transaction(self, *, plan: Dict[str, Any],
-                          mutations: List[PlannedMutation],
                           approval: ApprovalReceipt,
                           provider: Any) -> ApplyResult:
-        """Execute the approved subset as one all-or-zero-preflight batch."""
+        """Execute the approved subset as one all-or-zero-preflight batch.
+
+        EXECUTABLE MUTATIONS ARE DERIVED FROM THE PLAN ITSELF (Commit 6d):
+        callers cannot supply detached PlannedMutation objects — everything
+        the engine touches is parsed from the hash-committed artifact, so
+        execution data is always exactly what ``plan_hash`` commits.
+        """
         plan_hash = plan.get("plan_hash")
         require_hex256(plan_hash, "plan.plan_hash")
         # Plan integrity re-check inside the engine (defense vs callers that
@@ -509,19 +514,30 @@ class TransactionEngine:
         try:
             with AdvisoryFileLock(lock_path):
                 return self._apply_locked(plan, plan_hash, approval,
-                                          mutations, provider)
+                                          provider)
         except TransactionLocked:
             return ApplyResult(status="already_claimed", writes_performed=0,
                                error_code="lock_held_elsewhere")
 
     def _apply_locked(self, plan: Dict[str, Any], plan_hash: str,
                       approval: ApprovalReceipt,
-                      mutations: List[PlannedMutation],
                       provider: Any) -> ApplyResult:
         # APPROVAL VALIDATION FIRST — inside the lock, before ledger
         # authority checks, preflight, claims, or ANY provider contact.
         # The canonical validator (ApprovalReceipt.validate) is the single
         # authority for approval rules; the engine never re-implements them.
+        #
+        # EXECUTABLE MUTATIONS come from the validated plan itself: parsing
+        # re-runs every schema/invariant rule against hash-committed bytes,
+        # so detached caller objects can never become execution authority.
+        from core.flag_workflow import validate_plan_schema
+        try:
+            mutations = validate_plan_schema(plan)
+        except FlagWorkflowError as e:
+            return ApplyResult(
+                status="blocked", writes_performed=0,
+                blocked_reason="plan_validation_failed",
+                error_code=f"plan_invalid:{e}")
         try:
             approval.validate(plan=dict(plan), plan_mutations=mutations)
         except FlagWorkflowError as e:
@@ -742,17 +758,26 @@ class TransactionEngine:
 
 
 class ScopedRollbackEngine(TransactionEngine):
-    """Rollback variant carrying the mutation registry for scope recovery.
+    """Rollback bound to the IMMUTABLE PLAN (Commit 6d).
 
     The receipt intentionally stores only digests + native/semantic states
-    (PII-free). Scope reconstruction requires the private plan's durable
-    bindings, supplied here as ``mutations``.
+    (PII-free). Scope reconstruction parses executable mutations FROM the
+    hash-committed plan on every rollback — never from a free-standing
+    caller-supplied mutation list. Plan integrity is re-verified under the
+    lock before anything else.
     """
 
     def __init__(self, state_dir: Path, ledger: TransactionLedger,
-                 overrides: Any, mutations: List[PlannedMutation]):
+                 overrides: Any, plan: Dict[str, Any]):
         super().__init__(state_dir, ledger, overrides)
-        self._by_id = {m.mutation_id: m for m in mutations}
+        self._plan = dict(plan)
+
+    def _mutations_by_id(self) -> Dict[str, PlannedMutation]:
+        from core.flag_workflow import validate_plan_schema
+        if compute_plan_hash(self._plan) != self._plan.get("plan_hash"):
+            raise FlagWorkflowError(
+                "rollback plan_hash mismatch — plan artifact tampered")
+        return {m.mutation_id: m for m in validate_plan_schema(self._plan)}
 
     def rollback_transaction(self, *, receipt: TransactionRollbackReceipt,
                              provider: Any) -> RollbackResult:
@@ -802,7 +827,12 @@ class ScopedRollbackEngine(TransactionEngine):
         # ---------------------------------------------------------------
         rec = self.ledger.latest_authoritative_record(
             receipt.plan_sha256, receipt.mutation_id)
-        mutation = self._by_id.get(receipt.mutation_id)
+        try:
+            by_id = self._mutations_by_id()
+        except FlagWorkflowError as e:
+            return RollbackResult(status="blocked", writes_performed=0,
+                                  error_code=f"rollback_plan_invalid:{e}")
+        mutation = by_id.get(receipt.mutation_id)
         expected_applied_native = self._native_for_semantic(
             mutation.provider, mutation.proposed_flag) \
             if mutation else None

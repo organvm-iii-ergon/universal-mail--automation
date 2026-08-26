@@ -40,16 +40,17 @@ def _mode(p):
 
 class TestNativeZeroIsValid:
     @staticmethod
-    def _forced_eligible(plan, mutations):
-        """Force structural eligibility on the PARSED mutations (engine
-        reads these fields directly; the plan dict bytes stay untouched so
-        the engine's integrity re-check still passes). This decouples the
-        native-mapping matrix from classifier identity quirks — every
-        observed color gets a real preflight+write path."""
-        for m in mutations:
-            object.__setattr__(m, "auto_eligible", True)
-            object.__setattr__(m, "review_required", False)
-        return mutations
+    def _forced_eligible_plan(plan):
+        """Commit 6d doctrine: executable mutations come FROM the plan.
+        To exercise the native matrix for every observed color, force
+        structural eligibility in the SERIALIZED plan and recommit the
+        hash — a self-consistent artifact the engine parses itself."""
+        muts = [dict(m, auto_eligible=True, review_required=False)
+                for m in plan["mutations"]]
+        out = dict(plan, mutations=muts)
+        out.pop("plan_hash")
+        out["plan_hash"] = fw.compute_plan_hash(out)
+        return out
 
     @staticmethod
     def _subject_for(observed: FlagColor) -> str:
@@ -85,9 +86,11 @@ class TestNativeZeroIsValid:
             since_days=None, total_matched=1, returned_count=1,
             hidden_by_limit=0)
         plan = fw.build_plan(snap)
+        plan = self._forced_eligible_plan(plan)
         mutations = fw.validate_plan_schema(plan)
         assert mutations, f"expected a non-identity mutation for {semantic}"
-        mutations = self._forced_eligible(plan, mutations)
+        assert all(m.auto_eligible and not m.review_required
+                   for m in mutations)
         approval = fw.ApprovalReceipt.create(
             plan_hash=plan["plan_hash"],
             snapshot_sha256=plan["snapshot_sha256"],
@@ -109,7 +112,7 @@ class TestNativeZeroIsValid:
                                     tmp_path / "state" / "l.jsonl"),
                                 overrides)
         result = engine.apply_transaction(
-            plan=dict(plan), mutations=mutations, approval=approval,
+            plan=dict(plan), approval=approval,
             provider=provider)
         assert result.status == "applied", (
             f"native={native} ({semantic.value}): {result.failed}")
@@ -126,9 +129,9 @@ class TestNativeZeroIsValid:
             unknown_index_count=0, limit=500, since_days=None,
             total_matched=1, returned_count=1, hidden_by_limit=0)
         plan = fw.build_plan(snap)
+        plan = self._forced_eligible_plan(plan)
         muts = fw.validate_plan_schema(plan)
         assert muts, "RED fixture must produce a non-identity mutation"
-        muts = self._forced_eligible(plan, muts)
         approval = fw.ApprovalReceipt.create(
             plan_hash=plan["plan_hash"],
             snapshot_sha256=plan["snapshot_sha256"],
@@ -147,7 +150,7 @@ class TestNativeZeroIsValid:
                 tmp_path / "state", TransactionLedger(
                     tmp_path / "state" / "l.jsonl"), overrides)
         result = engine.apply_transaction(
-            plan=dict(plan), mutations=muts, approval=approval,
+            plan=dict(plan), approval=approval,
             provider=provider)
         assert result.status == "applied"
         assert "native_flag_drift" not in [
@@ -158,8 +161,22 @@ class TestNativeZeroIsValid:
 
     def test_missing_bound_native_flag_refused(self, tmp_path):
         h = Harness(tmp_path, pids=("1",))
-        target = h.mutations[0]
-        object.__setattr__(target, "observed_native_flag", None)
+        h.plan = h.engine and self.__class__._forced_eligible_plan(h.plan)
+        # Strip the bound native index IN THE PLAN ARTIFACT itself.
+        muts = [dict(m, observed_native_flag=None)
+                for m in h.plan["mutations"]]
+        h.plan = dict(h.plan, mutations=muts)
+        h.plan.pop("plan_hash")
+        h.plan["plan_hash"] = fw.compute_plan_hash(h.plan)
+        # Approval must bind THIS artifact (engine validates lineage).
+        parsed = fw.validate_plan_schema(h.plan)
+        h.approval = fw.ApprovalReceipt.create(
+            plan_hash=h.plan["plan_hash"],
+            snapshot_sha256=h.plan["snapshot_sha256"],
+            policy_sha256=h.plan["policy_sha256"],
+            approved_mutation_ids=[m.mutation_id for m in parsed],
+            approving_operator="operator",
+            canary_limit=max(1, len(parsed)))
         result = h.apply()
         assert result.status == "blocked"
         assert result.failed[0]["error_code"] == \

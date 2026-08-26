@@ -151,7 +151,7 @@ class Harness:
         self.engine = TransactionEngine(
             self.state_dir, self.ledger, self.overrides)
         self.rb_engine = ScopedRollbackEngine(
-            self.state_dir, self.ledger, self.overrides, self.mutations)
+            self.state_dir, self.ledger, self.overrides, self.plan)
 
     def by_pid(self, pid):
         return next(m for m in self.mutations
@@ -159,7 +159,7 @@ class Harness:
 
     def apply(self):
         return self.engine.apply_transaction(
-            plan=dict(self.plan), mutations=self.mutations,
+            plan=dict(self.plan),
             approval=self.approval, provider=self.provider)
 
 
@@ -204,7 +204,6 @@ class TestAutoEligiblePersistence:
                                        self._state(tmp_path) / "l.jsonl"),
                                    overrides)
         result = engine.apply_transaction(plan=dict(flipped2),
-                                          mutations=muts2,
                                           approval=approval2,
                                           provider=provider)
         # Commit 6c: the canonical validator inside the engine refuses the
@@ -224,20 +223,19 @@ class TestAutoEligiblePersistence:
         ("review_required", True),
         ("auto_eligible", False),
     ])
-    def test_structurally_ineligible_mutation_blocks_preflight(
+    def test_detached_ineligibility_tamper_is_ignored(
             self, tmp_path, field, value):
-        """Commit 6c: ineligibility is now caught EARLIER — by the canonical
-        approval validator inside the engine lock — so the failure is
-        approval_invalid with ZERO provider calls and an EMPTY ledger."""
+        """Commit 6d doctrine: the engine parses mutations from the plan,
+        so tampering a DETACHED object has no effect at all — execution
+        follows the hash-committed artifact (full matrix lives in
+        test_commit6d_plan_derived_mutations.py; forging the PLAN BYTES
+        with ineligibility is refused at parse/approval boundaries there
+        and in test_commit6c_trust_boundaries.py)."""
         h = Harness(tmp_path, pids=("1",))
-        target = h.by_pid("1")
-        object.__setattr__(target, field, value)
+        object.__setattr__(h.by_pid("1"), field, value)
         result = h.apply()
-        assert result.status == "blocked"
-        assert result.error_code.startswith("approval_invalid")
-        assert result.writes_performed == 0
-        assert h.provider.calls == []
-        assert h.ledger.entries() == []
+        assert result.status == "applied"
+        assert result.writes_performed == 1
 
     def test_parse_time_rejects_review_required_with_auto_true(self,
                                                                 tmp_path):

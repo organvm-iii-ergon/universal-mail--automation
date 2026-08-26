@@ -38,8 +38,7 @@ class TestEngineValidatesApproval:
             mutate(h, approval)
         calls_before = _provider_calls(h)          # always 0 here
         result = h.engine.apply_transaction(
-            plan=dict(h.plan), mutations=h.mutations,
-            approval=approval, provider=h.provider)
+            plan=dict(h.plan), approval=approval, provider=h.provider)
         assert result.status == "blocked"
         assert result.error_code.startswith("approval_invalid")
         assert result.writes_performed == 0
@@ -107,9 +106,34 @@ class TestEngineValidatesApproval:
         self._attempt(tmp_path, mutate)
 
     def test_ineligible_target_review_required(self, tmp_path):
-        def mutate(h, a):
-            object.__setattr__(h.mutations[0], "review_required", True)
-        self._attempt(tmp_path, mutate)
+        """Commit 6d: ineligibility must live in the PLAN BYTES. A detached
+        mutated object is simply ignored — so forge the artifact instead
+        (serialized review_required=True + recomputed hash); the canonical
+        validator refuses at the approval boundary."""
+        h = Harness(tmp_path, pids=("1",))
+        muts = [dict(m, review_required=True)
+                for m in h.plan["mutations"]]
+        forged = dict(h.plan, mutations=muts)
+        forged.pop("plan_hash")
+        forged["plan_hash"] = fw.compute_plan_hash(forged)
+        approval = fw.ApprovalReceipt.create(
+            plan_hash=forged["plan_hash"],
+            snapshot_sha256=forged["snapshot_sha256"],
+            policy_sha256=forged["policy_sha256"],
+            approved_mutation_ids=[
+                m["mutation_id"] for m in forged["mutations"]],
+            approving_operator="attacker", canary_limit=1)
+        result = h.engine.apply_transaction(
+            plan=dict(forged), approval=approval, provider=h.provider)
+        assert result.status == "blocked"
+        # Refused at one of the two pre-provider boundaries: parse-time
+        # structural invariant OR canonical approval validation.
+        assert result.error_code.startswith(
+            ("approval_invalid", "plan_invalid")), result.error_code
+        assert "review_required" in result.error_code
+        assert result.writes_performed == 0
+        assert h.provider.calls == []
+        assert h.ledger.entries() == []
 
     def test_valid_approval_still_applies_after_matrix(self, tmp_path):
         """Guard: the validation gate didn't over-refuse legit artifacts."""
