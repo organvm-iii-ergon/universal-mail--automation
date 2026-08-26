@@ -235,6 +235,22 @@ class TransactionLedger:
         return self.authoritative_state(
             plan_hash, mutation_id) == ST_ROLLED_BACK
 
+    def latest_authoritative_record(self, plan_hash: str,
+                                    mutation_id: str) -> Optional[Dict[str, Any]]:
+        """The last AUTHORITATIVE row for this plan+mutation (dict or None).
+
+        This is the provenance anchor for rollback: receipt fields must
+        match THIS record, never merely themselves.
+        """
+        found = None
+        for e in self.entries():
+            if e.get("plan_sha256") != plan_hash \
+                    or e.get("mutation_id") != mutation_id:
+                continue
+            if e.get("status") in AUTHORITATIVE_STATUSES:
+                found = e
+        return found
+
     def verified_transactions(self, plan_hash: str) -> List[Dict[str, Any]]:
         """Mutations whose AUTHORITATIVE state is verified (rollback pool).
 
@@ -488,23 +504,38 @@ class TransactionEngine:
         if compute_plan_hash(plan) != plan_hash:
             raise FlagWorkflowError("plan_hash mismatch — plan was tampered")
 
-        by_id = {m.mutation_id: m for m in mutations}
-        approved = [by_id[i] for i in approval.approved_mutation_ids]
-
         lock_path = (self.state_dir / "locks" /
                      f"apply-{plan_hash[:16]}.lock")
         try:
             with AdvisoryFileLock(lock_path):
                 return self._apply_locked(plan, plan_hash, approval,
-                                          approved, provider)
+                                          mutations, provider)
         except TransactionLocked:
             return ApplyResult(status="already_claimed", writes_performed=0,
                                error_code="lock_held_elsewhere")
 
     def _apply_locked(self, plan: Dict[str, Any], plan_hash: str,
                       approval: ApprovalReceipt,
-                      approved: List[PlannedMutation],
+                      mutations: List[PlannedMutation],
                       provider: Any) -> ApplyResult:
+        # APPROVAL VALIDATION FIRST — inside the lock, before ledger
+        # authority checks, preflight, claims, or ANY provider contact.
+        # The canonical validator (ApprovalReceipt.validate) is the single
+        # authority for approval rules; the engine never re-implements them.
+        try:
+            approval.validate(plan=dict(plan), plan_mutations=mutations)
+        except FlagWorkflowError as e:
+            # A rejected approval creates NO lifecycle records — a bad
+            # approval must never leave misleading prepared/verified state.
+            return ApplyResult(
+                status="blocked", writes_performed=0,
+                blocked_reason="approval_validation_failed",
+                error_code=f"approval_invalid:{e}")
+
+        # Validation passed: every approved id provably exists.
+        by_id = {m.mutation_id: m for m in mutations}
+        approved = [by_id[i] for i in approval.approved_mutation_ids]
+
         result = ApplyResult(status="applied")
         approval_sha = approval.content_hash
         by_id = {m.mutation_id: m for m in approved}
@@ -761,7 +792,70 @@ class ScopedRollbackEngine(TransactionEngine):
                 status="blocked", writes_performed=0,
                 error_code=f"transaction_not_verified({state})")
 
-        mutation = self._by_id[receipt.mutation_id]
+        # ---------------------------------------------------------------
+        # LINEAGE BINDING: the receipt is SELF-integrity only (SHA-256 is
+        # integrity, NOT authentication — anyone can recompute a hash).
+        # Authoritative truth is reconstructed from the immutable
+        # PlannedMutation + the ledger's VERIFIED record; every receipt
+        # field must MATCH that record or rollback refuses with ZERO
+        # writes. Receipt fields are informational from here on.
+        # ---------------------------------------------------------------
+        rec = self.ledger.latest_authoritative_record(
+            receipt.plan_sha256, receipt.mutation_id)
+        mutation = self._by_id.get(receipt.mutation_id)
+        expected_applied_native = self._native_for_semantic(
+            mutation.provider, mutation.proposed_flag) \
+            if mutation else None
+        lineage_expectations = {
+            "transaction_id": (receipt.transaction_id,
+                               rec.get("transaction_id") if rec else None),
+            "plan_sha256": (receipt.plan_sha256, receipt.plan_sha256),
+            "approval_sha256": (receipt.approval_sha256,
+                                rec.get("approval_sha256") if rec else None),
+            "mutation_id": (receipt.mutation_id,
+                            receipt.mutation_id),
+            "ref_digest": (receipt.ref_digest,
+                           mutation.ref_digest if mutation else None),
+            "pre_semantic_flag": (receipt.pre_semantic_flag,
+                                  mutation.observed_flag.value
+                                  if mutation else None),
+            "pre_native_flag": (
+                receipt.pre_native_flag,
+                mutation.observed_native_flag if mutation else None),
+            "applied_semantic_flag": (
+                receipt.applied_semantic_flag,
+                mutation.proposed_flag.value if mutation else None),
+            "applied_native_flag": (
+                receipt.applied_native_flag, expected_applied_native),
+        }
+        for field_name, (got, expected) in lineage_expectations.items():
+            if got != expected:
+                self.ledger.record(TransactionRecord(
+                    transaction_id=receipt.transaction_id,
+                    plan_sha256=receipt.plan_sha256,
+                    approval_sha256=receipt.approval_sha256,
+                    mutation_id=receipt.mutation_id,
+                    ref_digest=receipt.ref_digest,
+                    pre_state=None,
+                    intended_state=receipt.pre_semantic_flag,
+                    verified_post_state=None, timestamp=_now(),
+                    status=ST_ROLLBACK_BLOCKED,
+                    error_code=f"receipt_lineage_mismatch:{field_name}"))
+                return RollbackResult(
+                    status="blocked", writes_performed=0,
+                    error_code=f"receipt_lineage_mismatch:{field_name}")
+        # Narrow for mypy: a None mutation would have failed ref_digest
+        # lineage above.
+        if mutation is None:  # pragma: no cover
+            return RollbackResult(status="blocked", writes_performed=0,
+                                  error_code="receipt_lineage_mismatch:mutation")
+
+        # DERIVED truth (never receipt fields) drives the write target and
+        # the current-state gate:
+        prior_color = mutation.observed_flag
+        expected_applied_native = self._native_for_semantic(
+            mutation.provider, mutation.proposed_flag)
+
         ref = self._ref_for(mutation)
         try:
             live = self._resolve_live(provider, ref)
@@ -781,19 +875,22 @@ class ScopedRollbackEngine(TransactionEngine):
                                   error_code="resolve_failed")
 
         current_native = live.observed_native_flag
-        # OVERRIDE-SAFETY: current MUST equal what automation verified it
-        # left behind. A human having touched the message since means we
-        # must NOT clobber their choice with the old color.
+        # OVERRIDE-SAFETY: current MUST equal the DERIVED applied state
+        # (mutation.proposed_flag via provider codec) — never the receipt's
+        # self-asserted applied state. A human having touched the message
+        # since means we must NOT clobber their choice with the old color.
         if current_native is None or \
-                int(current_native) != int(receipt.applied_native_flag):
+                int(current_native) != int(expected_applied_native):
+            applied_semantic_derived = self._semantic_for_native(
+                mutation.provider, int(expected_applied_native)).value
             self.ledger.record(TransactionRecord(
                 transaction_id=receipt.transaction_id,
                 plan_sha256=receipt.plan_sha256,
                 approval_sha256=receipt.approval_sha256,
                 mutation_id=receipt.mutation_id,
                 ref_digest=receipt.ref_digest,
-                pre_state=receipt.applied_semantic_flag,
-                intended_state=receipt.pre_semantic_flag,
+                pre_state=applied_semantic_derived,
+                intended_state=prior_color.value,
                 verified_post_state=(
                     self._semantic_for_native(
                         mutation.provider, int(current_native)).value
@@ -807,13 +904,12 @@ class ScopedRollbackEngine(TransactionEngine):
                 if current_native is not None else "unknown_unknown")
             self.overrides.detect_override(
                 mutation.ref_digest,
-                automation_expected_state=receipt.applied_semantic_flag,
+                automation_expected_state=applied_semantic_derived,
                 human_observed_state=observed_semantic)
             return RollbackResult(
                 status="rollback_blocked_by_override", writes_performed=0,
                 error_code="human_intervention_detected")
 
-        prior_color = FlagColor.from_string(receipt.pre_semantic_flag)
         try:
             if prior_color == FlagColor.NO_FLAG:
                 ok = provider.clear_flag_ref(ref)

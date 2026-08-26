@@ -207,9 +207,14 @@ class TestAutoEligiblePersistence:
                                           mutations=muts2,
                                           approval=approval2,
                                           provider=provider)
+        # Commit 6c: the canonical validator inside the engine refuses the
+        # forged plan's mutation BEFORE any preflight/provider contact.
         assert result.status == "blocked"
         assert result.writes_performed == 0
-        assert result.failed[0]["error_code"] == "not_auto_eligible"
+        assert result.error_code.startswith("approval_invalid")
+        assert "auto_eligible is not True" in result.error_code
+        assert provider.calls == []
+        assert engine.ledger.entries() == []
 
     @staticmethod
     def _state(tmp_path):
@@ -221,14 +226,18 @@ class TestAutoEligiblePersistence:
     ])
     def test_structurally_ineligible_mutation_blocks_preflight(
             self, tmp_path, field, value):
+        """Commit 6c: ineligibility is now caught EARLIER — by the canonical
+        approval validator inside the engine lock — so the failure is
+        approval_invalid with ZERO provider calls and an EMPTY ledger."""
         h = Harness(tmp_path, pids=("1",))
         target = h.by_pid("1")
         object.__setattr__(target, field, value)
         result = h.apply()
         assert result.status == "blocked"
+        assert result.error_code.startswith("approval_invalid")
         assert result.writes_performed == 0
-        assert result.failed[0]["error_code"] in (
-            "not_auto_eligible", "review_required")
+        assert h.provider.calls == []
+        assert h.ledger.entries() == []
 
     def test_parse_time_rejects_review_required_with_auto_true(self,
                                                                 tmp_path):
