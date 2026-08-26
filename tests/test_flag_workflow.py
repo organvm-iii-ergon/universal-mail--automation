@@ -48,7 +48,7 @@ def _row(provider_id="1", sender="a@b.com", subject="Hi",
 def _snapshot(messages, complete=True, status=None):
     complete = complete
     snap = fw.FlagSnapshot(
-        schema=fw.SNAPSHOT_SCHEMA, snapshot_id="snap-test",
+        schema=fw.SNAPSHOT_SCHEMA, snapshot_id="snap-" + fw.sha256_hex("test")[:32],
         generated_at=datetime.now(timezone.utc).isoformat(),
         provider="mailapp", account="acct", mailbox="INBOX",
         complete=complete,

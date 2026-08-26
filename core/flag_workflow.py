@@ -257,6 +257,42 @@ class FlagSnapshot:
             raise FlagWorkflowError(
                 "snapshot zero_write_mode must be True — snapshots from a "
                 "mutating producer are untrustworthy")
+        # Count sanity: negative counters are semantically impossible.
+        for name in ("inaccessible_count", "timeout_count",
+                     "unknown_index_count", "hidden_by_limit"):
+            if getattr(self, name) < 0:
+                raise FlagWorkflowError(
+                    f"{name} cannot be negative "
+                    f"(got {getattr(self, name)})")
+        # Scalar type sanity (Commit 7 Group A): bools-as-ints admitted
+        # (True==1), but strings where ints belong and vice versa are not.
+        for name in ("limit", "total_matched", "returned_count",
+                     "inaccessible_count", "timeout_count",
+                     "unknown_index_count", "hidden_by_limit"):
+            v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, int):
+                raise FlagWorkflowError(f"{name} must be an int, got "
+                                        f"{type(v).__name__}")
+        if not isinstance(self.ordering, str) or not self.ordering:
+            raise FlagWorkflowError("ordering must be a non-empty string")
+        if not isinstance(self.provider, str) or not self.provider:
+            raise FlagWorkflowError("provider must be a non-empty string")
+        # snapshot_id provenance shape: 'snap-' + 32 hex (producer contract).
+        if not (isinstance(self.snapshot_id, str)
+                and self.snapshot_id.startswith("snap-")
+                and len(self.snapshot_id) == 37):
+            raise FlagWorkflowError(
+                f"snapshot_id malformed: {self.snapshot_id!r} "
+                "(expected 'snap-' + 32 hex)")
+        # generated_at must be a parseable, timezone-aware ISO timestamp.
+        try:
+            parsed_ts = datetime.fromisoformat(self.generated_at)
+        except (ValueError, TypeError) as e:
+            raise FlagWorkflowError(
+                f"generated_at malformed: {self.generated_at!r}") from e
+        if parsed_ts.tzinfo is None:
+            raise FlagWorkflowError(
+                "generated_at must be timezone-aware")
 
         # --- Canonical status state machine (bidirectional) ----------------
         # status and completeness form ONE coherent state, validated against
@@ -644,7 +680,9 @@ def load_snapshot(path: Path) -> FlagSnapshot:
         unknown_index_count=int(raw.get("unknown_index_count", 0)),
         limit=int(raw.get("limit", 0)),
         since_days=raw.get("since_days"),
-        ordering=str(raw.get("ordering", "received_desc")),
+        # NO str()/int() coercion here (Commit 7): hostile scalar types must
+        # reach FlagSnapshot.validate and fail closed, not be absorbed.
+        ordering=raw.get("ordering", "received_desc"),
         total_matched=int(raw.get("total_matched",
                                   raw.get("total_flagged_seen", 0))),
         returned_count=int(raw.get("returned_count", len(messages))),
@@ -1149,9 +1187,33 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
     mutations_raw = plan.get("mutations")
     if not isinstance(mutations_raw, list):
         raise FlagWorkflowError("mutations must be a list")
-    return [
-        _mutation_from_dict(d, i) for i, d in enumerate(mutations_raw)
-    ]
+    parsed = [_mutation_from_dict(d, i) for i, d in enumerate(mutations_raw)]
+    # Cross-mutation integrity (Commit 7 hardening): snapshots are
+    # deduplicated by construction, so duplicates or scope drift inside a
+    # plan indicate forgery.
+    seen_ids = set()
+    seen_refs = set()
+    for m in parsed:
+        if m.mutation_id in seen_ids:
+            raise FlagWorkflowError(
+                f"duplicate mutation_id in plan: {m.mutation_id}")
+        seen_ids.add(m.mutation_id)
+        if m.ref_digest in seen_refs:
+            raise FlagWorkflowError(
+                f"duplicate ref_digest in plan: {m.ref_digest[:16]}…")
+        seen_refs.add(m.ref_digest)
+        if m.snapshot_id != plan.get("snapshot_id"):
+            raise FlagWorkflowError(
+                f"mutation {m.mutation_id}: snapshot_id "
+                f"{m.snapshot_id!r} disagrees with plan artifact "
+                f"{plan.get('snapshot_id')!r}")
+        if m.provider not in ("mailapp",):
+            # Unknown providers have no registered writer/codec — fail
+            # closed before any transaction machinery runs.
+            raise FlagWorkflowError(
+                f"mutation {m.mutation_id}: unsupported provider "
+                f"{m.provider!r}")
+    return parsed
 
 
 # --- Approval receipt (v2: signed-off artifact with own integrity hash) -------
@@ -1388,7 +1450,21 @@ class OverrideStore:
         if not self.path.exists():
             return {"overrides": {}, "suppressed": {}}
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            # O_NOFOLLOW: never read through an attacker-controlled symlink.
+            fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                raw = os.read(fd, 10 * 1024 * 1024).decode("utf-8")
+            finally:
+                os.close(fd)
+        except OSError as e:
+            raise FlagWorkflowError(
+                f"override store unreadable ({self.path}): {e}") from e
+        except UnicodeDecodeError as e:
+            raise FlagWorkflowError(
+                f"override store corrupt (invalid encoding): {self.path}"
+            ) from e
+        try:
+            data = json.loads(raw)
         except json.JSONDecodeError:
             raise FlagWorkflowError(
                 f"override store corrupt (invalid JSON): {self.path}"
@@ -1402,10 +1478,21 @@ class OverrideStore:
         os.chmod(self.path.parent, 0o700)   # re-harden pre-existing dirs
         payload = json.dumps(data, indent=2, sort_keys=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(payload, encoding="utf-8")
+        try:
+            # O_EXCL|O_NOFOLLOW: the temp file must be OURS and real.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
+                         os.O_NOFOLLOW, 0o600)
+        except OSError as e:
+            raise FlagWorkflowError(
+                f"override store tmp unusable ({tmp}): {e}") from e
+        try:
+            os.write(fd, payload.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         os.chmod(tmp, 0o600)
-        os.replace(tmp, self.path)
-        os.chmod(self.path, 0o600)          # every write — pre-existing too
+        os.replace(tmp, self.path)          # atomic; replaces links, not targets
+        os.chmod(self.path, 0o600)
 
     @staticmethod
     def _key(ref_digest: str) -> str:

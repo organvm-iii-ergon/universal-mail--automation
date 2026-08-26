@@ -84,6 +84,25 @@ class TransactionLocked(FlagWorkflowError):
     """Another process holds the advisory lock for this plan."""
 
 
+class LedgerCorrupted(FlagWorkflowError):
+    """The transaction ledger cannot be trusted for authority
+    reconstruction (malformed line, unparsable JSON, wrong shape).
+
+    DOCTRINE (Commit 7, Group H): a corrupt ledger MUST NOT be interpreted
+    as 'nothing previously happened'. Corruption blocks transactions with
+    ZERO provider writes; it never resets idempotency or rollback safety.
+    An EMPTY/blank-lines-only file IS a legitimate fresh ledger (our
+    writers never create blank files, but touch(1)-style pre-creation is
+    benign — there is provably no history to lose).
+    """
+
+
+class PrivateStateUnusable(FlagWorkflowError):
+    """A private-state artifact (ledger/lock/store) is structurally
+    unusable — e.g. a SYMLINK where a regular file is required. We refuse
+    to follow attacker-controlled links out of the managed tree."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -105,7 +124,14 @@ class AdvisoryFileLock:
     def __enter__(self) -> "AdvisoryFileLock":
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.path.parent, 0o700)   # re-harden pre-existing dirs
-        fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            # O_NOFOLLOW: refuse to acquire a lock through an
+            # attacker-controlled symlink (Commit 7 Group O).
+            fd = os.open(self.path,
+                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        except OSError as e:
+            raise PrivateStateUnusable(
+                f"lock path unusable ({self.path}): {e}") from e
         try:
             os.fchmod(fd, 0o600)            # EVERY open — pre-existing
             # 0644 lock files must be hardened too (P0 6b FIX 3).
@@ -114,9 +140,10 @@ class AdvisoryFileLock:
             os.close(fd)
             raise TransactionLocked(
                 f"another process holds {self.path.name}") from e
-        except Exception:
+        except Exception as e:
             os.close(fd)
-            raise
+            raise PrivateStateUnusable(
+                f"lock acquisition failed ({self.path}): {e}") from e
         self._fd = fd
         return self
 
@@ -178,23 +205,54 @@ class TransactionLedger:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.path.parent, 0o700)   # re-harden pre-existing dirs
         line = json.dumps(record.to_dict(), sort_keys=True) + "\n"
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            fd = os.open(self.path,
+                         os.O_WRONLY | os.O_CREAT | os.O_APPEND |
+                         os.O_NOFOLLOW,       # never write through symlinks
+                         0o600)
+        except OSError as e:
+            raise LedgerCorrupted(
+                f"ledger not appendable ({self.path}): {e}") from e
         try:
             os.fchmod(fd, 0o600)            # EVERY open — pre-existing
             # 0644 ledgers must be hardened too (P0 6b FIX 3).
             os.write(fd, line.encode("utf-8"))
             os.fsync(fd)
+        except OSError as e:
+            raise LedgerCorrupted(
+                f"ledger durability failure ({self.path}): {e}") from e
         finally:
             os.close(fd)
 
     def entries(self) -> List[Dict[str, Any]]:
+        """Parse the ledger, FAILING CLOSED on any malformed line.
+
+        Blank lines are skipped (benign). A non-blank line that is not
+        valid JSON, or a JSON object missing the minimal authoritative
+        shape (plan_sha256/mutation_id/status), raises LedgerCorrupted —
+        corruption must block, never masquerade as empty history.
+        """
         if not self.path.exists():
             return []
-        out = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise LedgerCorrupted(
+                f"ledger unreadable ({self.path}): {e}") from e
+        out: List[Dict[str, Any]] = []
+        for lineno, line in enumerate(raw.splitlines(), start=1):
+            if not line.strip():
+                continue                    # benign blank line
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError as ex:
+                raise LedgerCorrupted(
+                    f"ledger line {lineno} malformed JSON") from ex
+            if not isinstance(e, dict) or not all(
+                    k in e for k in ("plan_sha256", "mutation_id", "status")):
+                raise LedgerCorrupted(
+                    f"ledger line {lineno} lacks authoritative shape")
+            out.append(e)
         return out
 
     def latest_status(self, plan_hash: str, mutation_id: str) -> Optional[str]:
@@ -518,6 +576,12 @@ class TransactionEngine:
         except TransactionLocked:
             return ApplyResult(status="already_claimed", writes_performed=0,
                                error_code="lock_held_elsewhere")
+        except (LedgerCorrupted, PrivateStateUnusable) as e:
+            # Corrupt local state must BLOCK — never masquerade as fresh
+            # history. Any write already attempted before the failure is
+            # counted honestly.
+            return ApplyResult(status="blocked", writes_performed=0,
+                               error_code=f"private_state_failure:{e}")
 
     def _apply_locked(self, plan: Dict[str, Any], plan_hash: str,
                       approval: ApprovalReceipt,
@@ -664,9 +728,10 @@ class TransactionEngine:
                     ok = provider.clear_flag_ref(ref)
                 else:
                     ok = provider.set_flag_color_ref(ref, m.proposed_flag)
-                write_done = True
                 if ok is not True:
-                    raise FlagWorkflowError("provider returned non-True")
+                    # Provider explicitly reports NOTHING happened.
+                    raise ProviderRefused("provider returned non-True")
+                write_done = True
                 # MANDATORY read-after-write proof — provider True is NOT
                 # success.
                 live = self._resolve_live(provider, ref)
@@ -682,6 +747,20 @@ class TransactionEngine:
                     m.provider, int(post_native_raw))
                 if post_semantic != m.proposed_flag:
                     raise FlagStateAmbiguous("post-write semantic mismatch")
+            except ProviderRefused as e:
+                self.ledger.record(TransactionRecord(
+                    transaction_id=txid, plan_sha256=plan_hash,
+                    approval_sha256=approval_sha,
+                    mutation_id=m.mutation_id, ref_digest=m.ref_digest,
+                    pre_state=m.observed_flag.value,
+                    intended_state=m.proposed_flag.value,
+                    verified_post_state=None, timestamp=_now(),
+                    status=ST_BLOCKED, error_code=f"provider_refused:{e}"))
+                result.failed.append({"mutation_id": m.mutation_id,
+                                      "status": ST_BLOCKED,
+                                      "error_code": f"provider_refused:{e}"})
+                result.status = "partially_failed"
+                break
             except FlagStateAmbiguous as e:
                 self.ledger.record(TransactionRecord(
                     transaction_id=txid, plan_sha256=plan_hash,
@@ -782,14 +861,26 @@ class ScopedRollbackEngine(TransactionEngine):
     def rollback_transaction(self, *, receipt: TransactionRollbackReceipt,
                              provider: Any) -> RollbackResult:
         receipt.validate()
-        lock_path = (self.state_dir / "locks" /
-                     f"rb-{receipt.transaction_id[:16]}.lock")
+        # MUTUAL EXCLUSION (Commit 7, Group I): rollback must never race an
+        # active apply on the same plan. Take the APPLY lock for the plan
+        # FIRST; only then the rollback-specific lock.
+        apply_lock_path = (self.state_dir / "locks" /
+                           f"apply-{receipt.plan_sha256[:16]}.lock")
+        rb_lock_path = (self.state_dir / "locks" /
+                        f"rb-{receipt.transaction_id[:16]}.lock")
         try:
-            with AdvisoryFileLock(lock_path):
+            with AdvisoryFileLock(apply_lock_path), \
+                    AdvisoryFileLock(rb_lock_path):
                 return self._scoped_rollback_locked(receipt, provider)
         except TransactionLocked:
             return RollbackResult(status="blocked", writes_performed=0,
-                                  error_code="lock_held_elsewhere")
+                                  error_code="apply_in_progress_or_locked")
+        except (LedgerCorrupted, PrivateStateUnusable) as e:
+            return RollbackResult(status="blocked", writes_performed=0,
+                                  error_code=f"private_state_failure:{e}")
+        except (LedgerCorrupted, PrivateStateUnusable) as e:
+            return RollbackResult(status="blocked", writes_performed=0,
+                                  error_code=f"private_state_failure:{e}")
 
     def _scoped_rollback_locked(
             self, receipt: TransactionRollbackReceipt,
@@ -999,3 +1090,7 @@ class ScopedRollbackEngine(TransactionEngine):
 
 class FlagStateAmbiguous(Exception):
     """Write executed but post-write verification could not prove success."""
+
+
+class ProviderRefused(Exception):
+    """Provider explicitly reports the mutation did NOT happen (False)."""
