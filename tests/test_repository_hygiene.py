@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.check_repository_hygiene import find_forbidden, forbidden_reason, tracked_paths
+from scripts.check_repository_hygiene import (
+    find_forbidden,
+    forbidden_reason,
+    missing_dockerignore_patterns,
+    tracked_paths,
+)
 
 
 @pytest.mark.parametrize(
@@ -33,6 +38,13 @@ from scripts.check_repository_hygiene import find_forbidden, forbidden_reason, t
         ("pkg/project.egg-info/PKG-INFO", "generated package metadata"),
         ("runtime/gmail_state.json", "mailbox runtime cursor"),
         ("data/customer-export.json", "private application data"),
+        (".venv/lib/python/site.py", "virtual environment"),
+        ("pkg/env/bin/python", "virtual environment"),
+        ("tools/venv/Lib/site-packages/pkg.py", "virtual environment"),
+        ("cache/module.pyo", "Python bytecode"),
+        ("cache/native.pyd", "Python bytecode"),
+        (".outlook_token_cache.json", "OAuth token cache"),
+        ("secrets/team_token_cache_prod.json", "OAuth token cache"),
     ],
 )
 def test_forbidden_paths_are_classified(path: str, reason: str) -> None:
@@ -61,6 +73,21 @@ def test_current_checkout_contains_no_forbidden_tracked_paths() -> None:
     """The exact checkout must satisfy the same predicate enforced in CI."""
 
     assert find_forbidden(tracked_paths()) == []
+
+
+def test_dockerignore_mirrors_private_runtime_boundaries() -> None:
+    """Docker builds must not re-admit files excluded from source control."""
+
+    assert missing_dockerignore_patterns() == []
+
+
+def test_missing_dockerignore_patterns_reports_unsafe_context(tmp_path: Path) -> None:
+    """A partial Docker ignore file fails the same predicate used in CI."""
+
+    (tmp_path / ".dockerignore").write_text(".git/\n", encoding="utf-8")
+    missing = missing_dockerignore_patterns(tmp_path)
+    assert "credentials.json" in missing
+    assert "*_state.json" in missing
 
 
 def test_tracked_paths_enumerates_repository_root_from_subdirectory(

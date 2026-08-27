@@ -2,6 +2,7 @@
 credentials.json
 token.pickle
 client_secret_*.json
+*token_cache*.json
 
 # Local protected-sender list (PII: real lawyer/banks/gov/self) — never commit.
 # Use config/protected_senders.example.txt as the template.

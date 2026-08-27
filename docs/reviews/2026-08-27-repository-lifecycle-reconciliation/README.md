@@ -58,8 +58,8 @@ are reaped automatically in future.
 ## Local validation
 
 - Repository hygiene predicate: PASS.
-- Hygiene regressions: 28 passed.
-- Full Python suite: 817 passed, 5 skipped.
+- Hygiene regressions: 37 passed.
+- Full Python suite: 826 passed, 5 skipped.
 - Ruff and Actionlint: PASS.
 - `uv lock --check`: PASS.
 - Source distribution and wheel build: PASS.
@@ -70,7 +70,10 @@ are reaped automatically in future.
 
 Repository hygiene runs inside the required Python matrix, including the
 protected Python 3.11 and Python 3.12 contexts; the packaging job repeats the
-same predicate before building distributions.
+same predicate before building distributions. The predicate rejects tracked
+virtual environments, compiled Python output, and Outlook token caches, and it
+also requires the Docker build context to exclude credentials, private runtime
+data, mailbox state, and local agent/session material.
 
 ## Admission truth
 

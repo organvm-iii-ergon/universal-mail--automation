@@ -1,22 +1,30 @@
+# Source-control internals and local secrets
+.git/
+credentials.json
+token.pickle
+client_secret_*.json
+*token_cache*.json
+config/protected_senders.local.txt
+
+# Python bytecode, environments, and generated metadata
 __pycache__/
 *.py[cod]
-.pytest_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+universal_mail_automation.egg-info/
+dist/
+build/
 
 # Node/tooling artifacts
 node_modules/
 web/node_modules/
-dist/
-build/
-
-# Local python/build state
-.venv/
-venv/
-env/
 
 # Logs and generated workflow artifacts
 *.log
 gmail_labeler.log
-labeler_state.json
+*_state.json
 audit/
 mail_export.tsv
 mail_report.md
@@ -26,12 +34,23 @@ mail_report.md
 *.db-wal
 *.db-shm
 data/
-universal_mail_automation.egg-info/
 
 # Test/coverage outputs
 .coverage
+.coverage.*
 coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Runtime/platform metadata
 .claude/
+.codex/
+.worktrees/
+.serena/
 .cache/
+
+# Merge/review residue
+*.main
+pr[0-9]*.txt

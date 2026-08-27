@@ -13,6 +13,7 @@ import fnmatch
 import re
 import subprocess
 from collections.abc import Iterable
+from pathlib import Path
 
 EXACT_PATHS = {
     "config/protected_senders.local.txt": "private sender configuration",
@@ -30,6 +31,7 @@ FORBIDDEN_BASENAMES = {
 
 SENSITIVE_BASENAME_GLOBS = (
     ("client_secret_*.json", "credential material"),
+    ("*token_cache*.json", "OAuth token cache"),
 )
 
 GLOB_RULES = (
@@ -43,9 +45,14 @@ GLOB_RULES = (
     ("*.egg-info/**", "generated package metadata"),
     ("build/**", "package build output"),
     ("dist/**", "package build output"),
+    (".venv/**", "virtual environment"),
+    ("env/**", "virtual environment"),
+    ("venv/**", "virtual environment"),
     ("__pycache__/**", "Python bytecode cache"),
     ("**/__pycache__/**", "Python bytecode cache"),
     ("*.pyc", "Python bytecode"),
+    ("*.pyo", "Python bytecode"),
+    ("*.pyd", "Python bytecode"),
     (".worktrees/**", "nested worktree state"),
     (".claude/worktrees/**", "agent worktree state"),
     (".claude/sessions/**", "agent session state"),
@@ -57,6 +64,32 @@ GLOB_RULES = (
     ("*.db", "runtime database"),
     ("*.db-wal", "runtime database journal"),
     ("*.db-shm", "runtime database shared memory"),
+)
+
+DOCKERIGNORE_REQUIRED_PATTERNS = frozenset(
+    {
+        ".git/",
+        "credentials.json",
+        "token.pickle",
+        "client_secret_*.json",
+        "*token_cache*.json",
+        "config/protected_senders.local.txt",
+        "*_state.json",
+        "audit/",
+        "mail_export.tsv",
+        "data/",
+        "*.db",
+        "*.db-wal",
+        "*.db-shm",
+        "*.log",
+        ".venv/",
+        "env/",
+        "venv/",
+        ".claude/",
+        ".codex/",
+        ".worktrees/",
+        ".serena/",
+    }
 )
 
 
@@ -123,17 +156,35 @@ def tracked_paths() -> list[str]:
     ]
 
 
+def missing_dockerignore_patterns(root: str | Path | None = None) -> list[str]:
+    """Return required private/runtime patterns absent from ``.dockerignore``."""
+
+    checkout = Path(root) if root is not None else Path(repository_root())
+    dockerignore = checkout / ".dockerignore"
+    if not dockerignore.is_file():
+        return sorted(DOCKERIGNORE_REQUIRED_PATTERNS)
+    active_patterns = {
+        line.strip()
+        for line in dockerignore.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    return sorted(DOCKERIGNORE_REQUIRED_PATTERNS - active_patterns)
+
+
 def main() -> int:
     """Print a bounded violation report and return a predicate exit code."""
 
     violations = find_forbidden(tracked_paths())
-    if not violations:
+    missing_dockerignore = missing_dockerignore_patterns()
+    if not violations and not missing_dockerignore:
         print("repository hygiene: PASS")
         return 0
 
     print("repository hygiene: FAIL")
     for path, reason in violations:
         print(f"- {path}: {reason}")
+    for pattern in missing_dockerignore:
+        print(f"- .dockerignore: missing required pattern {pattern}")
     return 1
 
 
