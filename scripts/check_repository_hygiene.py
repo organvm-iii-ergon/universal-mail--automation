@@ -28,12 +28,14 @@ FORBIDDEN_BASENAMES = {
     "mail_export.tsv": "mailbox export",
     "mail_report.md": "mailbox report",
     "protected_senders.local.txt": "private sender configuration",
+    "token.json": "credential material",
     "token.pickle": "credential material",
 }
 
 SENSITIVE_BASENAME_GLOBS = (
     ("client_secret_*.json", "credential material"),
     ("*token_cache*.json", "OAuth token cache"),
+    ("*.pem", "credential material"),
 )
 
 GLOB_RULES = (
@@ -43,6 +45,7 @@ GLOB_RULES = (
     (".mypy_cache/**", "type-check cache"),
     (".ruff_cache/**", "lint cache"),
     ("*_state.json", "mailbox runtime cursor"),
+    (".state.*.tmp", "atomic mailbox state temp file"),
     ("*.egg-info", "generated package metadata"),
     ("*.egg-info/**", "generated package metadata"),
     ("build/**", "package build output"),
@@ -75,8 +78,10 @@ DOCKERIGNORE_REQUIRED_PATTERNS = frozenset(
         ".git/",
         "credentials.json",
         "token.pickle",
+        "token.json",
         "client_secret_*.json",
         "*token_cache*.json",
+        "*.pem",
         "config/protected_senders.local.txt",
         ".env",
         ".env.*",
@@ -85,6 +90,7 @@ DOCKERIGNORE_REQUIRED_PATTERNS = frozenset(
         "!.env.example",
         "!*.env.example",
         "*_state.json",
+        ".state.*.tmp",
         "audit/",
         "mail_export.tsv",
         "mail_report.md",

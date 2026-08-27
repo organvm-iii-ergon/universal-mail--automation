@@ -37,6 +37,9 @@ The manifest was committed and pushed at
 `git ls-remote --heads` comparison then found zero SHA mismatches across all
 301 deletion candidates. Git accepted the 301 explicit deletions as one atomic
 push. A post-delete query showed only `main` and the four active PR heads.
+The fourth active head was this lifecycle PR branch, created after the manifest
+captured its 304-entry non-main intake partition; the manifest itself retained
+the three pre-existing open-PR heads.
 
 The three annotated archive tags resolve to the recorded representative
 commits:
@@ -58,8 +61,8 @@ are reaped automatically in future.
 ## Local validation
 
 - Repository hygiene predicate: PASS.
-- Hygiene regressions: 53 passed.
-- Full Python suite: 842 passed, 5 skipped.
+- Hygiene regressions: 56 passed.
+- Full Python suite: 845 passed, 5 skipped.
 - Ruff and Actionlint: PASS.
 - `uv lock --check`: PASS.
 - Source distribution and wheel build: PASS.

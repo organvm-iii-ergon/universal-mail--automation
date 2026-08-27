@@ -2,8 +2,10 @@
 .git/
 credentials.json
 token.pickle
+token.json
 client_secret_*.json
 *token_cache*.json
+*.pem
 config/protected_senders.local.txt
 .env
 .env.*
@@ -33,6 +35,7 @@ web/out/
 *.log
 gmail_labeler.log
 *_state.json
+.state.*.tmp
 audit/
 mail_export.tsv
 mail_report.md

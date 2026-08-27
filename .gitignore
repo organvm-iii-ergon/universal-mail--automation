@@ -1,8 +1,10 @@
 # Secrets
 credentials.json
 token.pickle
+token.json
 client_secret_*.json
 *token_cache*.json
+*.pem
 
 # Deployment/runtime environment secrets. Public templates remain tracked.
 .env
@@ -45,6 +47,7 @@ data/
 # Local runtime cursors and exports. These are generated from mailbox state and
 # must never become source artifacts, even when a particular snapshot is empty.
 *_state.json
+.state.*.tmp
 mail_export.tsv
 mail_report.md
 
