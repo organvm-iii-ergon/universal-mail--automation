@@ -58,8 +58,8 @@ are reaped automatically in future.
 ## Local validation
 
 - Repository hygiene predicate: PASS.
-- Hygiene regressions: 26 passed.
-- Full Python suite: 815 passed, 5 skipped.
+- Hygiene regressions: 28 passed.
+- Full Python suite: 817 passed, 5 skipped.
 - Ruff and Actionlint: PASS.
 - `uv lock --check`: PASS.
 - Source distribution and wheel build: PASS.
@@ -67,6 +67,10 @@ are reaped automatically in future.
 - Web zero-warning lint and static production build: PASS; the clean-checkout
   export renders the normal zero-count dashboard and no state-load error.
 - Staged-diff whitespace/error check: PASS.
+
+Repository hygiene runs inside the required Python matrix, including the
+protected Python 3.11 and Python 3.12 contexts; the packaging job repeats the
+same predicate before building distributions.
 
 ## Admission truth
 

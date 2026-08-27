@@ -52,7 +52,8 @@
   },
   "counts": {
     "reap_repeated_capture": 233,
-    "reap_terminal_pr": 65,
+    "reap_terminal_pr": 64,
+    "reap_patch_equivalent_postmerge": 1,
     "retain_open_pr": 3,
     "reap_ancestor_of_main": 1,
     "reap_closed_pr_backup": 1,
@@ -2406,7 +2407,7 @@
           "url": "https://github.com/organvm/universal-mail--automation/pull/155"
         }
       ],
-      "disposition": "reap_terminal_pr",
+      "disposition": "reap_patch_equivalent_postmerge",
       "evidence": "post-PR tip patch-equivalent to main 375932548bbe87348ed140c2a782f259fb7dedc9 and preserved by archive/uma-postmerge-vox3b-20260710"
     },
     {

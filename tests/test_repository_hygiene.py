@@ -31,6 +31,8 @@ from scripts.check_repository_hygiene import find_forbidden, forbidden_reason, t
         ("pkg/htmlcov/index.html", "coverage report"),
         ("pkg/build/output.whl", "package build output"),
         ("pkg/project.egg-info/PKG-INFO", "generated package metadata"),
+        ("runtime/gmail_state.json", "mailbox runtime cursor"),
+        ("data/customer-export.json", "private application data"),
     ],
 )
 def test_forbidden_paths_are_classified(path: str, reason: str) -> None:

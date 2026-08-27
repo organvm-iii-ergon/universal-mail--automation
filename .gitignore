@@ -33,7 +33,7 @@ data/
 
 # Local runtime cursors and exports. These are generated from mailbox state and
 # must never become source artifacts, even when a particular snapshot is empty.
-labeler_state.json
+*_state.json
 mail_export.tsv
 
 # Python
