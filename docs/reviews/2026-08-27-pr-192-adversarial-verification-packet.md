@@ -126,7 +126,7 @@ The corrective ledger contained 49 current threads. Every one received an eviden
 | Resolved | 53 of 62 total |
 | Unresolved, historical/outdated | 9 |
 
-At corrective implementation head `95caa460e0f0286bdfefa1dadc7782ba203cc949`, CI run `33090253731` and CodeQL run `33090248436` completed as failures, but all ten executable jobs had `steps: []`. The Python 3.11 annotation states: "The job was not started because your account is locked due to a billing issue." Deploy was skipped. Classification is `CI_NOT_ADMITTED`, not an executed test failure or passing CI. A later packet-publication commit is documentation-only, but it still requires its own exact-head admission query. CodeRabbit success on a draft means review was skipped, not approval. The PR must remain draft until billing is cleared, all required jobs execute at one exact head, and an independent exact-head audit passes.
+At corrective implementation head `95caa460e0f0286bdfefa1dadc7782ba203cc949`, CI run `33090253731` and CodeQL run `33090248436` completed as failures, but all ten job/check-run records had `steps: []`. The Python 3.11 annotation states: "The job was not started because your account is locked due to a billing issue." Deploy was skipped. Classification is `CI_NOT_ADMITTED`, not an executed test failure or passing CI. A later packet-publication commit is documentation-only, but it still requires its own exact-head admission query. CodeRabbit success on a draft means review was skipped, not approval. The PR must remain draft until billing is cleared, all required jobs execute at one exact head, and an independent exact-head audit passes.
 
 ```bash
 gh pr view 192 --repo organvm/universal-mail--automation --json state,isDraft,headRefOid,mergeStateStatus,statusCheckRollup
