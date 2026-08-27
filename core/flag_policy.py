@@ -31,13 +31,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, cast
 
 from core.models import FlagColor
 
-MIGRATION_POLICY_VERSION = "1.evidence-classifier.3"
+MIGRATION_POLICY_VERSION = "1.evidence-classifier.4"
 
 AUTO_ELIGIBLE_THRESHOLD = 0.80
 REVIEW_THRESHOLD = 0.55
@@ -72,6 +73,107 @@ POLICY_RULES = {
         "conflicting_signals",
     ],
     "review_only_flags": [FlagColor.PURPLE.value],
+    # Canonical classifier-axis and semantic-decision contract.  Plan
+    # validators consume this same digest-bound table; a self-rehashed plan
+    # cannot reinterpret a conflicting classification as an automatic RED.
+    "classification_domains": [
+        "career", "finance", "commerce", "scheduling", "general",
+    ],
+    "semantic_contract": {
+        "event_confirmed": {
+            "next_action_owners": ["none"],
+            "operator_states": ["open_loop"],
+            "urgencies": ["none", "near_term"],
+            "default": {
+                "flag": FlagColor.GREEN.value,
+                "reason_code": RC_EVENT_CONFIRMED_GREEN,
+            },
+        },
+        "action_request": {
+            "next_action_owners": ["operator"],
+            "operator_states": ["open_loop"],
+            "urgencies": ["none", "near_term", "imminent"],
+            "default": {
+                "flag": FlagColor.ORANGE.value,
+                "reason_code": RC_OPERATOR_ACTION_ORANGE,
+            },
+            "by_urgency": {
+                "imminent": {
+                    "flag": FlagColor.RED.value,
+                    "reason_code": RC_DEADLINE_RED,
+                },
+            },
+        },
+        "awaiting_other_party": {
+            "next_action_owners": ["other_party"],
+            "operator_states": ["open_loop"],
+            "urgencies": ["none"],
+            "default": {
+                "flag": FlagColor.YELLOW.value,
+                "reason_code": RC_AWAITING_OTHER_YELLOW,
+            },
+        },
+        "deferred_item": {
+            "next_action_owners": ["none"],
+            "operator_states": ["deferred"],
+            "urgencies": ["none"],
+            "default": {
+                "flag": FlagColor.GRAY.value,
+                "reason_code": RC_DEFERRED_GRAY,
+            },
+        },
+        "closed_or_receipt": {
+            "next_action_owners": ["none"],
+            "operator_states": ["closed", "reference_only"],
+            "urgencies": ["none"],
+            "default": {
+                "flag": FlagColor.NO_FLAG.value,
+                "reason_code": RC_CLOSED_NO_FLAG,
+            },
+            "by_operator_state": {
+                "reference_only": {
+                    "flag": FlagColor.BLUE.value,
+                    "reason_code": RC_ACTIVE_REFERENCE_BLUE,
+                },
+            },
+        },
+        "conflicting_signals": {
+            "next_action_owners": ["unknown"],
+            "operator_states": ["open_loop"],
+            "urgencies": ["none"],
+            "default": {
+                "flag": FlagColor.PURPLE.value,
+                "reason_code": RC_AMBIGUOUS_PURPLE,
+            },
+        },
+        "active_reference": {
+            "next_action_owners": ["none"],
+            "operator_states": ["reference_only"],
+            "urgencies": ["none"],
+            "default": {
+                "flag": FlagColor.BLUE.value,
+                "reason_code": RC_ACTIVE_REFERENCE_BLUE,
+            },
+        },
+        "unidentifiable_action": {
+            "next_action_owners": ["unknown"],
+            "operator_states": ["open_loop"],
+            "urgencies": ["none"],
+            "default": {
+                "flag": FlagColor.PURPLE.value,
+                "reason_code": RC_UNIDENTIFIABLE_ACTION_PURPLE,
+            },
+        },
+        "unclassifiable": {
+            "next_action_owners": ["unknown"],
+            "operator_states": ["open_loop"],
+            "urgencies": ["none"],
+            "default": {
+                "flag": FlagColor.PURPLE.value,
+                "reason_code": RC_LOW_CONFIDENCE_PURPLE,
+            },
+        },
+    },
     "confidence": {
         "base": 0.30,
         "strong_signal": 0.20,
@@ -462,77 +564,134 @@ def classify(sender: str, subject: str) -> Classification:
     )
 
 
-def map_to_flag(c: Classification) -> Tuple[FlagColor, str, str]:
-    """Map an independent classification to its semantic flag.
+def validate_classification_contract(c: Classification) -> None:
+    """Validate the digest-bound axis relationships used for mutation safety."""
+    if c.domain not in POLICY_RULES["classification_domains"]:
+        raise ValueError(f"non-canonical classification domain {c.domain!r}")
+    contracts = cast(
+        Dict[str, Dict[str, Any]], POLICY_RULES["semantic_contract"],
+    )
+    contract = contracts.get(c.semantic_type)
+    if contract is None:
+        raise ValueError(
+            f"non-canonical classification semantic_type {c.semantic_type!r}"
+        )
+    if c.next_action_owner not in contract["next_action_owners"]:
+        raise ValueError(
+            f"{c.semantic_type} cannot have next_action_owner "
+            f"{c.next_action_owner!r}"
+        )
+    if c.operator_state not in contract["operator_states"]:
+        raise ValueError(
+            f"{c.semantic_type} cannot have operator_state "
+            f"{c.operator_state!r}"
+        )
+    if c.urgency not in contract["urgencies"]:
+        raise ValueError(
+            f"{c.semantic_type} cannot have urgency {c.urgency!r}"
+        )
+    if isinstance(c.confidence, bool) or not isinstance(
+            c.confidence, (int, float)) or not math.isfinite(c.confidence) \
+            or not 0.0 <= c.confidence <= 1.0:
+        raise ValueError("classification confidence must be finite in [0,1]")
+    if type(c.marketing_or_bulk) is not bool:
+        raise ValueError("classification marketing_or_bulk must be boolean")
+    if c.semantic_type not in ("event_confirmed", "action_request") \
+            and c.due_evidence is not None:
+        raise ValueError(
+            f"{c.semantic_type} cannot carry due_evidence"
+        )
+    if c.semantic_type == "event_confirmed" and (
+            (c.urgency == "near_term") != (c.due_evidence is not None)):
+        raise ValueError(
+            "event_confirmed near_term and due_evidence must agree"
+        )
+    if c.semantic_type == "action_request" \
+            and c.urgency == "imminent" and c.due_evidence is None:
+        raise ValueError("imminent action_request requires due_evidence")
+    if (c.semantic_type == "awaiting_other_party") != \
+            (c.follow_up_evidence is not None):
+        raise ValueError(
+            "follow_up_evidence is exclusive to awaiting_other_party"
+        )
 
-    Hard mapping rules (see module docstring): words like 'urgent',
-    'important', 'payment' ALONE are insufficient for RED; receipts do
-    not create BLUE without active-reference value; NO_FLAG is reserved
-    for confidently-closed mail, never mere age.
-    """
-    if c.semantic_type == "event_confirmed":
-        return (
-            FlagColor.GREEN, RC_EVENT_CONFIRMED_GREEN,
+
+def canonical_semantic_decision(
+        c: Classification) -> Tuple[FlagColor, str]:
+    """Return the one digest-bound flag/reason-code pair for ``c``."""
+    validate_classification_contract(c)
+    contracts = cast(
+        Dict[str, Dict[str, Any]], POLICY_RULES["semantic_contract"],
+    )
+    contract = contracts[c.semantic_type]
+    decision = contract.get("by_urgency", {}).get(c.urgency)
+    if decision is None:
+        decision = contract.get("by_operator_state", {}).get(
+            c.operator_state
+        )
+    if decision is None:
+        decision = contract["default"]
+    return (
+        FlagColor.from_string(decision["flag"]),
+        cast(str, decision["reason_code"]),
+    )
+
+
+def map_to_flag(c: Classification) -> Tuple[FlagColor, str, str]:
+    """Map an independently validated classification to its semantic flag."""
+    flag, reason_code = canonical_semantic_decision(c)
+    if reason_code == RC_EVENT_CONFIRMED_GREEN:
+        reason = (
             f"Confirmed scheduled event ({c.due_evidence or 'dated'}); "
-            f"confidence {c.confidence:.2f}.",
+            f"confidence {c.confidence:.2f}."
         )
-    if c.semantic_type == "action_request":
-        if c.urgency == "imminent":
-            return (
-                FlagColor.RED, RC_DEADLINE_RED,
-                f"Operator-owed action with material consequence and "
-                f"near-term deadline ({c.due_evidence}); confidence "
-                f"{c.confidence:.2f}.",
-            )
-        return (
-            FlagColor.ORANGE, RC_OPERATOR_ACTION_ORANGE,
-            f"Operator owes an action ({c.next_action_owner} "
-            f"evidence); confidence {c.confidence:.2f}.",
+    elif reason_code == RC_DEADLINE_RED:
+        reason = (
+            "Operator-owed action with material consequence and near-term "
+            f"deadline ({c.due_evidence}); confidence {c.confidence:.2f}."
         )
-    if c.semantic_type == "awaiting_other_party":
-        return (
-            FlagColor.YELLOW, RC_AWAITING_OTHER_YELLOW,
+    elif reason_code == RC_OPERATOR_ACTION_ORANGE:
+        reason = (
+            f"Operator owes an action ({c.next_action_owner} evidence); "
+            f"confidence {c.confidence:.2f}."
+        )
+    elif reason_code == RC_AWAITING_OTHER_YELLOW:
+        reason = (
             "Open loop where the next action belongs to the other party; "
-            f"confidence {c.confidence:.2f}.",
+            f"confidence {c.confidence:.2f}."
         )
-    if c.semantic_type == "deferred_item":
-        return (
-            FlagColor.GRAY, RC_DEFERRED_GRAY,
+    elif reason_code == RC_DEFERRED_GRAY:
+        reason = (
             "Explicit deliberate-deferral evidence present; conservative "
-            f"proposal at confidence {c.confidence:.2f}.",
+            f"proposal at confidence {c.confidence:.2f}."
         )
-    if c.semantic_type == "active_reference" or (
-            c.semantic_type == "closed_or_receipt"
-            and c.operator_state == "reference_only"):
-        return (
-            FlagColor.BLUE, RC_ACTIVE_REFERENCE_BLUE,
+    elif reason_code == RC_ACTIVE_REFERENCE_BLUE:
+        reason = (
             "Active-reference value established "
             f"({c.follow_up_evidence or 'records marker'}); confidence "
-            f"{c.confidence:.2f}.",
+            f"{c.confidence:.2f}."
         )
-    if c.semantic_type == "closed_or_receipt":
-        return (
-            FlagColor.NO_FLAG, RC_CLOSED_NO_FLAG,
+    elif reason_code == RC_CLOSED_NO_FLAG:
+        reason = (
             "Confidently closed/receipt correspondence with no open loop; "
-            f"confidence {c.confidence:.2f}.",
+            f"confidence {c.confidence:.2f}."
         )
-    if c.semantic_type == "unidentifiable_action":
-        return (
-            FlagColor.PURPLE, RC_UNIDENTIFIABLE_ACTION_PURPLE,
+    elif reason_code == RC_UNIDENTIFIABLE_ACTION_PURPLE:
+        reason = (
             "Action asserted but NOT identifiable; purple pending human "
-            f"judgment (confidence {c.confidence:.2f}).",
+            f"judgment (confidence {c.confidence:.2f})."
         )
-    if c.semantic_type == "conflicting_signals":
-        return (
-            FlagColor.PURPLE, RC_AMBIGUOUS_PURPLE,
+    elif reason_code == RC_AMBIGUOUS_PURPLE:
+        reason = (
             "Conflicting evidence requires human judgment; "
-            f"confidence {c.confidence:.2f}.",
+            f"confidence {c.confidence:.2f}."
         )
-    return (
-        FlagColor.PURPLE, RC_LOW_CONFIDENCE_PURPLE,
-        f"Ambiguous or weak evidence ({c.semantic_type}); below review "
-        f"threshold — human judgment required.",
-    )
+    else:
+        reason = (
+            f"Ambiguous or weak evidence ({c.semantic_type}); below review "
+            "threshold — human judgment required."
+        )
+    return flag, reason_code, reason
 
 
 def is_auto_eligible(c: Classification) -> bool:
@@ -553,13 +712,9 @@ def is_auto_eligible(c: Classification) -> bool:
     )
 
 
-def propose(sender: str, subject: str, observed: FlagColor) -> Proposal:
-    """Classify on CONTENT ONLY; compare against the observed flag last.
-
-    ``observed`` never feeds the classifier — it exists purely so identity
-    (no change needed) can be detected after semantic evaluation.
-    """
-    c = classify(sender, subject)
+def proposal_from_classification(
+        c: Classification, observed: FlagColor) -> Proposal:
+    """Derive the one canonical proposal for validated classifier axes."""
     flag, reason_code, reason = map_to_flag(c)
     if flag == observed:
         return Proposal(
@@ -582,4 +737,15 @@ def propose(sender: str, subject: str, observed: FlagColor) -> Proposal:
         confidence=c.confidence, review_required=review_required,
         auto_eligible=auto and not review_required,
         classification=c,
+    )
+
+
+def propose(sender: str, subject: str, observed: FlagColor) -> Proposal:
+    """Classify on CONTENT ONLY; compare against the observed flag last.
+
+    ``observed`` never feeds the classifier — it exists purely so identity
+    (no change needed) can be detected after semantic evaluation.
+    """
+    return proposal_from_classification(
+        classify(sender, subject), observed,
     )

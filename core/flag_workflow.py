@@ -34,19 +34,23 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from core.models import FlagColor, MessageReference
 from core.flag_policy import (
+    Classification,
     MIGRATION_POLICY_VERSION,
     POLICY_SHA256,
     Proposal,
     propose,
+    proposal_from_classification,
 )
 
 # --- Schema names ----------------------------------------------------------
 
 SNAPSHOT_SCHEMA = "uma.flags.snapshot.v1"
 PUBLIC_RECEIPT_SCHEMA = "uma.flags.public_receipt.v1"
-PLAN_SCHEMA = "uma.flags.migration.plan.v4"       # v4: structural auto_eligible
-PUBLIC_PLAN_SCHEMA = "uma.flags.migration.plan.public.v1"
-APPROVAL_SCHEMA = "uma.flags.approval.v2"   # v2: approval_id + policy_sha256 + own content_hash
+PLAN_SCHEMA = "uma.flags.migration.plan.v5"
+PUBLIC_PLAN_SCHEMA = "uma.flags.migration.plan.public.v2"
+APPROVAL_SCHEMA = "uma.flags.approval.v3"
+CLASSIFICATION_PROOF_SCHEMA = "uma.flags.classification_proof.v1"
+MUTATION_ID_SCHEMA = "uma.flags.mutation_id.v2"
 APPLY_RECEIPT_SCHEMA = "uma.flags.apply_receipt.v1"
 ROLLBACK_RECEIPT_SCHEMA = "uma.flags.rollback_receipt.v1"
 
@@ -1548,6 +1552,247 @@ def build_estate_snapshot(estate: Dict[str, Any], *, provider_name: str,
 
 
 @dataclass(frozen=True)
+class ClassificationProof:
+    """PII-free, policy/snapshot/evidence-bound classifier provenance."""
+
+    schema: str
+    policy_sha256: str
+    snapshot_sha256: str
+    ref_digest: str
+    input_binding_sha256: str
+    domain: str
+    semantic_type: str
+    urgency: str
+    next_action_owner: str
+    operator_state: str
+    marketing_or_bulk: bool
+    confidence: float
+    due_evidence_present: bool
+    follow_up_evidence_present: bool
+    evidence_basis_sha256: str
+    proof_sha256: str
+
+    def body_dict(self) -> Dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "policy_sha256": self.policy_sha256,
+            "snapshot_sha256": self.snapshot_sha256,
+            "ref_digest": self.ref_digest,
+            "input_binding_sha256": self.input_binding_sha256,
+            "domain": self.domain,
+            "semantic_type": self.semantic_type,
+            "urgency": self.urgency,
+            "next_action_owner": self.next_action_owner,
+            "operator_state": self.operator_state,
+            "marketing_or_bulk": self.marketing_or_bulk,
+            "confidence": self.confidence,
+            "due_evidence_present": self.due_evidence_present,
+            "follow_up_evidence_present": self.follow_up_evidence_present,
+            "evidence_basis_sha256": self.evidence_basis_sha256,
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {**self.body_dict(), "proof_sha256": self.proof_sha256}
+
+    def to_classification(self) -> Classification:
+        return Classification(
+            domain=self.domain,
+            semantic_type=self.semantic_type,
+            urgency=self.urgency,
+            next_action_owner=self.next_action_owner,
+            due_evidence=(
+                "present" if self.due_evidence_present else None
+            ),
+            follow_up_evidence=(
+                "present" if self.follow_up_evidence_present else None
+            ),
+            operator_state=self.operator_state,
+            marketing_or_bulk=self.marketing_or_bulk,
+            confidence=self.confidence,
+            evidence_basis=(),
+        )
+
+    @classmethod
+    def create(cls, classification: Classification, *,
+               policy_sha256: str, snapshot_sha256: str,
+               ref_digest: str,
+               evidence_digest: Optional[str]) -> "ClassificationProof":
+        proof = cls(
+            schema=CLASSIFICATION_PROOF_SCHEMA,
+            policy_sha256=policy_sha256,
+            snapshot_sha256=snapshot_sha256,
+            ref_digest=ref_digest,
+            input_binding_sha256=sha256_hex({
+                "schema": "uma.flags.classifier_input_binding.v1",
+                "evidence_digest": evidence_digest,
+            }),
+            domain=classification.domain,
+            semantic_type=classification.semantic_type,
+            urgency=classification.urgency,
+            next_action_owner=classification.next_action_owner,
+            operator_state=classification.operator_state,
+            marketing_or_bulk=classification.marketing_or_bulk,
+            confidence=classification.confidence,
+            due_evidence_present=classification.due_evidence is not None,
+            follow_up_evidence_present=(
+                classification.follow_up_evidence is not None
+            ),
+            evidence_basis_sha256=sha256_hex(
+                list(classification.evidence_basis)
+            ),
+            proof_sha256="",
+        )
+        return cls(**{
+            **proof.__dict__,
+            "proof_sha256": sha256_hex(proof.body_dict()),
+        })
+
+
+_CLASSIFICATION_PROOF_KEYS = {
+    "schema", "policy_sha256", "snapshot_sha256", "ref_digest",
+    "input_binding_sha256", "domain", "semantic_type", "urgency",
+    "next_action_owner", "operator_state", "marketing_or_bulk",
+    "confidence", "due_evidence_present", "follow_up_evidence_present",
+    "evidence_basis_sha256", "proof_sha256",
+}
+
+
+def _classification_proof_from_dict(
+        raw: Any, prefix: str, *, policy_sha256: str,
+        snapshot_sha256: str, ref_digest: str,
+        evidence_digest: Optional[str], verify_input_binding: bool,
+) -> ClassificationProof:
+    if not isinstance(raw, dict):
+        raise FlagWorkflowError(f"{prefix} must be a JSON object")
+    _require_exact_keys(raw, _CLASSIFICATION_PROOF_KEYS, prefix)
+    confidence = raw["confidence"]
+    if isinstance(confidence, bool) or not isinstance(
+            confidence, (int, float)) or not math.isfinite(confidence) \
+            or not 0.0 <= confidence <= 1.0:
+        raise FlagWorkflowError(
+            f"{prefix}.confidence must be finite in [0,1]"
+        )
+    proof = ClassificationProof(
+        schema=_require_string(raw["schema"], f"{prefix}.schema"),
+        policy_sha256=require_hex256(
+            raw["policy_sha256"], f"{prefix}.policy_sha256"
+        ),
+        snapshot_sha256=require_hex256(
+            raw["snapshot_sha256"], f"{prefix}.snapshot_sha256"
+        ),
+        ref_digest=require_hex256(
+            raw["ref_digest"], f"{prefix}.ref_digest"
+        ),
+        input_binding_sha256=require_hex256(
+            raw["input_binding_sha256"],
+            f"{prefix}.input_binding_sha256",
+        ),
+        domain=_require_string(raw["domain"], f"{prefix}.domain"),
+        semantic_type=_require_string(
+            raw["semantic_type"], f"{prefix}.semantic_type"
+        ),
+        urgency=_require_string(raw["urgency"], f"{prefix}.urgency"),
+        next_action_owner=_require_string(
+            raw["next_action_owner"], f"{prefix}.next_action_owner"
+        ),
+        operator_state=_require_string(
+            raw["operator_state"], f"{prefix}.operator_state"
+        ),
+        marketing_or_bulk=_require_bool(
+            raw["marketing_or_bulk"], f"{prefix}.marketing_or_bulk"
+        ),
+        confidence=float(confidence),
+        due_evidence_present=_require_bool(
+            raw["due_evidence_present"],
+            f"{prefix}.due_evidence_present",
+        ),
+        follow_up_evidence_present=_require_bool(
+            raw["follow_up_evidence_present"],
+            f"{prefix}.follow_up_evidence_present",
+        ),
+        evidence_basis_sha256=require_hex256(
+            raw["evidence_basis_sha256"],
+            f"{prefix}.evidence_basis_sha256",
+        ),
+        proof_sha256=require_hex256(
+            raw["proof_sha256"], f"{prefix}.proof_sha256"
+        ),
+    )
+    if proof.schema != CLASSIFICATION_PROOF_SCHEMA:
+        raise FlagWorkflowError(
+            f"{prefix}.schema must be {CLASSIFICATION_PROOF_SCHEMA}"
+        )
+    if proof.policy_sha256 != policy_sha256:
+        raise FlagWorkflowError(f"{prefix} policy binding mismatch")
+    if proof.snapshot_sha256 != snapshot_sha256:
+        raise FlagWorkflowError(f"{prefix} snapshot binding mismatch")
+    if proof.ref_digest != ref_digest:
+        raise FlagWorkflowError(
+            f"{prefix} ref_digest does not match proof binding"
+        )
+    if sha256_hex(proof.body_dict()) != proof.proof_sha256:
+        raise FlagWorkflowError(f"{prefix} digest mismatch")
+    if verify_input_binding:
+        expected_input = sha256_hex({
+            "schema": "uma.flags.classifier_input_binding.v1",
+            "evidence_digest": evidence_digest,
+        })
+        if proof.input_binding_sha256 != expected_input:
+            raise FlagWorkflowError(f"{prefix} input binding mismatch")
+    try:
+        proposal_from_classification(
+            proof.to_classification(), FlagColor.UNKNOWN,
+        )
+    except ValueError as exc:
+        raise FlagWorkflowError(
+            f"{prefix} violates the canonical classifier contract: {exc}"
+        ) from exc
+    return proof
+
+
+def compute_execution_binding_sha256(*, provider: str, account: str,
+                                     mailbox: str, provider_id: str,
+                                     snapshot_id: str,
+                                     observed_native_flag: Optional[int],
+                                     evidence_digest: Optional[str],
+                                     message_id_digest: Optional[str]) -> str:
+    """Commit private execution scope into a public-safe digest."""
+    return sha256_hex({
+        "schema": "uma.flags.execution_binding.v1",
+        "provider": provider,
+        "account": account,
+        "mailbox": mailbox,
+        "provider_id": provider_id,
+        "snapshot_id": snapshot_id,
+        "observed_native_flag": observed_native_flag,
+        "evidence_digest": evidence_digest,
+        "message_id_digest": message_id_digest,
+    })
+
+
+def compute_mutation_id(mutation: Dict[str, Any], *,
+                        policy_sha256: str,
+                        snapshot_sha256: str) -> str:
+    """Compute the canonical id from every committed mutation field."""
+    fields = {
+        "schema": MUTATION_ID_SCHEMA,
+        "policy_sha256": policy_sha256,
+        "snapshot_sha256": snapshot_sha256,
+        "ref_digest": mutation["ref_digest"],
+        "observed_flag": mutation["observed_flag"],
+        "proposed_flag": mutation["proposed_flag"],
+        "reason_code": mutation["reason_code"],
+        "reason_sha256": mutation["reason_sha256"],
+        "confidence": mutation["confidence"],
+        "review_required": mutation["review_required"],
+        "auto_eligible": mutation["auto_eligible"],
+        "execution_binding_sha256": mutation["execution_binding_sha256"],
+        "classification_proof": mutation["classification_proof"],
+    }
+    return "mut-" + sha256_hex(fields)[:24]
+
+
+@dataclass(frozen=True)
 class PlannedMutation:
     """One proposed flag change, review-gated by construction.
 
@@ -1565,6 +1810,9 @@ class PlannedMutation:
     reason: str
     confidence: Optional[float]
     review_required: bool
+    reason_sha256: str
+    execution_binding_sha256: str
+    classification_proof: ClassificationProof
     auto_eligible: bool = False
     provider: str = ""
     account: str = ""
@@ -1583,9 +1831,12 @@ class PlannedMutation:
             "proposed_flag": self.proposed_flag.value,
             "reason_code": self.reason_code,
             "reason": self.reason,
+            "reason_sha256": self.reason_sha256,
             "confidence": self.confidence,
             "review_required": self.review_required,
             "auto_eligible": self.auto_eligible,
+            "execution_binding_sha256": self.execution_binding_sha256,
+            "classification_proof": self.classification_proof.to_dict(),
             "provider": self.provider,
             "account": self.account,
             "mailbox": self.mailbox,
@@ -1597,21 +1848,106 @@ class PlannedMutation:
         }
 
 
-def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
+def validate_planned_mutation_contract(
+        mutation: PlannedMutation, *, policy_sha256: str,
+        snapshot_sha256: str) -> None:
+    """Re-derive semantic decision, private binding, and canonical id."""
+    _classification_proof_from_dict(
+        mutation.classification_proof.to_dict(),
+        f"mutation {mutation.mutation_id}.classification_proof",
+        policy_sha256=policy_sha256,
+        snapshot_sha256=snapshot_sha256,
+        ref_digest=mutation.ref_digest,
+        evidence_digest=mutation.evidence_digest,
+        verify_input_binding=True,
+    )
+    expected_reason_sha = sha256_hex({
+        "schema": "uma.flags.mutation_reason.v1",
+        "reason": mutation.reason,
+    })
+    if mutation.reason_sha256 != expected_reason_sha:
+        raise FlagWorkflowError(
+            f"mutation {mutation.mutation_id}: reason digest mismatch"
+        )
+    expected_execution = compute_execution_binding_sha256(
+        provider=mutation.provider,
+        account=mutation.account,
+        mailbox=mutation.mailbox,
+        provider_id=mutation.provider_id,
+        snapshot_id=mutation.snapshot_id,
+        observed_native_flag=mutation.observed_native_flag,
+        evidence_digest=mutation.evidence_digest,
+        message_id_digest=mutation.message_id_digest,
+    )
+    if mutation.execution_binding_sha256 != expected_execution:
+        raise FlagWorkflowError(
+            f"mutation {mutation.mutation_id}: execution binding mismatch"
+        )
+    expected_id = compute_mutation_id(
+        mutation.to_dict(),
+        policy_sha256=policy_sha256,
+        snapshot_sha256=snapshot_sha256,
+    )
+    if mutation.mutation_id != expected_id:
+        raise FlagWorkflowError(
+            f"mutation_id mismatch: expected {expected_id}, got "
+            f"{mutation.mutation_id}"
+        )
+    try:
+        expected = proposal_from_classification(
+            mutation.classification_proof.to_classification(),
+            mutation.observed_flag,
+        )
+    except ValueError as exc:
+        raise FlagWorkflowError(
+            f"mutation {mutation.mutation_id}: invalid classifier proof: "
+            f"{exc}"
+        ) from exc
+    if expected.is_identity:
+        raise FlagWorkflowError(
+            f"mutation {mutation.mutation_id}: identity/no-change decisions "
+            "cannot appear in a mutation plan"
+        )
+    canonical = {
+        "proposed_flag": (mutation.proposed_flag, expected.proposed_flag),
+        "reason_code": (mutation.reason_code, expected.reason_code),
+        "confidence": (mutation.confidence, expected.confidence),
+        "review_required": (
+            mutation.review_required, expected.review_required
+        ),
+        "auto_eligible": (mutation.auto_eligible, expected.auto_eligible),
+    }
+    for field_name, (observed, required) in canonical.items():
+        if observed != required:
+            raise FlagWorkflowError(
+                f"mutation {mutation.mutation_id}: {field_name} must be "
+                f"{required!r} for semantic_type "
+                f"{mutation.classification_proof.semantic_type!r}, got "
+                f"{observed!r}"
+            )
+
+
+def _mutation_from_dict(d: Dict[str, Any], idx: int, *,
+                        policy_sha256: str,
+                        snapshot_sha256: str) -> PlannedMutation:
     prefix = f"mutations[{idx}]"
     if not isinstance(d, dict):
         raise FlagWorkflowError(f"{prefix} must be a JSON object")
-    for key in (
+    mutation_keys = {
         "mutation_id", "ref_digest", "observed_flag",
-        "proposed_flag", "reason_code", "reason", "confidence",
-        "review_required",
-        # v4 durable bindings + structural eligibility — required keys.
-        "auto_eligible",
+        "proposed_flag", "reason_code", "reason", "reason_sha256",
+        "confidence", "review_required", "auto_eligible",
+        "execution_binding_sha256", "classification_proof",
         "provider", "account", "mailbox", "provider_id", "snapshot_id",
         "observed_native_flag", "evidence_digest", "message_id_digest",
-    ):
-        if key not in d:
-            raise FlagWorkflowError(f"{prefix}: missing required key {key!r}")
+    }
+    missing = mutation_keys.difference(d)
+    if missing:
+        first = sorted(missing)[0]
+        raise FlagWorkflowError(
+            f"{prefix}: missing required key {first!r}"
+        )
+    _require_exact_keys(d, mutation_keys, prefix)
     confidence = d["confidence"]
     if confidence is not None and not (
         not isinstance(confidence, bool)
@@ -1658,17 +1994,49 @@ def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
     if observed == FlagColor.UNKNOWN and auto_eligible:
         raise FlagWorkflowError(
             f"{prefix}: UNKNOWN observations can never be auto_eligible")
-    return PlannedMutation(
-        mutation_id=_require_string(d["mutation_id"], f"{prefix}.mutation_id"),
-        ref_digest=require_hex256(d["ref_digest"], f"{prefix}.ref_digest"),
+    ref_digest = require_hex256(d["ref_digest"], f"{prefix}.ref_digest")
+    reason = _require_string(
+        d["reason"], f"{prefix}.reason", allow_empty=True
+    )
+    evidence_digest = (
+        None if d["evidence_digest"] is None
+        else require_hex256(
+            d["evidence_digest"], f"{prefix}.evidence_digest"
+        )
+    )
+    message_id_digest = (
+        None if d["message_id_digest"] is None
+        else require_hex256(
+            d["message_id_digest"], f"{prefix}.message_id_digest"
+        )
+    )
+    classification_proof = _classification_proof_from_dict(
+        d["classification_proof"], f"{prefix}.classification_proof",
+        policy_sha256=policy_sha256,
+        snapshot_sha256=snapshot_sha256,
+        ref_digest=ref_digest,
+        evidence_digest=evidence_digest,
+        verify_input_binding=True,
+    )
+    mutation = PlannedMutation(
+        mutation_id=_require_string(
+            d["mutation_id"], f"{prefix}.mutation_id"
+        ),
+        ref_digest=ref_digest,
         observed_flag=observed,
         proposed_flag=proposed,
         reason_code=_require_string(d["reason_code"], f"{prefix}.reason_code"),
-        reason=_require_string(
-            d["reason"], f"{prefix}.reason", allow_empty=True
+        reason=reason,
+        reason_sha256=require_hex256(
+            d["reason_sha256"], f"{prefix}.reason_sha256"
         ),
         confidence=None if confidence is None else float(confidence),
         review_required=review_required,
+        execution_binding_sha256=require_hex256(
+            d["execution_binding_sha256"],
+            f"{prefix}.execution_binding_sha256",
+        ),
+        classification_proof=classification_proof,
         auto_eligible=auto_eligible,
         provider=_require_string(d["provider"], f"{prefix}.provider"),
         account=_require_string(d["account"], f"{prefix}.account"),
@@ -1676,17 +2044,15 @@ def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
         provider_id=_require_string(d["provider_id"], f"{prefix}.provider_id"),
         snapshot_id=_require_string(d["snapshot_id"], f"{prefix}.snapshot_id"),
         observed_native_flag=native,
-        evidence_digest=(
-            None if d["evidence_digest"] is None
-            else require_hex256(
-                d["evidence_digest"], f"{prefix}.evidence_digest")
-        ),
-        message_id_digest=(
-            None if d["message_id_digest"] is None
-            else require_hex256(
-                d["message_id_digest"], f"{prefix}.message_id_digest")
-        ),
+        evidence_digest=evidence_digest,
+        message_id_digest=message_id_digest,
     )
+    validate_planned_mutation_contract(
+        mutation,
+        policy_sha256=policy_sha256,
+        snapshot_sha256=snapshot_sha256,
+    )
+    return mutation
 
 
 def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
@@ -1724,47 +2090,25 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
     for m, p in zip(snapshot.messages, proposals):
         if p.is_identity and p.reason_code == "no_change":
             continue
-        # UNKNOWN observations are NEVER mutation-eligible.
-        review_required = True if m.observed_flag == FlagColor.UNKNOWN \
-            else p.review_required
+        if p.classification is None:  # pragma: no cover - propose guarantees it
+            raise FlagWorkflowError("proposal lacks classifier provenance")
         evidence_digest = (
             MessageReference.compute_evidence_digest(
                 m.received_iso, m.sender, m.subject)
             if (m.received_iso or m.sender or m.subject) else None
         )
-        # Structural eligibility: derived from Proposal.auto_eligible (the
-        # typed gate), NEVER reconstructed from confidence. UNKNOWN
-        # observations can never be eligible; review-required implies not
-        # auto-eligible. The invariant is enforced again at parse time.
-        auto = (
-            p.auto_eligible
-            and m.observed_flag != FlagColor.UNKNOWN
-            and not p.review_required
-        )
-        mutations.append(PlannedMutation(
-            # Mutation id binds the FULL durable context, not just colors:
-            # changing any binding — including structural eligibility —
-            # changes ids.
-            mutation_id="mut-" + sha256_hex({
-                "ref": m.ref_digest,
-                "observed": p.observed_flag.value,
-                "proposed": p.proposed_flag.value,
-                "reason_code": p.reason_code,
-                "snapshot_id": snapshot.snapshot_id,
-                "account": m.account,
-                "mailbox": m.mailbox,
-                "provider_id": m.provider_id,
-                "evidence": evidence_digest,
-                "auto_eligible": auto,
-            })[:24],
+        classification_proof = ClassificationProof.create(
+            p.classification,
+            policy_sha256=POLICY_SHA256,
+            snapshot_sha256=current_snapshot_hash,
             ref_digest=m.ref_digest,
-            observed_flag=p.observed_flag,
-            proposed_flag=p.proposed_flag,
-            reason_code=p.reason_code,
-            reason=p.reason,
-            confidence=p.confidence,
-            review_required=review_required,
-            auto_eligible=auto,
+            evidence_digest=evidence_digest,
+        )
+        reason_sha256 = sha256_hex({
+            "schema": "uma.flags.mutation_reason.v1",
+            "reason": p.reason,
+        })
+        execution_binding_sha256 = compute_execution_binding_sha256(
             provider=m.provider,
             account=m.account,
             mailbox=m.mailbox,
@@ -1772,8 +2116,52 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
             snapshot_id=snapshot.snapshot_id,
             observed_native_flag=m.native_index,
             evidence_digest=evidence_digest,
-            message_id_digest=None,   # populated once provider captures it
-        ))
+            message_id_digest=None,
+        )
+        identity_fields = {
+            "ref_digest": m.ref_digest,
+            "observed_flag": p.observed_flag.value,
+            "proposed_flag": p.proposed_flag.value,
+            "reason_code": p.reason_code,
+            "reason_sha256": reason_sha256,
+            "confidence": p.confidence,
+            "review_required": p.review_required,
+            "auto_eligible": p.auto_eligible,
+            "execution_binding_sha256": execution_binding_sha256,
+            "classification_proof": classification_proof.to_dict(),
+        }
+        mutation = PlannedMutation(
+            mutation_id=compute_mutation_id(
+                identity_fields,
+                policy_sha256=POLICY_SHA256,
+                snapshot_sha256=current_snapshot_hash,
+            ),
+            ref_digest=m.ref_digest,
+            observed_flag=p.observed_flag,
+            proposed_flag=p.proposed_flag,
+            reason_code=p.reason_code,
+            reason=p.reason,
+            reason_sha256=reason_sha256,
+            confidence=p.confidence,
+            review_required=p.review_required,
+            execution_binding_sha256=execution_binding_sha256,
+            classification_proof=classification_proof,
+            auto_eligible=p.auto_eligible,
+            provider=m.provider,
+            account=m.account,
+            mailbox=m.mailbox,
+            provider_id=m.provider_id,
+            snapshot_id=snapshot.snapshot_id,
+            observed_native_flag=m.native_index,
+            evidence_digest=evidence_digest,
+            message_id_digest=None,
+        )
+        validate_planned_mutation_contract(
+            mutation,
+            policy_sha256=POLICY_SHA256,
+            snapshot_sha256=current_snapshot_hash,
+        )
+        mutations.append(mutation)
     plan: Dict[str, Any] = {
         "schema": PLAN_SCHEMA,
         "policy_version": MIGRATION_POLICY_VERSION,
@@ -1830,9 +2218,16 @@ def to_public_safe_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
                 "observed_flag": mutation.observed_flag.value,
                 "proposed_flag": mutation.proposed_flag.value,
                 "reason_code": mutation.reason_code,
+                "reason_sha256": mutation.reason_sha256,
                 "confidence": mutation.confidence,
                 "review_required": mutation.review_required,
                 "auto_eligible": mutation.auto_eligible,
+                "execution_binding_sha256": (
+                    mutation.execution_binding_sha256
+                ),
+                "classification_proof": (
+                    mutation.classification_proof.to_dict()
+                ),
             }
             for mutation in parsed
         ],
@@ -1869,7 +2264,9 @@ def validate_public_plan(raw: Any) -> None:
     # still reported as an invalid projection, without inspecting its value.
     mutation_keys = {
         "mutation_id", "ref_digest", "observed_flag", "proposed_flag",
-        "reason_code", "confidence", "review_required", "auto_eligible",
+        "reason_code", "reason_sha256", "confidence", "review_required",
+        "auto_eligible", "execution_binding_sha256",
+        "classification_proof",
     }
     mutations = raw["mutations"]
     if not isinstance(mutations, list):
@@ -1894,8 +2291,10 @@ def validate_public_plan(raw: Any) -> None:
         raise FlagWorkflowError(
             f"public plan policy_version must be {MIGRATION_POLICY_VERSION}"
         )
-    require_hex256(raw["policy_sha256"], "policy_sha256")
-    if raw["policy_sha256"] != POLICY_SHA256:
+    policy_sha256 = require_hex256(
+        raw["policy_sha256"], "policy_sha256"
+    )
+    if policy_sha256 != POLICY_SHA256:
         raise FlagWorkflowError("public plan policy_sha256 is not current")
     _parse_aware_timestamp(raw["generated_at"], "public plan generated_at")
     snapshot_id = _require_string(raw["snapshot_id"], "snapshot_id")
@@ -1908,7 +2307,9 @@ def validate_public_plan(raw: Any) -> None:
             "public plan snapshot_id must be 'snap-' followed by 32 "
             "lowercase hex characters"
         )
-    require_hex256(raw["snapshot_sha256"], "snapshot_sha256")
+    snapshot_sha256 = require_hex256(
+        raw["snapshot_sha256"], "snapshot_sha256"
+    )
     if _require_bool(
         raw["zero_write_declaration"], "zero_write_declaration"
     ) is not True:
@@ -1957,7 +2358,16 @@ def validate_public_plan(raw: Any) -> None:
             raise FlagWorkflowError(f"{prefix} contains a non-canonical flag")
         if proposed == FlagColor.UNKNOWN.value:
             raise FlagWorkflowError(f"{prefix} proposes UNKNOWN")
-        _require_string(mutation["reason_code"], f"{prefix}.reason_code")
+        reason_code = _require_string(
+            mutation["reason_code"], f"{prefix}.reason_code"
+        )
+        require_hex256(
+            mutation["reason_sha256"], f"{prefix}.reason_sha256"
+        )
+        require_hex256(
+            mutation["execution_binding_sha256"],
+            f"{prefix}.execution_binding_sha256",
+        )
         confidence = mutation["confidence"]
         if confidence is not None and not (
             not isinstance(confidence, bool)
@@ -1987,6 +2397,49 @@ def validate_public_plan(raw: Any) -> None:
             raise FlagWorkflowError(
                 f"{prefix} cannot auto-apply an UNKNOWN observation"
             )
+        proof = _classification_proof_from_dict(
+            mutation["classification_proof"],
+            f"{prefix}.classification_proof",
+            policy_sha256=policy_sha256,
+            snapshot_sha256=snapshot_sha256,
+            ref_digest=ref_digest,
+            evidence_digest=None,
+            verify_input_binding=False,
+        )
+        expected_id = compute_mutation_id(
+            mutation,
+            policy_sha256=policy_sha256,
+            snapshot_sha256=snapshot_sha256,
+        )
+        if mutation_id != expected_id:
+            raise FlagWorkflowError(
+                f"{prefix}.mutation_id mismatch: expected {expected_id}, "
+                f"got {mutation_id}"
+            )
+        observed_color = FlagColor.from_string(observed)
+        expected = proposal_from_classification(
+            proof.to_classification(), observed_color,
+        )
+        if expected.is_identity:
+            raise FlagWorkflowError(
+                f"{prefix} contains an identity/no-change decision"
+            )
+        canonical = {
+            "proposed_flag": (proposed, expected.proposed_flag.value),
+            "reason_code": (reason_code, expected.reason_code),
+            "confidence": (confidence, expected.confidence),
+            "review_required": (
+                review_required, expected.review_required
+            ),
+            "auto_eligible": (auto_eligible, expected.auto_eligible),
+        }
+        for field_name, (actual, required) in canonical.items():
+            if actual != required:
+                raise FlagWorkflowError(
+                    f"{prefix}.{field_name} must be {required!r} for "
+                    f"semantic_type {proof.semantic_type!r}, got "
+                    f"{actual!r}"
+                )
     if len(mutations) + unchanged_count != total_scanned:
         raise FlagWorkflowError(
             "public plan counts are incoherent: mutations + unchanged_count "
@@ -2008,16 +2461,14 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
         "zero_write_declaration", "total_scanned", "mutations",
         "unchanged_count", "auto_eligible_count", "plan_hash",
     }
-    missing = required.difference(plan)
-    if missing:
-        raise FlagWorkflowError(
-            f"plan missing required keys: {sorted(missing)}"
-        )
+    _require_exact_keys(plan, required, "plan")
     if plan.get("schema") != PLAN_SCHEMA:
         raise FlagWorkflowError(
             f"plan schema must be {PLAN_SCHEMA}, got {plan.get('schema')!r}"
         )
-    require_hex256(plan.get("snapshot_sha256"), "snapshot_sha256")
+    snapshot_sha256 = require_hex256(
+        plan.get("snapshot_sha256"), "snapshot_sha256"
+    )
     require_hex256(plan.get("plan_hash"), "plan_hash")
     stored_hash = plan["plan_hash"]
     if compute_plan_hash(plan) != stored_hash:
@@ -2057,8 +2508,10 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
     # The digest is the tamper-evident half of policy identity: a plan
     # stamped with the right version string but generated under DIFFERENT
     # rules cannot pass.
-    require_hex256(plan.get("policy_sha256"), "policy_sha256")
-    if plan.get("policy_sha256") != POLICY_SHA256:
+    policy_sha256 = require_hex256(
+        plan.get("policy_sha256"), "policy_sha256"
+    )
+    if policy_sha256 != POLICY_SHA256:
         raise FlagWorkflowError(
             "policy_sha256 mismatch — plan was generated under different "
             "rule configuration (or digest tampered)"
@@ -2066,7 +2519,14 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
     mutations_raw = plan.get("mutations")
     if not isinstance(mutations_raw, list):
         raise FlagWorkflowError("mutations must be a list")
-    parsed = [_mutation_from_dict(d, i) for i, d in enumerate(mutations_raw)]
+    parsed = [
+        _mutation_from_dict(
+            d, i,
+            policy_sha256=policy_sha256,
+            snapshot_sha256=snapshot_sha256,
+        )
+        for i, d in enumerate(mutations_raw)
+    ]
     if len(parsed) + unchanged_count != total_scanned:
         raise FlagWorkflowError(
             "plan counts are incoherent: mutations + unchanged_count must "
@@ -2327,7 +2787,7 @@ class ApprovalReceipt:
             raise FlagWorkflowError(
                 f"approval references mutation ids absent from plan: "
                 f"{sorted(unknown)}"
-            )
+        )
         for mid in ids:
             m = by_id[mid]
             if m.auto_eligible is not True:
@@ -2343,6 +2803,15 @@ class ApprovalReceipt:
             if m.proposed_flag == FlagColor.UNKNOWN:
                 raise FlagWorkflowError(
                     f"{mid}: proposed UNKNOWN is not writable")
+            validate_planned_mutation_contract(
+                m,
+                policy_sha256=require_hex256(
+                    plan.get("policy_sha256"), "plan.policy_sha256"
+                ),
+                snapshot_sha256=require_hex256(
+                    plan.get("snapshot_sha256"), "plan.snapshot_sha256"
+                ),
+            )
 
 
 # --- Transaction ledger (append-only idempotency guard) ----------------------

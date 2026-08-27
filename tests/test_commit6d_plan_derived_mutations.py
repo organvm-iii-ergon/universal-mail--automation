@@ -130,7 +130,7 @@ class TestMutationsDerivedFromPlan:
         rb = rogue_engine.rollback_transaction(receipt=receipt,
                                                provider=h.provider)
         assert rb.status == "blocked"
-        assert rb.error_code.startswith("receipt_lineage_mismatch")
+        assert rb.error_code.startswith("rollback_plan_invalid")
         assert rb.writes_performed == 0
         assert len(h.provider.calls) == calls_before
 

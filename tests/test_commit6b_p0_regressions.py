@@ -40,31 +40,15 @@ def _mode(p):
 
 class TestNativeZeroIsValid:
     @staticmethod
-    def _forced_eligible_plan(plan):
-        """Commit 6d doctrine: executable mutations come FROM the plan.
-        To exercise the native matrix for every observed color, force
-        structural eligibility in the SERIALIZED plan and recommit the
-        hash — a self-consistent artifact the engine parses itself."""
-        muts = [dict(m, auto_eligible=True, review_required=False)
-                for m in plan["mutations"]]
-        out = dict(
-            plan,
-            mutations=muts,
-            auto_eligible_count=sum(
-                mutation["auto_eligible"] for mutation in muts
-            ),
-        )
-        out.pop("plan_hash")
-        out["plan_hash"] = fw.compute_plan_hash(out)
-        return out
-
-    @staticmethod
     def _subject_for(observed: FlagColor) -> str:
         """A subject whose classifier target DIFFERS from `observed`, so
         the plan always contains a real (non-identity) mutation."""
         if observed is FlagColor.RED:
-            # ELIG targets RED; RED observations need a different target.
-            return "Please choose an interview slot"
+            # ELIG targets RED; use a high-confidence GREEN target instead.
+            return (
+                "Your appointment is confirmed tomorrow. "
+                "Tracking number 12345"
+            )
         return ELIG_SUBJECT                        # targets RED
 
     @pytest.mark.parametrize("native,semantic", [
@@ -92,7 +76,6 @@ class TestNativeZeroIsValid:
             since_days=None, total_matched=1, returned_count=1,
             hidden_by_limit=0)
         plan = fw.build_plan(snap)
-        plan = self._forced_eligible_plan(plan)
         mutations = fw.validate_plan_schema(plan)
         assert mutations, f"expected a non-identity mutation for {semantic}"
         assert all(m.auto_eligible and not m.review_required
@@ -135,7 +118,6 @@ class TestNativeZeroIsValid:
             unknown_index_count=0, limit=500, since_days=None,
             total_matched=1, returned_count=1, hidden_by_limit=0)
         plan = fw.build_plan(snap)
-        plan = self._forced_eligible_plan(plan)
         muts = fw.validate_plan_schema(plan)
         assert muts, "RED fixture must produce a non-identity mutation"
         approval = fw.ApprovalReceipt.create(
@@ -167,7 +149,6 @@ class TestNativeZeroIsValid:
 
     def test_missing_bound_native_flag_refused(self, tmp_path):
         h = Harness(tmp_path, pids=("1",))
-        h.plan = h.engine and self.__class__._forced_eligible_plan(h.plan)
         # Strip the bound native index IN THE PLAN ARTIFACT itself.
         muts = [dict(m, observed_native_flag=None)
                 for m in h.plan["mutations"]]
@@ -176,7 +157,7 @@ class TestNativeZeroIsValid:
         h.plan["plan_hash"] = fw.compute_plan_hash(h.plan)
         # Strict artifact validation refuses the incoherent native/semantic
         # pair before approval or provider construction.
-        with pytest.raises(fw.FlagWorkflowError, match="native"):
+        with pytest.raises(fw.FlagWorkflowError, match="execution binding"):
             fw.validate_plan_schema(h.plan)
         assert h.provider.calls == []
 

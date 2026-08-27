@@ -780,8 +780,9 @@ class TestPropertyInvariants:
                        "unchanged_count", "mutations", "plan_public_hash"}
         assert set(pub.keys()) <= allowed_top
         allowed_mut = {"mutation_id", "ref_digest", "observed_flag",
-                       "proposed_flag", "reason_code", "confidence",
-                       "review_required", "auto_eligible"}
+                       "proposed_flag", "reason_code", "reason_sha256",
+                       "confidence", "review_required", "auto_eligible",
+                       "execution_binding_sha256", "classification_proof"}
         for m in pub["mutations"]:
             assert set(m.keys()) <= allowed_mut
 

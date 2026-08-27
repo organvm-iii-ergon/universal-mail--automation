@@ -53,6 +53,7 @@ from core.flag_workflow import (
     compute_plan_hash,
     require_hex256,
     sha256_hex,
+    validate_planned_mutation_contract,
 )
 from core.models import FlagColor, MessageReference
 from providers.base import ProviderNativeStateDrift, ProviderWriteAmbiguous
@@ -872,6 +873,18 @@ class TransactionEngine:
         Checks (review order): bindings -> live state -> structural gates.
         """
         # Structural gates FIRST — no provider contact needed to refuse.
+        try:
+            validate_planned_mutation_contract(
+                mutation,
+                policy_sha256=require_hex256(
+                    plan.get("policy_sha256"), "plan.policy_sha256"
+                ),
+                snapshot_sha256=require_hex256(
+                    plan.get("snapshot_sha256"), "plan.snapshot_sha256"
+                ),
+            )
+        except FlagWorkflowError:
+            return "mutation_contract_invalid"
         if mutation.auto_eligible is not True:
             return "not_auto_eligible"
         if mutation.review_required is not False:

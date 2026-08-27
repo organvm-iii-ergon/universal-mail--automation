@@ -338,14 +338,13 @@ class TestPlanIntegrity:
         forged = dict(plan, mutations=muts)
         forged.pop("plan_hash")
         forged["plan_hash"] = fw.compute_plan_hash(forged)
-        with pytest.raises(fw.FlagWorkflowError, match="duplicate ref_digest"):
+        with pytest.raises(fw.FlagWorkflowError, match="ref_digest"):
             fw.validate_plan_schema(forged)
 
     def test_duplicate_mutation_ids_rejected(self):
         plan = self._plan()
         muts = [dict(m) for m in plan["mutations"]]
-        muts[1]["mutation_id"] = muts[0]["mutation_id"]
-        muts[1]["ref_digest"] = "e" * 64
+        muts[1] = dict(muts[0])
         forged = dict(plan, mutations=muts)
         forged.pop("plan_hash")
         forged["plan_hash"] = fw.compute_plan_hash(forged)
@@ -360,7 +359,7 @@ class TestPlanIntegrity:
         forged = dict(plan, mutations=muts)
         forged.pop("plan_hash")
         forged["plan_hash"] = fw.compute_plan_hash(forged)
-        with pytest.raises(fw.FlagWorkflowError, match="snapshot_id"):
+        with pytest.raises(fw.FlagWorkflowError, match="execution binding"):
             fw.validate_plan_schema(forged)
 
     def test_unknown_provider_fails_closed(self):
@@ -371,7 +370,7 @@ class TestPlanIntegrity:
         forged.pop("plan_hash")
         forged["plan_hash"] = fw.compute_plan_hash(forged)
         with pytest.raises(fw.FlagWorkflowError,
-                           match="unsupported provider"):
+                           match="execution binding"):
             fw.validate_plan_schema(forged)
 
 

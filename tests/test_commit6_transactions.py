@@ -192,41 +192,16 @@ class TestAutoEligiblePersistence:
             [mm.to_dict() for mm in h.mutations[1:]]
         with pytest.raises(fw.FlagWorkflowError, match="tampered"):
             fw.validate_plan_schema(flipped)
-        # Even an attacker who ALSO fixes the hash gains nothing: the
-        # structural gate reads the FIELD, so the forged plan is refused
-        # at preflight with not_auto_eligible.
+        # Even an attacker who ALSO fixes the hash gains nothing: classifier
+        # proof makes eligibility a derived semantic invariant.
         flipped2 = dict(h.plan)
         flipped2["mutations"] = [dict(d, auto_eligible=False)] + [
             mm.to_dict() for mm in h.mutations[1:]]
         flipped2["auto_eligible_count"] -= 1
         flipped2.pop("plan_hash")
         flipped2["plan_hash"] = fw.compute_plan_hash(flipped2)
-        muts2 = fw.validate_plan_schema(flipped2)      # parses fine
-        approval2 = fw.ApprovalReceipt.create(
-            plan_hash=flipped2["plan_hash"],
-            snapshot_sha256=flipped2["snapshot_sha256"],
-            policy_sha256=flipped2["policy_sha256"],
-            approved_mutation_ids=[muts2[0].mutation_id],
-            approving_operator="attacker", canary_limit=1,
-        )
-        provider = FakeScopedProvider([FakeMessage(
-            muts2[0].provider_id, muts2[0].observed_native_flag or -1)])
-        overrides = fw.OverrideStore(self._state(tmp_path) / "o.json")
-        engine = TransactionEngine(self._state(tmp_path),
-                                   TransactionLedger(
-                                       self._state(tmp_path) / "l.jsonl"),
-                                   overrides)
-        result = engine.apply_transaction(plan=dict(flipped2),
-                                          approval=approval2,
-                                          provider=provider)
-        # Commit 6c: the canonical validator inside the engine refuses the
-        # forged plan's mutation BEFORE any preflight/provider contact.
-        assert result.status == "blocked"
-        assert result.writes_performed == 0
-        assert result.error_code.startswith("approval_invalid")
-        assert "auto_eligible is not True" in result.error_code
-        assert provider.calls == []
-        assert engine.ledger.entries() == []
+        with pytest.raises(fw.FlagWorkflowError, match="mutation_id mismatch"):
+            fw.validate_plan_schema(flipped2)
 
     @staticmethod
     def _state(tmp_path):
