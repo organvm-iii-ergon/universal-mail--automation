@@ -99,5 +99,5 @@ def test_custom_receipt_may_use_only_current_canonical_managed_path(
     assert output["status"] == "canary_ready_for_approval"
     assert canonical.is_file()
     assert json.loads(canonical.read_text())["schema"] == \
-        "uma.flags.canary.rollback_bundle.v1"
+        "uma.flags.canary.rollback_bundle.v2"
     assert _write_calls(artifacts.provider) == []

@@ -48,7 +48,7 @@ SNAPSHOT_SCHEMA = "uma.flags.snapshot.v1"
 PUBLIC_RECEIPT_SCHEMA = "uma.flags.public_receipt.v1"
 PLAN_SCHEMA = "uma.flags.migration.plan.v5"
 PUBLIC_PLAN_SCHEMA = "uma.flags.migration.plan.public.v2"
-APPROVAL_SCHEMA = "uma.flags.approval.v3"
+APPROVAL_SCHEMA = "uma.flags.approval.v4"
 CLASSIFICATION_PROOF_SCHEMA = "uma.flags.classification_proof.v1"
 MUTATION_ID_SCHEMA = "uma.flags.mutation_id.v2"
 APPLY_RECEIPT_SCHEMA = "uma.flags.apply_receipt.v1"
@@ -57,6 +57,15 @@ ROLLBACK_RECEIPT_SCHEMA = "uma.flags.rollback_receipt.v1"
 # Canary hard limits (enforced everywhere an approval is validated).
 CANARY_MIN = 1
 CANARY_MAX = 10
+
+# Approval authority is deliberately separate from classifier state.  A
+# human-nominated first activation canary may exercise a review-required
+# mutation, but never rewrites the plan's confidence or eligibility fields.
+SELECTION_SOURCE_AUTOMATIC = "automatic"
+SELECTION_SOURCE_HUMAN_CANARY = "human_canary"
+PURPOSE_MIGRATION = "migration"
+PURPOSE_ACTIVATION_CANARY = "activation_canary"
+HUMAN_CANARY_MAX = 3
 
 _HEX_CHARS = set("0123456789abcdef")
 
@@ -2645,21 +2654,117 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
     return parsed
 
 
-# --- Approval receipt (v2: signed-off artifact with own integrity hash) -------
+# --- Approval receipt (authority-bound signed-off artifact) --------------------
+
+
+@dataclass(frozen=True)
+class HumanCanaryTarget:
+    """One exact human-nominated reversible activation target.
+
+    This is an approval-side execution overlay, not a replacement for the
+    classifier-derived :class:`PlannedMutation`.  It records only stable
+    digests and a temporary known flag, never raw message identity.
+    """
+
+    mutation_id: str
+    ref_digest: str
+    temporary_flag: FlagColor
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mutation_id": self.mutation_id,
+            "ref_digest": self.ref_digest,
+            "temporary_flag": self.temporary_flag.value,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Any, prefix: str) -> "HumanCanaryTarget":
+        if not isinstance(raw, dict):
+            raise FlagWorkflowError(f"{prefix} must be a JSON object")
+        _require_exact_keys(
+            raw,
+            {"mutation_id", "ref_digest", "temporary_flag"},
+            prefix,
+        )
+        mutation_id = _require_string(
+            raw["mutation_id"], f"{prefix}.mutation_id"
+        )
+        if not (
+            mutation_id.startswith("mut-")
+            and len(mutation_id) == 28
+            and set(mutation_id[4:]) <= _HEX_CHARS
+        ):
+            raise FlagWorkflowError(
+                f"{prefix}.mutation_id must be mut-<24 lowercase hex>"
+            )
+        try:
+            temporary = FlagColor.from_string(_require_string(
+                raw["temporary_flag"], f"{prefix}.temporary_flag"
+            ))
+        except ValueError as exc:
+            raise FlagWorkflowError(
+                f"{prefix}.temporary_flag is not a canonical FlagColor"
+            ) from exc
+        if temporary is FlagColor.UNKNOWN:
+            raise FlagWorkflowError(
+                f"{prefix}.temporary_flag cannot be unknown"
+            )
+        return cls(
+            mutation_id=mutation_id,
+            ref_digest=require_hex256(
+                raw["ref_digest"], f"{prefix}.ref_digest"
+            ),
+            temporary_flag=temporary,
+        )
+
+
+def human_canary_risk_blocker(mutation: PlannedMutation) -> Optional[str]:
+    """Return a deterministic safety block for a human canary target.
+
+    The classifier remains authoritative for what it has actually detected.
+    This does not infer risk from absent evidence; it refuses only typed
+    high-risk domains and active/deadline-like classifier axes.  Human review
+    of the private shortlist remains necessary for risk classes the current
+    classifier does not deterministically expose.
+    """
+    proof = mutation.classification_proof
+    if proof.domain in {"career", "finance", "scheduling"}:
+        return f"blocked_domain:{proof.domain}"
+    if proof.semantic_type in {
+        "action_request",
+        "awaiting_other_party",
+        "event_confirmed",
+        "conflicting_signals",
+        "unidentifiable_action",
+    }:
+        return f"blocked_semantic_type:{proof.semantic_type}"
+    if proof.urgency != "none":
+        return "blocked_urgency"
+    if proof.next_action_owner != "none":
+        return "blocked_next_action_owner"
+    if proof.operator_state == "open_loop":
+        return "blocked_open_loop"
+    if proof.due_evidence_present:
+        return "blocked_due_evidence"
+    if proof.follow_up_evidence_present:
+        return "blocked_follow_up_evidence"
+    return None
 
 
 @dataclass
 class ApprovalReceipt:
     """Explicit operator approval — a REAL signed-off artifact.
 
-    v2 contract:
+    Authority contract:
     - carries its own full SHA-256 content_hash (tamper-evident artifact);
     - binds plan_sha256 AND snapshot_sha256 AND policy_sha256;
     - validation compares against the ACTUAL loaded plan dict and parsed
       mutations, not merely field shapes;
-    - approved ids must be nonempty, unique, present in the plan, and every
-      one of them must be structurally auto_eligible=True with
-      review_required=False;
+    - ordinary migration approvals require every target to remain
+      auto_eligible=True and review_required=False;
+    - a human_canary / activation_canary approval may select only an exact
+      1..3-message review-required set, retaining the immutable classifier
+      record while binding a distinct temporary test flag per target;
     - 1 <= canary_limit <= CANARY_MAX and len(approved) <= canary_limit;
     - no force flag, no bypass path exists anywhere.
     """
@@ -2673,6 +2778,12 @@ class ApprovalReceipt:
     expires_at: str
     approving_operator: str
     canary_limit: int
+    selection_source: str = SELECTION_SOURCE_AUTOMATIC
+    purpose: str = PURPOSE_MIGRATION
+    manual_canary: bool = False
+    human_canary_targets: List[HumanCanaryTarget] = field(
+        default_factory=list
+    )
     content_hash: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -2687,6 +2798,12 @@ class ApprovalReceipt:
             "expires_at": self.expires_at,
             "approving_operator": self.approving_operator,
             "canary_limit": self.canary_limit,
+            "selection_source": self.selection_source,
+            "purpose": self.purpose,
+            "manual_canary": self.manual_canary,
+            "human_canary_targets": [
+                target.to_dict() for target in self.human_canary_targets
+            ],
         }
         d["content_hash"] = sha256_hex(d)
         return d
@@ -2696,7 +2813,13 @@ class ApprovalReceipt:
                policy_sha256: str, approved_mutation_ids: List[str],
                approving_operator: str, canary_limit: int,
                issued_at: Optional[str] = None,
-               ttl_seconds: int = 3600) -> "ApprovalReceipt":
+               ttl_seconds: int = 3600,
+               selection_source: str = SELECTION_SOURCE_AUTOMATIC,
+               purpose: str = PURPOSE_MIGRATION,
+               manual_canary: bool = False,
+               human_canary_targets: Optional[
+                   List[HumanCanaryTarget]
+               ] = None) -> "ApprovalReceipt":
         """Single construction path computing approval_id + content_hash."""
         require_hex256(plan_hash, "approval.plan_hash")
         require_hex256(snapshot_sha256, "approval.snapshot_sha256")
@@ -2704,6 +2827,9 @@ class ApprovalReceipt:
         _require_int(canary_limit, "approval.canary_limit")
         _require_int(ttl_seconds, "approval.ttl_seconds", minimum=1)
         _require_string(approving_operator, "approval.approving_operator")
+        _require_string(selection_source, "approval.selection_source")
+        _require_string(purpose, "approval.purpose")
+        _require_bool(manual_canary, "approval.manual_canary")
         if not isinstance(approved_mutation_ids, list) or not all(
             isinstance(mutation_id, str) and mutation_id
             for mutation_id in approved_mutation_ids
@@ -2712,6 +2838,18 @@ class ApprovalReceipt:
                 "approval.approved_mutation_ids must be a list of "
                 "non-empty strings"
             )
+        if human_canary_targets is None:
+            targets: List[HumanCanaryTarget] = []
+        elif not isinstance(human_canary_targets, list) or not all(
+                isinstance(target, HumanCanaryTarget)
+                for target in human_canary_targets
+        ):
+            raise FlagWorkflowError(
+                "approval.human_canary_targets must be HumanCanaryTarget "
+                "values"
+            )
+        else:
+            targets = list(human_canary_targets)
         now = datetime.now(timezone.utc)
         issued_text = issued_at if issued_at is not None else now.isoformat()
         issued = _parse_aware_timestamp(issued_text, "approval.issued_at")
@@ -2729,6 +2867,12 @@ class ApprovalReceipt:
                 "plan_hash": plan_hash,
                 "approved": sorted(approved_mutation_ids),
                 "issued_hint": issued_text,
+                "selection_source": selection_source,
+                "purpose": purpose,
+                "manual_canary": manual_canary,
+                "human_canary_targets": [
+                    target.to_dict() for target in targets
+                ],
             })[:32],
             snapshot_sha256=snapshot_sha256,
             plan_hash=plan_hash,
@@ -2738,9 +2882,62 @@ class ApprovalReceipt:
             expires_at=expires_text,
             approving_operator=approving_operator,
             canary_limit=canary_limit,
+            selection_source=selection_source,
+            purpose=purpose,
+            manual_canary=manual_canary,
+            human_canary_targets=targets,
         )
         receipt.content_hash = receipt.to_dict()["content_hash"]
         return receipt
+
+    @classmethod
+    def create_human_canary(
+            cls, *, plan_hash: str, snapshot_sha256: str,
+            policy_sha256: str,
+            nominated_targets: List[HumanCanaryTarget],
+            approving_operator: str, canary_limit: int,
+            issued_at: Optional[str] = None,
+            ttl_seconds: int = 3600) -> "ApprovalReceipt":
+        """Create a bounded approval for exact human-selected test targets."""
+        if not isinstance(nominated_targets, list) or not nominated_targets:
+            raise FlagWorkflowError(
+                "human canary nominations must be a non-empty list"
+            )
+        return cls.create(
+            plan_hash=plan_hash,
+            snapshot_sha256=snapshot_sha256,
+            policy_sha256=policy_sha256,
+            approved_mutation_ids=[
+                target.mutation_id for target in nominated_targets
+            ],
+            approving_operator=approving_operator,
+            canary_limit=canary_limit,
+            issued_at=issued_at,
+            ttl_seconds=ttl_seconds,
+            selection_source=SELECTION_SOURCE_HUMAN_CANARY,
+            purpose=PURPOSE_ACTIVATION_CANARY,
+            manual_canary=True,
+            human_canary_targets=nominated_targets,
+        )
+
+    @property
+    def is_human_canary(self) -> bool:
+        return (
+            self.selection_source == SELECTION_SOURCE_HUMAN_CANARY
+            and self.purpose == PURPOSE_ACTIVATION_CANARY
+            and self.manual_canary is True
+        )
+
+    def execution_flag_for(self, mutation: PlannedMutation) -> FlagColor:
+        """Return the hash-bound writable state for an approved target."""
+        if not self.is_human_canary:
+            return mutation.proposed_flag
+        for target in self.human_canary_targets:
+            if target.mutation_id == mutation.mutation_id:
+                return target.temporary_flag
+        raise FlagWorkflowError(
+            f"{mutation.mutation_id}: absent from human canary nominations"
+        )
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "ApprovalReceipt":
@@ -2751,7 +2948,8 @@ class ApprovalReceipt:
             "schema", "approval_id", "snapshot_sha256", "plan_hash",
             "policy_sha256", "approved_mutation_ids", "issued_at",
             "expires_at", "approving_operator", "canary_limit",
-            "content_hash",
+            "selection_source", "purpose", "manual_canary",
+            "human_canary_targets", "content_hash",
         }, "approval")
         ids = raw["approved_mutation_ids"]
         if not isinstance(ids, list) or not all(
@@ -2761,6 +2959,11 @@ class ApprovalReceipt:
             raise FlagWorkflowError(
                 "approval.approved_mutation_ids must be a list of "
                 "non-empty strings"
+            )
+        targets_raw = raw["human_canary_targets"]
+        if not isinstance(targets_raw, list):
+            raise FlagWorkflowError(
+                "approval.human_canary_targets must be a list"
             )
         receipt = cls(
             schema=_require_string(raw["schema"], "approval.schema"),
@@ -2790,6 +2993,20 @@ class ApprovalReceipt:
             canary_limit=_require_int(
                 raw["canary_limit"], "approval.canary_limit"
             ),
+            selection_source=_require_string(
+                raw["selection_source"], "approval.selection_source"
+            ),
+            purpose=_require_string(raw["purpose"], "approval.purpose"),
+            manual_canary=_require_bool(
+                raw["manual_canary"], "approval.manual_canary"
+            ),
+            human_canary_targets=[
+                HumanCanaryTarget.from_dict(
+                    target,
+                    f"approval.human_canary_targets[{index}]",
+                )
+                for index, target in enumerate(targets_raw)
+            ],
             content_hash=require_hex256(
                 raw["content_hash"], "approval.content_hash"
             ),
@@ -2884,6 +3101,24 @@ class ApprovalReceipt:
                 f"canary_limit must be within [{CANARY_MIN},{CANARY_MAX}], "
                 f"got {self.canary_limit}"
             )
+        automatic_authority = (
+            self.selection_source == SELECTION_SOURCE_AUTOMATIC
+            and self.purpose == PURPOSE_MIGRATION
+            and self.manual_canary is False
+        )
+        human_canary_authority = self.is_human_canary
+        if not (automatic_authority or human_canary_authority):
+            raise FlagWorkflowError(
+                "approval authority must be automatic/migration or "
+                "human_canary/activation_canary"
+            )
+        if not isinstance(self.human_canary_targets, list) or not all(
+                isinstance(target, HumanCanaryTarget)
+                for target in self.human_canary_targets
+        ):
+            raise FlagWorkflowError(
+                "approval.human_canary_targets must be typed targets"
+            )
         ids = self.approved_mutation_ids
         if not isinstance(ids, list) or not all(
             isinstance(mutation_id, str) and mutation_id for mutation_id in ids
@@ -2909,29 +3144,109 @@ class ApprovalReceipt:
                 f"approval references mutation ids absent from plan: "
                 f"{sorted(unknown)}"
         )
-        for mid in ids:
-            m = by_id[mid]
-            if m.auto_eligible is not True:
+        policy_sha256 = require_hex256(
+            plan.get("policy_sha256"), "plan.policy_sha256"
+        )
+        snapshot_sha256 = require_hex256(
+            plan.get("snapshot_sha256"), "plan.snapshot_sha256"
+        )
+        if automatic_authority:
+            if self.human_canary_targets:
                 raise FlagWorkflowError(
-                    f"{mid}: auto_eligible is not True — confidence alone "
-                    "can NEVER grant mutation eligibility")
-            if m.review_required is not False:
+                    "automatic approval cannot carry human canary targets"
+                )
+            for mid in ids:
+                m = by_id[mid]
+                if m.auto_eligible is not True:
+                    raise FlagWorkflowError(
+                        f"{mid}: auto_eligible is not True — confidence "
+                        "alone can NEVER grant mutation eligibility"
+                    )
+                if m.review_required is not False:
+                    raise FlagWorkflowError(
+                        f"{mid}: review_required mutation cannot be "
+                        "approved by automatic authority"
+                    )
+                if m.observed_flag == FlagColor.UNKNOWN:
+                    raise FlagWorkflowError(
+                        f"{mid}: UNKNOWN observations can never be "
+                        "approved"
+                    )
+                if m.proposed_flag == FlagColor.UNKNOWN:
+                    raise FlagWorkflowError(
+                        f"{mid}: proposed UNKNOWN is not writable"
+                    )
+                validate_planned_mutation_contract(
+                    m,
+                    policy_sha256=policy_sha256,
+                    snapshot_sha256=snapshot_sha256,
+                )
+            return
+
+        # HUMAN-NOMINATED ACTIVATION CANARY: deliberately distinct from
+        # automatic migration.  The classifier fields above remain bound to
+        # the immutable plan and must continue to say review_required=True,
+        # auto_eligible=False.
+        if not (CANARY_MIN <= canary_limit <= HUMAN_CANARY_MAX):
+            raise FlagWorkflowError(
+                "human canary_limit must be within [1,3]"
+            )
+        targets = self.human_canary_targets
+        if len(targets) != len(ids):
+            raise FlagWorkflowError(
+                "human canary nominations must exactly match approved ids"
+            )
+        target_ids = [target.mutation_id for target in targets]
+        if target_ids != ids:
+            raise FlagWorkflowError(
+                "human canary approved ids must exactly match nomination "
+                "order"
+            )
+        if len(target_ids) != len(set(target_ids)):
+            raise FlagWorkflowError(
+                "human canary nominations contain duplicate mutation ids"
+            )
+        if len(targets) > HUMAN_CANARY_MAX:
+            raise FlagWorkflowError(
+                "human canary may nominate at most 3 targets"
+            )
+        for target in targets:
+            # Reparse the typed object through the public-free wire format so
+            # direct in-memory construction cannot evade target validation.
+            checked = HumanCanaryTarget.from_dict(
+                target.to_dict(), "approval.human_canary_target"
+            )
+            m = by_id[checked.mutation_id]
+            if checked.ref_digest != m.ref_digest:
                 raise FlagWorkflowError(
-                    f"{mid}: review_required mutation cannot be approved")
+                    f"{m.mutation_id}: human nomination ref digest does "
+                    "not match the immutable plan"
+                )
+            if m.auto_eligible is not False or m.review_required is not True:
+                raise FlagWorkflowError(
+                    f"{m.mutation_id}: human canary requires the original "
+                    "review_required=True and auto_eligible=False state"
+                )
             if m.observed_flag == FlagColor.UNKNOWN:
                 raise FlagWorkflowError(
-                    f"{mid}: UNKNOWN observations can never be approved")
-            if m.proposed_flag == FlagColor.UNKNOWN:
+                    f"{m.mutation_id}: UNKNOWN observations can never be "
+                    "human-canary targets"
+                )
+            if checked.temporary_flag == m.observed_flag:
                 raise FlagWorkflowError(
-                    f"{mid}: proposed UNKNOWN is not writable")
+                    f"{m.mutation_id}: human canary temporary flag must "
+                    "differ from the exact observed flag"
+                )
+            blocker = human_canary_risk_blocker(m)
+            if blocker is not None:
+                raise FlagWorkflowError(
+                    f"{m.mutation_id}: human canary target refused: "
+                    f"{blocker}"
+                )
             validate_planned_mutation_contract(
                 m,
-                policy_sha256=require_hex256(
-                    plan.get("policy_sha256"), "plan.policy_sha256"
-                ),
-                snapshot_sha256=require_hex256(
-                    plan.get("snapshot_sha256"), "plan.snapshot_sha256"
-                ),
+                policy_sha256=policy_sha256,
+                snapshot_sha256=snapshot_sha256,
             )
 
 

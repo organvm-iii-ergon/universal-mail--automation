@@ -942,7 +942,8 @@ class TransactionEngine:
     def _rollback_override_result(
             self, mutation: PlannedMutation,
             current_native: Optional[int],
-            error_code: str) -> RollbackResult:
+            error_code: str,
+            expected_applied_state: Optional[FlagColor] = None) -> RollbackResult:
         """Durably suppress rollback after any live-state divergence.
 
         A later read may once again resemble the automation-applied state.
@@ -960,7 +961,11 @@ class TransactionEngine:
         try:
             self.overrides.detect_override(
                 mutation.ref_digest,
-                automation_expected_state=mutation.proposed_flag.value,
+                automation_expected_state=(
+                    expected_applied_state.value
+                    if expected_applied_state is not None
+                    else mutation.proposed_flag.value
+                ),
                 human_observed_state=observed_state,
             )
         except Exception as exc:
@@ -1008,10 +1013,27 @@ class TransactionEngine:
             )
         except FlagWorkflowError:
             return "mutation_contract_invalid"
-        if mutation.auto_eligible is not True:
-            return "not_auto_eligible"
-        if mutation.review_required is not False:
-            return "review_required"
+        if approval.is_human_canary:
+            # Approval validation already proves the exact nomination,
+            # temporary flag, original review state, and deterministic risk
+            # constraints.  Keep this defense-in-depth assertion adjacent to
+            # the provider boundary so a future caller cannot treat a human
+            # canary as an ordinary automatic migration.
+            if mutation.auto_eligible is not False:
+                return "human_canary_classifier_state_invalid"
+            if mutation.review_required is not True:
+                return "human_canary_classifier_state_invalid"
+            try:
+                temporary_flag = approval.execution_flag_for(mutation)
+            except FlagWorkflowError:
+                return "human_canary_not_nominated"
+            if temporary_flag is FlagColor.UNKNOWN:
+                return "human_canary_temporary_flag_unknown"
+        else:
+            if mutation.auto_eligible is not True:
+                return "not_auto_eligible"
+            if mutation.review_required is not False:
+                return "review_required"
         if mutation.proposed_flag == FlagColor.UNKNOWN:
             return "proposed_unknown_not_writable"
         if mutation.snapshot_id != plan.get("snapshot_id"):
@@ -1317,6 +1339,18 @@ class TransactionEngine:
         result = ApplyResult(status="applied")
         approval_sha = approval.content_hash
         by_id = {m.mutation_id: m for m in approved}
+        try:
+            execution_flags = {
+                m.mutation_id: approval.execution_flag_for(m)
+                for m in approved
+            }
+        except FlagWorkflowError as exc:  # pragma: no cover - validator owns this
+            return ApplyResult(
+                status="blocked",
+                writes_performed=0,
+                blocked_reason="approval_validation_failed",
+                error_code=f"approval_invalid:{exc}",
+            )
 
         # IDEMPOTENCY PASS (authority-based) + POST-ROLLBACK DOCTRINE.
         # Replay events appended here are EVENT records; they never erase
@@ -1421,7 +1455,8 @@ class TransactionEngine:
                     transaction_id=txid, plan_sha256=plan_hash,
                     approval_sha256=approval_sha,
                     mutation_id=m.mutation_id, ref_digest=m.ref_digest,
-                    pre_state=None, intended_state=m.proposed_flag.value,
+                    pre_state=None,
+                    intended_state=execution_flags[m.mutation_id].value,
                     verified_post_state=None,
                     timestamp=_now(), status=ST_ALREADY_VERIFIED))
                 result.already_applied.append({"mutation_id": m.mutation_id})
@@ -1441,7 +1476,7 @@ class TransactionEngine:
                     mutation_id=mid,
                     ref_digest=by_id[mid].ref_digest,
                     pre_state=None,
-                    intended_state=by_id[mid].proposed_flag.value,
+                    intended_state=execution_flags[mid].value,
                     verified_post_state=None, timestamp=_now(),
                     status=ST_BLOCKED, error_code="previously_rolled_back"))
             result.status = "blocked"
@@ -1464,7 +1499,7 @@ class TransactionEngine:
                     mutation_id=m.mutation_id,
                     ref_digest=m.ref_digest,
                     pre_state=None,
-                    intended_state=m.proposed_flag.value,
+                    intended_state=execution_flags[m.mutation_id].value,
                     verified_post_state=None,
                     timestamp=_now(),
                     status=ST_FROZEN_UNATTEMPTED,
@@ -1491,7 +1526,8 @@ class TransactionEngine:
                     transaction_id=self._txid(plan_hash, m, approval),
                     plan_sha256=plan_hash, approval_sha256=approval_sha,
                     mutation_id=m.mutation_id, ref_digest=m.ref_digest,
-                    pre_state=None, intended_state=m.proposed_flag.value,
+                    pre_state=None,
+                    intended_state=execution_flags[m.mutation_id].value,
                     verified_post_state=None, timestamp=_now(),
                     status=ST_BLOCKED,
                     error_code=code or "preflight_failed"))
@@ -1510,7 +1546,7 @@ class TransactionEngine:
                 plan_sha256=plan_hash, approval_sha256=approval_sha,
                 mutation_id=m.mutation_id, ref_digest=m.ref_digest,
                 pre_state=m.observed_flag.value,
-                intended_state=m.proposed_flag.value,
+                intended_state=execution_flags[m.mutation_id].value,
                 verified_post_state=None, timestamp=_now(),
                 status=ST_PREFLIGHT_PASSED))
 
@@ -1523,8 +1559,9 @@ class TransactionEngine:
             m = remaining.pop(0)
             txid = self._txid(plan_hash, m, approval)
             ref = self._ref_for(m)
+            execution_flag = execution_flags[m.mutation_id]
             expected_native = self._native_for_semantic(
-                m.provider, m.proposed_flag)
+                m.provider, execution_flag)
             try:
                 self.ledger.record(TransactionRecord(
                     transaction_id=txid, plan_sha256=plan_hash,
@@ -1532,7 +1569,7 @@ class TransactionEngine:
                     mutation_id=m.mutation_id,
                     ref_digest=m.ref_digest,
                     pre_state=m.observed_flag.value,
-                    intended_state=m.proposed_flag.value,
+                    intended_state=execution_flag.value,
                     verified_post_state=None, timestamp=_now(),
                     status=ST_APPLYING))
             except (LedgerCorrupted, PrivateStateUnusable) as exc:
@@ -1552,11 +1589,11 @@ class TransactionEngine:
             write_counted = False
             try:
                 try:
-                    if m.proposed_flag == FlagColor.NO_FLAG:
+                    if execution_flag == FlagColor.NO_FLAG:
                         ok = provider.clear_flag_ref(ref)
                     else:
                         ok = provider.set_flag_color_ref(
-                            ref, m.proposed_flag
+                            ref, execution_flag
                         )
                 except ProviderWriteAmbiguous as exc:
                     # The provider contract says dispatch occurred or may have
@@ -1591,7 +1628,7 @@ class TransactionEngine:
                             f"{expected_native}")
                     post_semantic = self._semantic_for_native(
                         m.provider, int(post_native_raw))
-                    if post_semantic != m.proposed_flag:
+                    if post_semantic != execution_flag:
                         raise FlagStateAmbiguous(
                             "post-write semantic mismatch"
                         )
@@ -1621,7 +1658,7 @@ class TransactionEngine:
                         mutation_id=m.mutation_id,
                         ref_digest=m.ref_digest,
                         pre_state=m.observed_flag.value,
-                        intended_state=m.proposed_flag.value,
+                        intended_state=execution_flag.value,
                         verified_post_state=None, timestamp=_now(),
                         status=ST_BLOCKED, error_code=error_code))
                 except Exception as persist_exc:
@@ -1650,7 +1687,7 @@ class TransactionEngine:
                         mutation_id=m.mutation_id,
                         ref_digest=m.ref_digest,
                         pre_state=m.observed_flag.value,
-                        intended_state=m.proposed_flag.value,
+                        intended_state=execution_flag.value,
                         verified_post_state=None, timestamp=_now(),
                         status=ST_BLOCKED,
                         error_code=f"provider_refused:{exc}"))
@@ -1684,7 +1721,7 @@ class TransactionEngine:
                         mutation_id=m.mutation_id,
                         ref_digest=m.ref_digest,
                         pre_state=m.observed_flag.value,
-                        intended_state=m.proposed_flag.value,
+                        intended_state=execution_flag.value,
                         verified_post_state=None, timestamp=_now(),
                         status=ST_AMBIGUOUS, error_code=str(exc)))
                 except (LedgerCorrupted, PrivateStateUnusable) as persist_exc:
@@ -1710,7 +1747,7 @@ class TransactionEngine:
                         mutation_id=m.mutation_id,
                         ref_digest=m.ref_digest,
                         pre_state=m.observed_flag.value,
-                        intended_state=m.proposed_flag.value,
+                        intended_state=execution_flag.value,
                         verified_post_state=None, timestamp=_now(),
                         status=ST_BLOCKED,
                         error_code=f"provider_error:{exc}"))
@@ -1737,8 +1774,8 @@ class TransactionEngine:
                     mutation_id=m.mutation_id,
                     ref_digest=m.ref_digest,
                     pre_state=m.observed_flag.value,
-                    intended_state=m.proposed_flag.value,
-                    verified_post_state=m.proposed_flag.value,
+                    intended_state=execution_flag.value,
+                    verified_post_state=execution_flag.value,
                     timestamp=_now(),
                     status=ST_VERIFIED_PENDING_PRIVATE_STATE,
                     error_code="override_state_pending",
@@ -1757,7 +1794,7 @@ class TransactionEngine:
                 # Record automation post-state WITHOUT ever clearing
                 # overrides (unlock-only contract lives in OverrideStore).
                 self.overrides.record_automation_state(
-                    m.ref_digest, m.proposed_flag.value, True)
+                    m.ref_digest, execution_flag.value, True)
             except Exception as exc:
                 try:
                     self.ledger.record(TransactionRecord(
@@ -1767,8 +1804,8 @@ class TransactionEngine:
                         mutation_id=m.mutation_id,
                         ref_digest=m.ref_digest,
                         pre_state=m.observed_flag.value,
-                        intended_state=m.proposed_flag.value,
-                        verified_post_state=m.proposed_flag.value,
+                        intended_state=execution_flag.value,
+                        verified_post_state=execution_flag.value,
                         timestamp=_now(),
                         status=ST_AMBIGUOUS,
                         error_code=f"override_state_failure:{exc}",
@@ -1793,8 +1830,8 @@ class TransactionEngine:
                     mutation_id=m.mutation_id,
                     ref_digest=m.ref_digest,
                     pre_state=m.observed_flag.value,
-                    intended_state=m.proposed_flag.value,
-                    verified_post_state=m.proposed_flag.value,
+                    intended_state=execution_flag.value,
+                    verified_post_state=execution_flag.value,
                     timestamp=_now(), status=ST_VERIFIED))
             except (LedgerCorrupted, PrivateStateUnusable) as exc:
                 result.failed.append({
@@ -1809,7 +1846,7 @@ class TransactionEngine:
             result.verified.append({
                 "mutation_id": m.mutation_id,
                 "transaction_id": txid,
-                "verified_post_state": m.proposed_flag.value,
+                "verified_post_state": execution_flag.value,
             })
 
         # Honest remainder accounting after any mid-batch freeze.  Populate
@@ -1827,7 +1864,7 @@ class TransactionEngine:
                         mutation_id=m.mutation_id,
                         ref_digest=m.ref_digest,
                         pre_state=None,
-                        intended_state=m.proposed_flag.value,
+                        intended_state=execution_flags[m.mutation_id].value,
                         verified_post_state=None,
                         timestamp=_now(),
                         status=ST_FROZEN_UNATTEMPTED,
@@ -1868,6 +1905,39 @@ class ScopedRollbackEngine(TransactionEngine):
             raise FlagWorkflowError(
                 "rollback plan_hash mismatch — plan artifact tampered")
         return {m.mutation_id: m for m in validate_plan_schema(self._plan)}
+
+    @staticmethod
+    def _applied_flag_from_verified_record(
+            record: Optional[Dict[str, Any]]) -> FlagColor:
+        """Return the authoritative post-apply state from the ledger.
+
+        Normal migrations record the plan's classifier proposal here.  A
+        human activation canary records its separately approved temporary
+        test state, so rollback must derive from the verified ledger rather
+        than silently substituting the classifier proposal.
+        """
+        if not isinstance(record, dict):
+            raise FlagWorkflowError("verified transaction record is absent")
+        raw = record.get("intended_state")
+        if not isinstance(raw, str):
+            raise FlagWorkflowError(
+                "verified transaction intended_state is invalid"
+            )
+        try:
+            state = FlagColor(raw)
+        except ValueError as exc:
+            raise FlagWorkflowError(
+                "verified transaction intended_state is not a FlagColor"
+            ) from exc
+        if state is FlagColor.UNKNOWN:
+            raise FlagWorkflowError(
+                "verified transaction intended_state cannot be unknown"
+            )
+        if record.get("verified_post_state") != state.value:
+            raise FlagWorkflowError(
+                "verified transaction post-state does not match intent"
+            )
+        return state
 
     @staticmethod
     def _can_defer_receipt_validation(
@@ -1993,9 +2063,16 @@ class ScopedRollbackEngine(TransactionEngine):
                 status="blocked", writes_performed=0,
                 error_code=f"rollback_plan_invalid:{exc}",
             )
-        expected_applied_native = self._native_for_semantic(
-            mutation.provider, mutation.proposed_flag
-        ) if mutation else None
+        try:
+            expected_applied_flag = self._applied_flag_from_verified_record(
+                rec
+            )
+            expected_applied_native = self._native_for_semantic(
+                mutation.provider, expected_applied_flag
+            ) if mutation else None
+        except FlagWorkflowError:
+            expected_applied_flag = None
+            expected_applied_native = None
         expectations = {
             "transaction_id": (
                 receipt.transaction_id,
@@ -2026,7 +2103,8 @@ class ScopedRollbackEngine(TransactionEngine):
             ),
             "applied_semantic_flag": (
                 receipt.applied_semantic_flag,
-                mutation.proposed_flag.value if mutation else None,
+                expected_applied_flag.value
+                if expected_applied_flag is not None else None,
             ),
             "ledger_status": (
                 rec.get("status") if rec else None, ST_VERIFIED,
@@ -2041,11 +2119,13 @@ class ScopedRollbackEngine(TransactionEngine):
             ),
             "ledger_intended_state": (
                 rec.get("intended_state") if rec else None,
-                mutation.proposed_flag.value if mutation else None,
+                expected_applied_flag.value
+                if expected_applied_flag is not None else None,
             ),
             "ledger_verified_post_state": (
                 rec.get("verified_post_state") if rec else None,
-                mutation.proposed_flag.value if mutation else None,
+                expected_applied_flag.value
+                if expected_applied_flag is not None else None,
             ),
         }
         for field_name, (got, expected) in expectations.items():
@@ -2089,6 +2169,7 @@ class ScopedRollbackEngine(TransactionEngine):
                 mutation,
                 live.observed_native_flag,
                 "evidence_drift",
+                expected_applied_flag,
             )
         current_native = live.observed_native_flag
         if current_native is None:
@@ -2096,21 +2177,24 @@ class ScopedRollbackEngine(TransactionEngine):
                 mutation,
                 current_native,
                 "native_flag_unavailable",
+                expected_applied_flag,
             )
         if int(current_native) != int(expected_applied_native):
             return self._rollback_override_result(
                 mutation,
                 current_native,
                 "human_intervention_detected",
+                expected_applied_flag,
             )
         current_semantic = self._semantic_for_native(
             mutation.provider, int(current_native)
         )
-        if current_semantic != mutation.proposed_flag:
+        if current_semantic != expected_applied_flag:
             return self._rollback_override_result(
                 mutation,
                 current_native,
                 "semantic_flag_drift",
+                expected_applied_flag,
             )
         return RollbackResult(
             status="preflight_passed", writes_performed=0
@@ -2453,9 +2537,16 @@ class ScopedRollbackEngine(TransactionEngine):
             return RollbackResult(status="blocked", writes_performed=0,
                                   error_code=f"rollback_plan_invalid:{e}")
         mutation = by_id.get(receipt.mutation_id)
-        expected_applied_native = self._native_for_semantic(
-            mutation.provider, mutation.proposed_flag) \
-            if mutation else None
+        try:
+            expected_applied_flag = self._applied_flag_from_verified_record(
+                rec
+            )
+            expected_applied_native = self._native_for_semantic(
+                mutation.provider, expected_applied_flag
+            ) if mutation else None
+        except FlagWorkflowError:
+            expected_applied_flag = None
+            expected_applied_native = None
         lineage_expectations = {
             "transaction_id": (receipt.transaction_id,
                                rec.get("transaction_id") if rec else None),
@@ -2474,7 +2565,8 @@ class ScopedRollbackEngine(TransactionEngine):
                 mutation.observed_native_flag if mutation else None),
             "applied_semantic_flag": (
                 receipt.applied_semantic_flag,
-                mutation.proposed_flag.value if mutation else None),
+                expected_applied_flag.value
+                if expected_applied_flag is not None else None),
             "applied_native_flag": (
                 receipt.applied_native_flag, expected_applied_native),
             "ledger_status": (
@@ -2487,10 +2579,12 @@ class ScopedRollbackEngine(TransactionEngine):
                 mutation.observed_flag.value if mutation else None),
             "ledger_intended_state": (
                 rec.get("intended_state") if rec else None,
-                mutation.proposed_flag.value if mutation else None),
+                expected_applied_flag.value
+                if expected_applied_flag is not None else None),
             "ledger_verified_post_state": (
                 rec.get("verified_post_state") if rec else None,
-                mutation.proposed_flag.value if mutation else None),
+                expected_applied_flag.value
+                if expected_applied_flag is not None else None),
         }
         for field_name, (got, expected) in lineage_expectations.items():
             if got != expected:
@@ -2542,8 +2636,11 @@ class ScopedRollbackEngine(TransactionEngine):
         # DERIVED truth (never receipt fields) drives the write target and
         # the current-state gate:
         prior_color = mutation.observed_flag
-        expected_applied_native = self._native_for_semantic(
-            mutation.provider, mutation.proposed_flag)
+        if expected_applied_flag is None or expected_applied_native is None:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code="receipt_lineage_mismatch:verified_applied_state",
+            )
 
         ref = self._ref_for(mutation)
         try:
@@ -2565,8 +2662,9 @@ class ScopedRollbackEngine(TransactionEngine):
 
         current_native = live.observed_native_flag
         # OVERRIDE-SAFETY: current MUST equal the DERIVED applied state
-        # (mutation.proposed_flag via provider codec) — never the receipt's
-        # self-asserted applied state. A human having touched the message
+        # (the ledger's verified applied state via provider codec) — never
+        # the receipt's self-asserted applied state. A human having touched
+        # the message
         # since means we must NOT clobber their choice with the old color.
         if current_native is None or \
                 int(current_native) != int(expected_applied_native):
@@ -2639,7 +2737,7 @@ class ScopedRollbackEngine(TransactionEngine):
             error_code = "human_intervention_detected_at_dispatch"
             try:
                 self._record_dispatch_drift(
-                    mutation, exc, mutation.proposed_flag
+                    mutation, exc, expected_applied_flag
                 )
                 self.ledger.record(TransactionRecord(
                     transaction_id=receipt.transaction_id,

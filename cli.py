@@ -2625,6 +2625,107 @@ def cmd_flags_queue(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_flags_human_canary_approve(args: argparse.Namespace) -> int:
+    """Create one exact, private human-canary approval with zero writes.
+
+    This is deliberately an artifact-only authority step.  It cannot inspect
+    a mailbox, select a wildcard, or change any classifier field.  The later
+    apply command must still be invoked with both ``--canary`` and
+    ``--human-selected`` and will rerun its full fresh preflight.
+    """
+    if getattr(args, "canary", False) is not True or \
+            getattr(args, "human_selected", False) is not True:
+        print(
+            "flags human-canary-approve: explicit --canary and "
+            "--human-selected are required; no provider was constructed.",
+            file=sys.stderr,
+        )
+        return 89
+
+    from core.flag_workflow import (
+        ApprovalReceipt,
+        FlagWorkflowError,
+        HumanCanaryTarget,
+        load_plan,
+        load_snapshot,
+        validate_plan_snapshot_lineage,
+        write_private_approval,
+    )
+
+    nominations = getattr(args, "nominate", None)
+    if not isinstance(nominations, list) or not (1 <= len(nominations) <= 3):
+        print(
+            "flags human-canary-approve: provide exactly 1..3 --nominate "
+            "values (mutation_id:ref_digest:temporary_flag)",
+            file=sys.stderr,
+        )
+        return 20
+    if len(nominations) != len(set(nominations)):
+        print(
+            "flags human-canary-approve: duplicate exact nominations are "
+            "forbidden",
+            file=sys.stderr,
+        )
+        return 20
+
+    try:
+        targets = []
+        for index, value in enumerate(nominations):
+            parts = value.split(":")
+            if len(parts) != 3:
+                raise FlagWorkflowError(
+                    "--nominate must be mutation_id:ref_digest:temporary_flag"
+                )
+            targets.append(HumanCanaryTarget.from_dict({
+                "mutation_id": parts[0],
+                "ref_digest": parts[1],
+                "temporary_flag": parts[2],
+            }, f"nominate[{index}]"))
+        if len({target.mutation_id for target in targets}) != len(targets):
+            raise FlagWorkflowError(
+                "human canary nominations must name distinct mutations"
+            )
+        snapshot = load_snapshot(Path(args.snapshot).expanduser())
+        plan = load_plan(Path(args.plan).expanduser())
+        validate_plan_snapshot_lineage(plan, snapshot)
+        approval = ApprovalReceipt.create_human_canary(
+            plan_hash=plan["plan_hash"],
+            snapshot_sha256=plan["snapshot_sha256"],
+            policy_sha256=plan["policy_sha256"],
+            nominated_targets=targets,
+            approving_operator=args.operator,
+            canary_limit=len(targets),
+            ttl_seconds=args.ttl_seconds,
+        )
+        output = write_private_approval(
+            approval, Path(args.output).expanduser(), plan=plan
+        )
+    except (FlagWorkflowError, OSError, TypeError, ValueError) as exc:
+        print(
+            f"flags human-canary-approve: refused: {exc}",
+            file=sys.stderr,
+        )
+        return 20
+
+    print(json.dumps({
+        "schema": "uma.flags.human_canary_approval.public.v1",
+        "selection_source": approval.selection_source,
+        "purpose": approval.purpose,
+        "manual_canary": approval.manual_canary,
+        "message_count": len(targets),
+        "approved_mutation_ids": approval.approved_mutation_ids,
+        "message_ref_digests": [target.ref_digest for target in targets],
+        "temporary_flags": [target.temporary_flag.value for target in targets],
+        "snapshot_sha256": approval.snapshot_sha256,
+        "plan_sha256": approval.plan_hash,
+        "policy_sha256": approval.policy_sha256,
+        "approval_sha256": approval.content_hash,
+        "approval_path": str(output),
+        "live_writes_performed": 0,
+    }, indent=2, sort_keys=True))
+    return 0
+
+
 def cmd_flags_apply(args: argparse.Namespace) -> int:
     """Prepare or execute one explicitly approved Mail.app canary."""
     if getattr(args, "canary", False) is not True:
@@ -2671,6 +2772,7 @@ def cmd_flags_apply(args: argparse.Namespace) -> int:
             snapshot_path=Path(args.snapshot).expanduser(),
             approval_path=Path(args.approval).expanduser(),
             cli_limit=getattr(args, "limit", 3),
+            human_selected=getattr(args, "human_selected", False),
         )
         requested_account = getattr(args, "account", None)
         if requested_account is not None \
@@ -2822,6 +2924,7 @@ def cmd_flags_rollback(args: argparse.Namespace) -> int:
             snapshot_path=Path(args.snapshot).expanduser(),
             approval_path=Path(args.approval).expanduser(),
             receipt_path=Path(args.receipt).expanduser(),
+            human_selected=getattr(args, "human_selected", False),
         )
         mutations = {
             mutation.mutation_id: mutation
@@ -2867,6 +2970,9 @@ def cmd_flags_rollback(args: argparse.Namespace) -> int:
         "snapshot_sha256": bundle.snapshot_sha256,
         "policy_sha256": bundle.policy_sha256,
         "approval_sha256": bundle.approval_sha256,
+        "selection_source": bundle.selection_source,
+        "purpose": bundle.purpose,
+        "manual_canary": bundle.manual_canary,
         "rollback_bundle_sha256": bundle.content_hash,
         "status": result.status,
         "writes_performed": result.writes_performed,
@@ -3567,6 +3673,49 @@ Examples:
     )
     flags_queue_parser.set_defaults(func=cmd_flags_queue)
 
+    # flags human-canary-approve — artifact-only exact human authority.
+    # It is intentionally unable to inspect or mutate any provider.
+    flags_human_canary_parser = flags_subparsers.add_parser(
+        "human-canary-approve",
+        help="Create an exact private approval for 1..3 human-selected test flags",
+    )
+    flags_human_canary_parser.add_argument(
+        "--plan", required=True,
+        help="Path to the complete private immutable plan JSON",
+    )
+    flags_human_canary_parser.add_argument(
+        "--snapshot", required=True,
+        help="Path to the complete private snapshot matching --plan",
+    )
+    flags_human_canary_parser.add_argument(
+        "--nominate", action="append", required=True,
+        help=(
+            "Exact mutation_id:ref_digest:temporary_flag; repeat 1..3 "
+            "times only (for example ...:blue)"
+        ),
+    )
+    flags_human_canary_parser.add_argument(
+        "--operator", required=True,
+        help="Explicit approving operator identifier",
+    )
+    flags_human_canary_parser.add_argument(
+        "--ttl-seconds", type=_positive_int_arg, default=3600,
+        help="Approval validity window in seconds (default: 3600)",
+    )
+    flags_human_canary_parser.add_argument(
+        "--output", required=True,
+        help="Private output path for the exact approval artifact",
+    )
+    flags_human_canary_parser.add_argument(
+        "--canary", action="store_true",
+        help="Required acknowledgement of the bounded activation path",
+    )
+    flags_human_canary_parser.add_argument(
+        "--human-selected", action="store_true",
+        help="Required acknowledgement of explicit human nomination",
+    )
+    flags_human_canary_parser.set_defaults(func=cmd_flags_human_canary_approve)
+
     # flags apply
     flags_apply_parser = flags_subparsers.add_parser(
         "apply",
@@ -3589,6 +3738,11 @@ Examples:
         "--canary",
         action="store_true",
         help="Enable only the bounded first-activation canary path",
+    )
+    flags_apply_parser.add_argument(
+        "--human-selected",
+        action="store_true",
+        help="Required only for an exact human-nominated activation approval",
     )
     flags_apply_parser.add_argument(
         "--limit", "-l",
@@ -3637,6 +3791,11 @@ Examples:
         "--canary",
         action="store_true",
         help="Enable only the bounded canary rollback path",
+    )
+    flags_rollback_parser.add_argument(
+        "--human-selected",
+        action="store_true",
+        help="Required only for rollback of a human-nominated activation canary",
     )
     flags_rollback_parser.add_argument(
         "--dry-run",

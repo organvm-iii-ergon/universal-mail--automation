@@ -27,6 +27,10 @@ from core.flag_workflow import (
     FlagWorkflowError,
     OverrideStore,
     PlannedMutation,
+    PURPOSE_ACTIVATION_CANARY,
+    PURPOSE_MIGRATION,
+    SELECTION_SOURCE_AUTOMATIC,
+    SELECTION_SOURCE_HUMAN_CANARY,
     _atomic_write_private_json,
     _json_object_from_path,
     load_approval,
@@ -43,7 +47,7 @@ from providers.flag_codecs import mailapp_index_from_flag
 
 FIRST_ACTIVATION_CANARY_MIN = 1
 FIRST_ACTIVATION_CANARY_MAX = 3
-CANARY_ROLLBACK_BUNDLE_SCHEMA = "uma.flags.canary.rollback_bundle.v1"
+CANARY_ROLLBACK_BUNDLE_SCHEMA = "uma.flags.canary.rollback_bundle.v2"
 
 
 def _filesystem_fold(path: Path) -> str:
@@ -225,6 +229,9 @@ class CanaryRollbackBundle:
     snapshot_sha256: str
     policy_sha256: str
     approval_sha256: str
+    selection_source: str
+    purpose: str
+    manual_canary: bool
     created_at: str
     receipts: List[TransactionRollbackReceipt] = field(default_factory=list)
     content_hash: str = ""
@@ -237,6 +244,9 @@ class CanaryRollbackBundle:
             "snapshot_sha256": self.snapshot_sha256,
             "policy_sha256": self.policy_sha256,
             "approval_sha256": self.approval_sha256,
+            "selection_source": self.selection_source,
+            "purpose": self.purpose,
+            "manual_canary": self.manual_canary,
             "created_at": self.created_at,
             "receipts": [receipt.to_dict() for receipt in self.receipts],
         }
@@ -265,6 +275,23 @@ class CanaryRollbackBundle:
         require_hex256(self.snapshot_sha256, "bundle.snapshot_sha256")
         require_hex256(self.policy_sha256, "bundle.policy_sha256")
         require_hex256(self.approval_sha256, "bundle.approval_sha256")
+        if (
+            self.selection_source == SELECTION_SOURCE_AUTOMATIC
+            and self.purpose == PURPOSE_MIGRATION
+            and self.manual_canary is False
+        ):
+            pass
+        elif (
+            self.selection_source == SELECTION_SOURCE_HUMAN_CANARY
+            and self.purpose == PURPOSE_ACTIVATION_CANARY
+            and self.manual_canary is True
+        ):
+            pass
+        else:
+            raise FlagWorkflowError(
+                "rollback bundle authority must be automatic migration or "
+                "human activation canary"
+            )
         stored = require_hex256(self.content_hash, "bundle.content_hash")
         if not isinstance(self.created_at, str) or not self.created_at:
             raise FlagWorkflowError(
@@ -350,6 +377,7 @@ class CanaryRollbackBundle:
                 raise FlagWorkflowError(
                     f"{mutation.mutation_id}: rollback pre-state is unknown"
                 )
+            applied_flag = activation.approval.execution_flag_for(mutation)
             receipts.append(TransactionRollbackReceipt.create(
                 transaction_id=transaction_id_for(
                     activation.plan_hash,
@@ -363,9 +391,9 @@ class CanaryRollbackBundle:
                 pre_native_flag=native,
                 pre_semantic_flag=mutation.observed_flag.value,
                 applied_native_flag=mailapp_index_from_flag(
-                    mutation.proposed_flag
+                    applied_flag
                 ),
-                applied_semantic_flag=mutation.proposed_flag.value,
+                applied_semantic_flag=applied_flag.value,
                 created_at=activation.approval.issued_at,
             ))
         bundle = cls(
@@ -375,6 +403,9 @@ class CanaryRollbackBundle:
             snapshot_sha256=activation.plan["snapshot_sha256"],
             policy_sha256=activation.plan["policy_sha256"],
             approval_sha256=activation.approval.content_hash,
+            selection_source=activation.approval.selection_source,
+            purpose=activation.approval.purpose,
+            manual_canary=activation.approval.manual_canary,
             created_at=activation.approval.issued_at,
             receipts=receipts,
         )
@@ -390,7 +421,8 @@ class CanaryRollbackBundle:
             )
         required = {
             "schema", "canary_id", "plan_sha256", "snapshot_sha256",
-            "policy_sha256", "approval_sha256", "created_at", "receipts",
+            "policy_sha256", "approval_sha256", "selection_source",
+            "purpose", "manual_canary", "created_at", "receipts",
             "content_hash",
         }
         missing = required.difference(raw)
@@ -400,7 +432,7 @@ class CanaryRollbackBundle:
                 "rollback bundle fields mismatch: "
                 f"missing={sorted(missing)}, extra={sorted(extra)}"
             )
-        string_fields = required.difference({"receipts"})
+        string_fields = required.difference({"receipts", "manual_canary"})
         for field_name in string_fields:
             if not isinstance(raw[field_name], str):
                 raise FlagWorkflowError(
@@ -411,6 +443,10 @@ class CanaryRollbackBundle:
             raise FlagWorkflowError(
                 "rollback bundle receipts must be a list"
             )
+        if not isinstance(raw["manual_canary"], bool):
+            raise FlagWorkflowError(
+                "rollback bundle manual_canary must be a boolean"
+            )
         bundle = cls(
             schema=raw["schema"],
             canary_id=raw["canary_id"],
@@ -418,6 +454,9 @@ class CanaryRollbackBundle:
             snapshot_sha256=raw["snapshot_sha256"],
             policy_sha256=raw["policy_sha256"],
             approval_sha256=raw["approval_sha256"],
+            selection_source=raw["selection_source"],
+            purpose=raw["purpose"],
+            manual_canary=raw["manual_canary"],
             created_at=raw["created_at"],
             receipts=[
                 TransactionRollbackReceipt.from_dict(receipt)
@@ -432,12 +471,15 @@ class CanaryRollbackBundle:
 def load_canary_activation(
         *, plan_path: Path, snapshot_path: Path, approval_path: Path,
         cli_limit: int,
-        require_fresh_approval: bool = True) -> CanaryActivation:
+        require_fresh_approval: bool = True,
+        human_selected: bool = False) -> CanaryActivation:
     """Load and cross-validate every apply artifact before provider use."""
     if not isinstance(require_fresh_approval, bool):
         raise FlagWorkflowError(
             "require_fresh_approval must be a boolean"
         )
+    if not isinstance(human_selected, bool):
+        raise FlagWorkflowError("human_selected must be a boolean")
     if (
         isinstance(cli_limit, bool)
         or not isinstance(cli_limit, int)
@@ -458,6 +500,14 @@ def load_canary_activation(
         plan_mutations=mutations,
         require_current_window=require_fresh_approval,
     )
+    if approval.is_human_canary != human_selected:
+        if approval.is_human_canary:
+            raise FlagWorkflowError(
+                "human activation canary requires explicit --human-selected"
+            )
+        raise FlagWorkflowError(
+            "--human-selected requires a human activation canary approval"
+        )
     if not (
         FIRST_ACTIVATION_CANARY_MIN
         <= approval.canary_limit
@@ -506,7 +556,8 @@ def load_canary_activation(
 
 def load_canary_rollback(
         *, plan_path: Path, snapshot_path: Path,
-        approval_path: Path, receipt_path: Path
+        approval_path: Path, receipt_path: Path,
+        human_selected: bool = False,
         ) -> tuple[Dict[str, Any], FlagSnapshot, CanaryRollbackBundle]:
     """Load and cross-bind the exact approved activation before provider use."""
     activation = load_canary_activation(
@@ -515,6 +566,7 @@ def load_canary_rollback(
         approval_path=Path(approval_path),
         cli_limit=FIRST_ACTIVATION_CANARY_MAX,
         require_fresh_approval=False,
+        human_selected=human_selected,
     )
     plan = activation.plan
     snapshot = activation.snapshot
@@ -610,6 +662,9 @@ def redacted_canary_proposal(
         "plan_sha256": activation.plan_hash,
         "policy_sha256": activation.plan["policy_sha256"],
         "approval_sha256": activation.approval.content_hash,
+        "selection_source": activation.approval.selection_source,
+        "purpose": activation.approval.purpose,
+        "manual_canary": activation.approval.manual_canary,
         "rollback_bundle_sha256": bundle.content_hash,
         "messages": [
             {
@@ -617,7 +672,10 @@ def redacted_canary_proposal(
                 "mutation_id": mutation.mutation_id,
                 "message_ref_digest": mutation.ref_digest,
                 "current_flag": mutation.observed_flag.value,
-                "proposed_flag": mutation.proposed_flag.value,
+                "classifier_proposed_flag": mutation.proposed_flag.value,
+                "temporary_test_flag": (
+                    activation.approval.execution_flag_for(mutation).value
+                ),
                 "reason": mutation.reason,
                 "reason_code": mutation.reason_code,
                 "confidence": mutation.confidence,
