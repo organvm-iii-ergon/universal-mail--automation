@@ -1,4 +1,0 @@
-[console_scripts]
-mail-send = mail_send:main
-umail = cli:main
-umail-mcp = mcp_server.server:main

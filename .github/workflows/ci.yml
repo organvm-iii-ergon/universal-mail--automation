@@ -72,6 +72,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Verify repository hygiene
+        run: python scripts/check_repository_hygiene.py
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -80,7 +83,7 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install build tooling
-        run: python -m pip install --upgrade pip build twine wheel "setuptools>=68"
+        run: python -m pip install --upgrade pip build twine wheel "setuptools>=77"
 
       - name: Build distributions
         run: python -m build --no-isolation

@@ -1,0 +1,3698 @@
+{
+  "schema": "uma.repository-ref-reconciliation.v1",
+  "generated_at": "2026-08-27T11:31:52-04:00",
+  "repository": "organvm/universal-mail--automation",
+  "default_head": "6d88f2bdacc95d9cd8c459fa2dbe40f146e131b3",
+  "policy": {
+    "retain": [
+      "main",
+      "heads of open pull requests"
+    ],
+    "reap": [
+      "automated capture refs",
+      "heads owned by merged or closed pull requests",
+      "proven patch-equivalent or backup refs"
+    ],
+    "note": "A deletion candidate is emitted only when its disposition begins with reap_."
+  },
+  "capture_archives": {
+    "00aa4f9a0fe1": {
+      "source_ref_count": 33,
+      "representative_sha": "c3e47625164b0eaf6dba2881032a62d89246db90",
+      "tag": "archive/uma-capture-snapshot-a-20260702"
+    },
+    "3eaa17f14957": {
+      "source_ref_count": 199,
+      "representative_sha": "418dc90339eb9c85dbf168aa365a687fa1ad6fcb",
+      "tag": "archive/uma-capture-snapshot-b-20260718"
+    },
+    "67b99271a8b2": {
+      "source_ref_count": 1,
+      "representative_sha": "7306a0b9655d16dcba0730e7e71716dd44b3e980",
+      "tag": "archive/uma-capture-main-deferred-20260721"
+    }
+  },
+  "counts": {
+    "reap_repeated_capture": 233,
+    "reap_terminal_pr": 65,
+    "retain_open_pr": 3,
+    "reap_ancestor_of_main": 1,
+    "reap_closed_pr_backup": 1,
+    "reap_capture_backup": 1
+  },
+  "deletion_candidate_count": 301,
+  "entries": [
+    {
+      "ref": "capture/main-2026-07-02T00-25-52Z",
+      "sha": "7d49cd3231101955edbbdbd5700d97fd291cdd3f",
+      "committed_at": "2026-07-01T20:27:30-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T00:25:52Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T00-45-03Z",
+      "sha": "c4b4bf676cfbeeeb4d8095e3cf671a25f9095766",
+      "committed_at": "2026-07-01T20:45:57-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T00:45:03Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T01-03-35Z",
+      "sha": "c0ccf03ab5bf53db5475c1f44298646ca932d537",
+      "committed_at": "2026-07-01T21:04:28-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T01:03:35Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T01-17-58Z",
+      "sha": "19a3199a1a2b116d1b2f7b225e1bf74e0918445e",
+      "committed_at": "2026-07-01T21:18:40-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T01:17:58Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T01-32-00Z",
+      "sha": "638eb0bc71540db5c4a0e571ae907d58a86ac406",
+      "committed_at": "2026-07-01T21:32:42-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T01:32:00Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T01-52-21Z",
+      "sha": "7ddef5bd2d70803b432b370129e14ed10610d1a1",
+      "committed_at": "2026-07-01T21:53:00-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T01:52:21Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T02-05-20Z",
+      "sha": "11b8b71478663037e3a563770cfb49e27b654a1e",
+      "committed_at": "2026-07-01T22:06:06-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T02:05:20Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T02-19-27Z",
+      "sha": "431a604d8de1ab2362bf56d7daa47de704b08d84",
+      "committed_at": "2026-07-01T22:19:52-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T02:19:27Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T02-50-20Z",
+      "sha": "b3be3f498bad8c798f35b3cfe1d0517029277612",
+      "committed_at": "2026-07-01T22:51:13-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T02:50:20Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T03-05-01Z",
+      "sha": "5198f9559628ed3d67f1d54fbf3802bdd1a18427",
+      "committed_at": "2026-07-01T23:05:40-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T03:05:01Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T03-18-34Z",
+      "sha": "1254d9912a0c6750d4e65f8322f3cf5d0d381f64",
+      "committed_at": "2026-07-01T23:19:15-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T03:18:34Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T03-41-21Z",
+      "sha": "16fb3549d8713fab0c773da513244d1c152597f2",
+      "committed_at": "2026-07-01T23:42:12-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T03:41:21Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T04-01-50Z",
+      "sha": "5766767e22934c11a9bcd96957c18377a44287d7",
+      "committed_at": "2026-07-02T00:02:33-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T04:01:50Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T04-15-17Z",
+      "sha": "bd702df99b825da003f264a40110b45c0f03a984",
+      "committed_at": "2026-07-02T00:15:59-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T04:15:17Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T04-34-34Z",
+      "sha": "7cf0706385450fa2b89056a8c673df9ea123c0c7",
+      "committed_at": "2026-07-02T00:35:19-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T04:34:34Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T04-45-59Z",
+      "sha": "1209d6d03adccf1b7829f49c4d58609bfcbb3f66",
+      "committed_at": "2026-07-02T00:46:42-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T04:45:59Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T05-05-06Z",
+      "sha": "2957068685ee4a3cc6575137ea98ea2b55aabc68",
+      "committed_at": "2026-07-02T01:05:48-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T05:05:06Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T05-23-45Z",
+      "sha": "c08971f0ba92537285d59c6ff67936c759d7b078",
+      "committed_at": "2026-07-02T01:24:28-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T05:23:45Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T05-33-55Z",
+      "sha": "94eee5d9e9334d3d46acf481ef4f08cc329738b1",
+      "committed_at": "2026-07-02T01:34:36-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T05:33:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T05-45-04Z",
+      "sha": "6a8741208bfc57e80b8224f507b886f95ca7d3b5",
+      "committed_at": "2026-07-02T01:45:45-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T05:45:04Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T06-04-34Z",
+      "sha": "2b06223c1e3510c7ad5e0fa482ff7b0d8ffb68c2",
+      "committed_at": "2026-07-02T02:05:14-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T06:04:34Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T06-15-36Z",
+      "sha": "417f2f3b61fc3c86766b808adbaf9ca9dc446a24",
+      "committed_at": "2026-07-02T02:16:17-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T06:15:36Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T06-24-31Z",
+      "sha": "d4eab108233f9e22a4c1b60c9c458c91714b401c",
+      "committed_at": "2026-07-02T02:25:13-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T06:24:31Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T06-44-25Z",
+      "sha": "906d2b3017c49863c32369640e12ca427207978f",
+      "committed_at": "2026-07-02T02:45:09-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T06:44:25Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T07-04-49Z",
+      "sha": "dd30fa558befdf486ba5c1cc79d775b3d71cb0a0",
+      "committed_at": "2026-07-02T03:05:32-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T07:04:49Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T07-15-21Z",
+      "sha": "4a59129a5a59f8e1521bc61b665ef8a09531415d",
+      "committed_at": "2026-07-02T03:15:54-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T07:15:21Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T07-31-49Z",
+      "sha": "3787580ca234fd7a08efe4759bd5889d6b345716",
+      "committed_at": "2026-07-02T03:32:35-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T07:31:49Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T07-42-55Z",
+      "sha": "d35793390430717045a5bd70e8ddaf73f526a504",
+      "committed_at": "2026-07-02T03:43:39-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T07:42:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T08-01-57Z",
+      "sha": "81b2d07f7e1817fdf76acffad278f7f0d02411b7",
+      "committed_at": "2026-07-02T04:02:23-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T08:01:57Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T08-21-09Z",
+      "sha": "29eb062fab0a8154304a069d75f77c5833d7e5d0",
+      "committed_at": "2026-07-02T04:21:47-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T08:21:09Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T08-30-52Z",
+      "sha": "2df8358c7201685293805e87bbb47107bcefb73f",
+      "committed_at": "2026-07-02T04:31:37-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T08:30:52Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T08-41-18Z",
+      "sha": "77622290c14abfea53cdfd87f84921e120f3543f",
+      "committed_at": "2026-07-02T04:41:55-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T08:41:18Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T09-07-04Z",
+      "sha": "c3e47625164b0eaf6dba2881032a62d89246db90",
+      "committed_at": "2026-07-02T05:07:51-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T09:07:04Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "00aa4f9a0fe1",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 00aa4f9a0fe1"
+    },
+    {
+      "ref": "capture/main-2026-07-02T09-18-33Z",
+      "sha": "287ee99e76d2827c3f2d347b25e97619ebf1f463",
+      "committed_at": "2026-07-02T05:19:16-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T09:18:33Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T09-26-52Z",
+      "sha": "5eb1f149d6dcf4e885d14908f838564241933c78",
+      "committed_at": "2026-07-02T05:27:37-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T09:26:52Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T09-44-23Z",
+      "sha": "081894d660dca14a826177937acbcd55dc02d280",
+      "committed_at": "2026-07-02T05:44:52-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T09:44:23Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T09-55-00Z",
+      "sha": "6d8ee9cc34ef7291bbc2e00168c1204728ec0b9d",
+      "committed_at": "2026-07-02T05:55:30-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T09:55:00Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T10-04-07Z",
+      "sha": "80603df5dffdd18e6dbd55e1110ab0dbf15eddca",
+      "committed_at": "2026-07-02T06:04:40-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T10:04:07Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T10-18-18Z",
+      "sha": "f46a11ba8aa765434d3b56832e19e9fcfc2613d2",
+      "committed_at": "2026-07-02T06:18:56-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T10:18:18Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T10-28-27Z",
+      "sha": "a0fac22fad5e7d0776c7e99559dbf8a0b705f406",
+      "committed_at": "2026-07-02T06:29:10-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T10:28:27Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T10-44-32Z",
+      "sha": "b6cfaf7dfda5cc4249ff92b443c79ca3d80c00d6",
+      "committed_at": "2026-07-02T06:45:21-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T10:44:32Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T11-01-57Z",
+      "sha": "91f5b255b8336a9bc38bcf0d65da5f583b3dcd16",
+      "committed_at": "2026-07-02T07:02:28-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T11:01:57Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T11-11-15Z",
+      "sha": "97ea868632db42073b483c217fd031f0d1a733e8",
+      "committed_at": "2026-07-02T07:11:48-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T11:11:15Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T11-21-01Z",
+      "sha": "6671c4b21671cef8e0076316c8e8b488f06fc38a",
+      "committed_at": "2026-07-02T07:22:00-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T11:21:01Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T11-38-51Z",
+      "sha": "29407eb644a8ab05757a1a6a543219561328b29d",
+      "committed_at": "2026-07-02T07:39:32-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T11:38:51Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T11-48-58Z",
+      "sha": "13c1d77d535026b90180c17acdf8c2a6557c8199",
+      "committed_at": "2026-07-02T07:49:35-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T11:48:58Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T11-56-52Z",
+      "sha": "1a7c624442ccac806d465b1346e28b1fecc95a0f",
+      "committed_at": "2026-07-02T07:57:36-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T11:56:52Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T12-16-01Z",
+      "sha": "d12bf1290e46b621cb3896b710b14f1219814b33",
+      "committed_at": "2026-07-02T08:16:50-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T12:16:01Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T12-26-18Z",
+      "sha": "9e34b792b14ba33af737eba4db16275a1d123050",
+      "committed_at": "2026-07-02T08:26:56-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T12:26:18Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T12-51-05Z",
+      "sha": "6a16f890a9fafab368aaaa7d6818d06c2f56c1d0",
+      "committed_at": "2026-07-02T08:52:05-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T12:51:05Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T13-02-10Z",
+      "sha": "f34d82de08372048a8d6a0adc83198f739b64ace",
+      "committed_at": "2026-07-02T09:02:58-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T13:02:10Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T13-17-38Z",
+      "sha": "ee222af63ac3549a658e594c5512a381cc35afdc",
+      "committed_at": "2026-07-02T09:18:07-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T13:17:38Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T13-28-01Z",
+      "sha": "eb51633c4941e6698fe57ac77836a2d62c595ab3",
+      "committed_at": "2026-07-02T09:28:32-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T13:28:01Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T13-41-41Z",
+      "sha": "07accf92fc9503dd0d7695f3bd18742bf3c035ea",
+      "committed_at": "2026-07-02T09:42:32-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T13:41:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T14-02-47Z",
+      "sha": "bcfdcab6e1f12d67fd6f1515aa3b603e65cbc195",
+      "committed_at": "2026-07-02T10:03:32-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T14:02:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T14-13-01Z",
+      "sha": "cc25d60a0ad88929d0768a0ddac85e3e8f3a0ed7",
+      "committed_at": "2026-07-02T10:13:52-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T14:13:01Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T14-24-33Z",
+      "sha": "aa7c17778f9a574970401fd044cae5b3ca8404a7",
+      "committed_at": "2026-07-02T10:25:07-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T14:24:33Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T14-46-07Z",
+      "sha": "c6452e3aff902255bb4e39101ca4051d3087ae61",
+      "committed_at": "2026-07-02T10:46:47-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T14:46:07Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T14-58-15Z",
+      "sha": "abe36cd7a2a3486af69ef9a643bf69c9284e8a12",
+      "committed_at": "2026-07-02T10:59:01-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T14:58:15Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T15-06-24Z",
+      "sha": "f22faf04eae02550abc3663ff2d32f67fa8c9bc3",
+      "committed_at": "2026-07-02T11:07:00-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T15:06:24Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T15-24-36Z",
+      "sha": "1f6390284ede13437f6498b6866f19eeaee177e6",
+      "committed_at": "2026-07-02T11:25:19-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T15:24:36Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T15-37-33Z",
+      "sha": "f7bc9ac00e505b35bdcc9e810f46b4fbc31f9d49",
+      "committed_at": "2026-07-02T11:38:17-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T15:37:33Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T15-48-20Z",
+      "sha": "5aadb2f3dcc1a78f1b5992a06fede3ca5f64656c",
+      "committed_at": "2026-07-02T11:48:57-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T15:48:20Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T16-03-36Z",
+      "sha": "1265af438bbd7511e2181174e7ef230463182c46",
+      "committed_at": "2026-07-02T12:04:11-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T16:03:36Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T16-15-51Z",
+      "sha": "5e4eab9068850c5af8f1c375257c127eddbbde38",
+      "committed_at": "2026-07-02T12:16:33-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T16:15:51Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T16-37-00Z",
+      "sha": "1ab438c70bee71944600848a37bd08cd88f609ba",
+      "committed_at": "2026-07-02T12:37:31-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T16:37:00Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T16-55-55Z",
+      "sha": "cfecb3f5ff066353ddfd5d458cf8513c891ec3cf",
+      "committed_at": "2026-07-02T12:56:44-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T16:55:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T17-08-18Z",
+      "sha": "2cecdb06c87121277986db5b719fb6357fc8073e",
+      "committed_at": "2026-07-02T13:09:03-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T17:08:18Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T17-20-10Z",
+      "sha": "2ee227ed6da287f15d7fe701f0196714576b4bc7",
+      "committed_at": "2026-07-02T13:20:56-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T17:20:10Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T17-39-34Z",
+      "sha": "81ed796d608e35e927ce991c154a4e86d13e2a15",
+      "committed_at": "2026-07-02T13:40:26-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T17:39:34Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T17-53-31Z",
+      "sha": "4aeedc2bb4f3d60ea8eafdd2c611f8ca7517c171",
+      "committed_at": "2026-07-02T13:54:14-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T17:53:31Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T18-03-08Z",
+      "sha": "09009f4dd09e67f3a5912cd7cb9d23c51a8c3c8f",
+      "committed_at": "2026-07-02T14:03:50-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T18:03:08Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T18-24-47Z",
+      "sha": "eb7f03f2fc4c476dcb510e850884f5da94dcf5b4",
+      "committed_at": "2026-07-02T14:25:25-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T18:24:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T18-41-47Z",
+      "sha": "8b5b9fd8c747e19434a467b06b9ec9dcdb227c8a",
+      "committed_at": "2026-07-02T14:43:02-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T18:41:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T18-53-24Z",
+      "sha": "f765beeae1bfc5fb6bb49147e54d449ef0038e14",
+      "committed_at": "2026-07-02T14:53:59-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T18:53:24Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T19-08-41Z",
+      "sha": "fe880d295596010e9ea2f15b4b1bf57554b80717",
+      "committed_at": "2026-07-02T15:09:17-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T19:08:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T19-23-51Z",
+      "sha": "96f750d5813a23735fc3189c91a7dec9b4aa50e1",
+      "committed_at": "2026-07-02T15:24:24-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T19:23:51Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T19-35-55Z",
+      "sha": "ece40d54cd409c90e246c678ef099c55a8b26fb6",
+      "committed_at": "2026-07-02T15:36:38-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T19:35:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T19-55-41Z",
+      "sha": "768f37c83486e6c3908943c24be4127a1bac7d44",
+      "committed_at": "2026-07-02T15:56:28-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T19:55:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T20-07-13Z",
+      "sha": "c79f0b0b75afbce7252975547026d3724630dd5b",
+      "committed_at": "2026-07-02T16:08:00-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T20:07:13Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T20-18-40Z",
+      "sha": "95fd5b6339cc77c585abf58609cf1e32f006576d",
+      "committed_at": "2026-07-02T16:19:24-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T20:18:40Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T20-46-36Z",
+      "sha": "04a5abaefb6d36c365a6366989d1be07b7f358f8",
+      "committed_at": "2026-07-02T16:47:21-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T20:46:36Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T20-58-04Z",
+      "sha": "a265ec094c58dfcf25bb53110f82248308785c16",
+      "committed_at": "2026-07-02T16:58:49-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T20:58:04Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T21-08-01Z",
+      "sha": "2fffe02f1f96e94d24c352fb9f4563306bb5b062",
+      "committed_at": "2026-07-02T17:08:38-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T21:08:01Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T21-28-24Z",
+      "sha": "2626032403dd1da9ff395c87723784c38e01f571",
+      "committed_at": "2026-07-02T17:28:58-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T21:28:24Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T21-45-09Z",
+      "sha": "3f33274e0624f291db5587fd6cd0636be4f19f93",
+      "committed_at": "2026-07-02T17:45:45-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T21:45:09Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T21-55-35Z",
+      "sha": "5a9aa9e2ceee85f068047df7118fb6a6ed4d6e3b",
+      "committed_at": "2026-07-02T17:56:50-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T21:55:35Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T22-11-03Z",
+      "sha": "14c6c9a9a94304d5b24670f42a88038620f8f663",
+      "committed_at": "2026-07-02T18:11:39-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T22:11:03Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T22-22-08Z",
+      "sha": "50b68b37545a0c2f29d1958dabb602198e0611c8",
+      "committed_at": "2026-07-02T18:22:37-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T22:22:08Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T22-40-20Z",
+      "sha": "d75b3b1dcded95c1d13d6622bebfba553d4aee3d",
+      "committed_at": "2026-07-02T18:41:11-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T22:40:20Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T23-00-48Z",
+      "sha": "ad1c532b6b03d3e61707d922901656830f514685",
+      "committed_at": "2026-07-02T19:01:30-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T23:00:48Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T23-10-29Z",
+      "sha": "b6beaa1d8cecb3b031926e6bad0cf62dcb4e3972",
+      "committed_at": "2026-07-02T19:11:14-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T23:10:29Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T23-21-41Z",
+      "sha": "d5196137b1b211c2834c1f7a96fead83ee1bfd9d",
+      "committed_at": "2026-07-02T19:22:19-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T23:21:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T23-40-47Z",
+      "sha": "a4d51e89acb6016f1a7d342628b1bcce7dcce08f",
+      "committed_at": "2026-07-02T19:41:29-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T23:40:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-02T23-52-10Z",
+      "sha": "d81b0f8b7f6acc45e5e051bd7001f3d3cd6d8667",
+      "committed_at": "2026-07-02T19:52:54-04:00",
+      "subject": "capture: off-disk sync 2026-07-02T23:52:10Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T00-01-27Z",
+      "sha": "9fc65488c3495fddef3c0ec2fbd978456d984636",
+      "committed_at": "2026-07-02T20:02:07-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T00:01:27Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T00-20-59Z",
+      "sha": "9921c3573bab9d75a93ce6ae23df3f7de3cf31a4",
+      "committed_at": "2026-07-02T20:21:41-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T00:20:59Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T00-38-03Z",
+      "sha": "eceae3da1c644b4df5b3bfabc6c978aed24a12b6",
+      "committed_at": "2026-07-02T20:38:47-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T00:38:03Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T01-03-42Z",
+      "sha": "16f3fc5405588599513f95ad78a190717b1a1e5c",
+      "committed_at": "2026-07-02T21:04:24-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T01:03:42Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T01-15-55Z",
+      "sha": "0264821dfeac41c56d04f6bfbf08cf8138be8069",
+      "committed_at": "2026-07-02T21:16:35-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T01:15:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T01-32-59Z",
+      "sha": "1c24ab647e3cdea75c9665c97e3c0b142e6982b1",
+      "committed_at": "2026-07-02T21:33:29-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T01:32:59Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T01-44-19Z",
+      "sha": "bb6930299b37e6b7118b212d1e881f4d8bca3f84",
+      "committed_at": "2026-07-02T21:45:03-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T01:44:19Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T01-56-41Z",
+      "sha": "16911d6304955a9bed43a3cf08113405a3005f28",
+      "committed_at": "2026-07-02T21:57:22-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T01:56:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T02-15-58Z",
+      "sha": "23db07a099400c0bc52151a87b9ce61b79132f83",
+      "committed_at": "2026-07-02T22:16:43-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T02:15:58Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T02-26-23Z",
+      "sha": "4049710b3c09c6ed97c6b90aff8f5a5bdd092474",
+      "committed_at": "2026-07-02T22:27:06-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T02:26:23Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T02-38-21Z",
+      "sha": "dd093fc442f518f20068430280b7b16de60e3456",
+      "committed_at": "2026-07-02T22:39:05-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T02:38:21Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T03-05-28Z",
+      "sha": "eec83a78818dbdb1c1520384cc63b432d8306e66",
+      "committed_at": "2026-07-02T23:06:09-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T03:05:28Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T03-16-53Z",
+      "sha": "1ffb5bf1107ee72e761008b90bf9acb990cebe7e",
+      "committed_at": "2026-07-02T23:17:34-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T03:16:53Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T03-26-09Z",
+      "sha": "95f1c9e5d1e0fe6ca1e015d968b2a77b52d5bc82",
+      "committed_at": "2026-07-02T23:26:45-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T03:26:09Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T03-45-39Z",
+      "sha": "5fd5f65df0415d42a9f01dd8cc45ccdd26e63148",
+      "committed_at": "2026-07-02T23:46:21-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T03:45:39Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T03-59-21Z",
+      "sha": "86c783321745c78ae3472cc200b8745e4800c548",
+      "committed_at": "2026-07-03T00:00:05-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T03:59:21Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T04-10-46Z",
+      "sha": "9ae466a6469cc768f080a36cfebe161d4dd4a543",
+      "committed_at": "2026-07-03T00:11:27-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T04:10:46Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T04-27-47Z",
+      "sha": "f5b94ddc78130b96417fea4b884c44813327f76e",
+      "committed_at": "2026-07-03T00:28:33-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T04:27:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T04-39-06Z",
+      "sha": "687bc7ae8c557a6c80cad801e46d7b2efdaa5fc7",
+      "committed_at": "2026-07-03T00:39:50-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T04:39:06Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T04-56-07Z",
+      "sha": "ba4010ef7a6780405cd25499f883bb5812f5db3a",
+      "committed_at": "2026-07-03T00:56:53-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T04:56:07Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T05-15-32Z",
+      "sha": "1c696664838d3115b1f9788a8594d6b065c3d0b1",
+      "committed_at": "2026-07-03T01:16:15-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T05:15:32Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T05-25-15Z",
+      "sha": "d0f2cc7367c55e2c645eb73c24a24b721854d99a",
+      "committed_at": "2026-07-03T01:25:45-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T05:25:15Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T05-35-41Z",
+      "sha": "78df4ecbddd4d39c4821d7b8435917956e07101c",
+      "committed_at": "2026-07-03T01:36:20-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T05:35:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T05-57-31Z",
+      "sha": "186ca2748571e2ed67541fed0f08896fc59b33aa",
+      "committed_at": "2026-07-03T01:58:14-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T05:57:31Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T06-10-28Z",
+      "sha": "0f9688860a932df117643525d89a2aa153dbe43a",
+      "committed_at": "2026-07-03T02:11:13-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T06:10:28Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T06-19-47Z",
+      "sha": "81c860e3d178d70da7d4077f371273a69e401ef2",
+      "committed_at": "2026-07-03T02:20:28-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T06:19:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T06-39-08Z",
+      "sha": "744a90eeb1a33355508c03a5be3c3030e8063c04",
+      "committed_at": "2026-07-03T02:39:51-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T06:39:08Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T07-00-04Z",
+      "sha": "1b0c22e4d74fefe7b180c519b61822bc6c79d38c",
+      "committed_at": "2026-07-03T03:00:50-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T07:00:04Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T07-11-43Z",
+      "sha": "a89d526fd3d31000336021fb8ef7a6694f24dede",
+      "committed_at": "2026-07-03T03:12:17-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T07:11:43Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T07-27-43Z",
+      "sha": "be1bc88d1ac408a0bb17a8247a4df95c10cae04a",
+      "committed_at": "2026-07-03T03:28:27-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T07:27:43Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T07-38-55Z",
+      "sha": "b49377ad61b5daed92c4bd0e4ab279e149bf1cb0",
+      "committed_at": "2026-07-03T03:39:37-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T07:38:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T07-49-55Z",
+      "sha": "2bc88d26830820f32bed7c30352e6dba5d1643f2",
+      "committed_at": "2026-07-03T03:50:40-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T07:49:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T08-06-01Z",
+      "sha": "61993583d79ecd9ff60ec599ce87984ce5761eab",
+      "committed_at": "2026-07-03T04:06:45-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T08:06:01Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T08-15-55Z",
+      "sha": "f11aff372b0323acaedd5879862fd867a26ad85b",
+      "committed_at": "2026-07-03T04:16:37-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T08:15:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T08-27-00Z",
+      "sha": "9e6f0cf67fadad6a508780a440fd9738d6a229a8",
+      "committed_at": "2026-07-03T04:27:39-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T08:27:00Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T08-31-58Z",
+      "sha": "3203c64aee421c84f1b21a919e6774556d2cf87a",
+      "committed_at": "2026-07-03T04:32:44-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T08:31:58Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T08-41-32Z",
+      "sha": "1ef38860ec766a824f6ef0c0601cf729f0f8d959",
+      "committed_at": "2026-07-03T04:42:13-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T08:41:32Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T08-56-03Z",
+      "sha": "45be08b118f34f9e04943b38f938e9cf1169cc16",
+      "committed_at": "2026-07-03T04:56:49-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T08:56:03Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T09-05-47Z",
+      "sha": "f1d8b8d4318d009312e2dbe5ba6ef3f2b711191e",
+      "committed_at": "2026-07-03T05:06:28-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T09:05:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T09-17-13Z",
+      "sha": "911172ce756bdf6cb3ada88d2ab9d1ce7d6e62ee",
+      "committed_at": "2026-07-03T05:17:50-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T09:17:13Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T09-31-56Z",
+      "sha": "26ae246cd5a006a5597c4581891ff7a9f9bbc9fa",
+      "committed_at": "2026-07-03T05:32:41-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T09:31:56Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T09-41-43Z",
+      "sha": "f1fb9bf7da00fe2347a35f17b49bb3bc19ef4f6f",
+      "committed_at": "2026-07-03T05:42:30-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T09:41:43Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T09-52-15Z",
+      "sha": "9cbc99653b831239712eb5094fdb2f00bfe2212f",
+      "committed_at": "2026-07-03T05:53:04-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T09:52:15Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T10-18-41Z",
+      "sha": "f18ef22c070d038ac80d9270e61ad6b7b9720ff7",
+      "committed_at": "2026-07-03T06:19:19-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T10:18:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T10-28-31Z",
+      "sha": "00010b834b70ea27aa122113e2a6a1e0b48bf90b",
+      "committed_at": "2026-07-03T06:29:11-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T10:28:31Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T10-37-27Z",
+      "sha": "79daf5db273d7d458493baddfbdcecb0119944c1",
+      "committed_at": "2026-07-03T06:38:10-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T10:37:27Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T10-53-37Z",
+      "sha": "b07ee020b5581a7ad8aadab242d3c7481e32fb7e",
+      "committed_at": "2026-07-03T06:54:20-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T10:53:37Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T11-05-20Z",
+      "sha": "38987613553ba63c12c783cef6820671e782e1a1",
+      "committed_at": "2026-07-03T07:06:02-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T11:05:20Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T11-15-01Z",
+      "sha": "f794713c479e4e85410de5a421877d7553a80c6e",
+      "committed_at": "2026-07-03T07:15:45-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T11:15:01Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T11-29-03Z",
+      "sha": "948c4cb47efc113ae40b63acb067cb5c59d097bd",
+      "committed_at": "2026-07-03T07:29:43-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T11:29:03Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T11-39-48Z",
+      "sha": "4419830fe9a7d8cb1a87dfb5ee2f4fd19759680b",
+      "committed_at": "2026-07-03T07:40:25-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T11:39:48Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T11-57-49Z",
+      "sha": "cdab2fa19a463ccd20b892c22276eb5df3eb5d90",
+      "committed_at": "2026-07-03T07:58:32-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T11:57:49Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T12-13-47Z",
+      "sha": "547cef57fd82995e05ad6b6381317850b5a29460",
+      "committed_at": "2026-07-03T08:14:25-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T12:13:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T12-23-21Z",
+      "sha": "07c62f2db7d47a0b197f855c9fff135a7e8dfcde",
+      "committed_at": "2026-07-03T08:23:47-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T12:23:21Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T12-32-38Z",
+      "sha": "da5d7cf10e887554eb0c23de96f2fe1d0190477d",
+      "committed_at": "2026-07-03T08:33:22-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T12:32:38Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T12-55-12Z",
+      "sha": "2f9aa434266e290c19d8db9b268a884ace2cc0ab",
+      "committed_at": "2026-07-03T08:55:53-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T12:55:12Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T13-05-40Z",
+      "sha": "271ae7b5cc0ab58ced0e5d461c17b62b596000f3",
+      "committed_at": "2026-07-03T09:06:20-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T13:05:40Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T13-15-22Z",
+      "sha": "261f83a1bcf778d41fc62266dff99ffd666c58f1",
+      "committed_at": "2026-07-03T09:16:05-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T13:15:22Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T13-33-15Z",
+      "sha": "b1eb50e6ad7523452f725f9f7f3a3b3f92e92a75",
+      "committed_at": "2026-07-03T09:33:57-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T13:33:15Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T13-52-23Z",
+      "sha": "1bc4e4f4645d47197b62c5053b6fb2961cea0191",
+      "committed_at": "2026-07-03T09:53:01-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T13:52:23Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T14-01-59Z",
+      "sha": "0d2e6300eb52632bbfb7d615af0964918bf6b8ff",
+      "committed_at": "2026-07-03T10:03:01-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T14:01:59Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T14-16-58Z",
+      "sha": "d47c79d7511dc24a17f2f7e350ec298244746df3",
+      "committed_at": "2026-07-03T10:17:31-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T14:16:58Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T14-27-11Z",
+      "sha": "c7b5f9fd285d2709554fac447e0c6ede5be63720",
+      "committed_at": "2026-07-03T10:27:54-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T14:27:11Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T14-37-33Z",
+      "sha": "7875facde502b0fdd4ba76305d1b5a28eeacc668",
+      "committed_at": "2026-07-03T10:38:02-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T14:37:33Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T14-46-40Z",
+      "sha": "3ec7ac0e932ff205c4d9e20bbb71c5b2411a4399",
+      "committed_at": "2026-07-03T10:47:22-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T14:46:40Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T15-01-05Z",
+      "sha": "49874001f2a21ae8d2483a2fa93652a89d898b95",
+      "committed_at": "2026-07-03T11:02:08-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T15:01:05Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T15-12-13Z",
+      "sha": "f9ee39b715519bb8bed38d5cf32ad5276bf8023b",
+      "committed_at": "2026-07-03T11:13:11-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T15:12:13Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T15-22-28Z",
+      "sha": "84f01b893846099f96e08a6e62b2549ca9d2ab41",
+      "committed_at": "2026-07-03T11:23:01-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T15:22:28Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T15-33-11Z",
+      "sha": "4ac188fb702b8ba7fd59c5a229bf1587c5adf729",
+      "committed_at": "2026-07-03T11:33:48-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T15:33:11Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T15-42-08Z",
+      "sha": "85d777907385b5b78ac8c2dd720c7665c381969b",
+      "committed_at": "2026-07-03T11:42:44-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T15:42:08Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T15-54-55Z",
+      "sha": "6d671a94b18caddc328f8eb8e9fce70aaff488e1",
+      "committed_at": "2026-07-03T11:55:31-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T15:54:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T16-01-19Z",
+      "sha": "66fa01446fc50400ffe074e5f6601383a820b00f",
+      "committed_at": "2026-07-03T12:01:55-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T16:01:19Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T16-10-45Z",
+      "sha": "38005a7c2420b15f031c4164ed4ad5cd1f940909",
+      "committed_at": "2026-07-03T12:11:22-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T16:10:45Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T16-23-49Z",
+      "sha": "e0c60df53a2881db32184c8a6a0e790d6c224be2",
+      "committed_at": "2026-07-03T12:24:30-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T16:23:49Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T16-35-01Z",
+      "sha": "a0b283ee042fda8d99e36917ae2ce9cd0f3bfea0",
+      "committed_at": "2026-07-03T12:35:41-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T16:35:01Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T16-53-14Z",
+      "sha": "20ecbcb8aa58737b5fc4426698bc5652ba6dfa35",
+      "committed_at": "2026-07-03T12:53:54-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T16:53:14Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T17-02-55Z",
+      "sha": "6158fe4b24425b4c894bbe8527a57e108a202127",
+      "committed_at": "2026-07-03T13:03:37-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T17:02:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T17-19-11Z",
+      "sha": "a3c6056e2a343c31035d5b9ad797e98bfd91f87c",
+      "committed_at": "2026-07-03T13:19:51-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T17:19:11Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T17-30-05Z",
+      "sha": "dc548d9469f8c7e884dbeff428ba800bb34fef99",
+      "committed_at": "2026-07-03T13:30:44-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T17:30:05Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T18-23-54Z",
+      "sha": "7498ec1ffb54ebfd28b92486206527da41bd6bb1",
+      "committed_at": "2026-07-03T14:24:26-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T18:23:54Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T19-31-35Z",
+      "sha": "e7fc768f1bbc27fef1e70c4be07f2f44ec2c54ff",
+      "committed_at": "2026-07-03T15:32:17-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T19:31:35Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T20-50-44Z",
+      "sha": "092098931b298a76e5f81c85cd08acca0651caeb",
+      "committed_at": "2026-07-03T16:51:27-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T20:50:44Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T22-12-59Z",
+      "sha": "a08a3403452ea719fd48146bd4251274a351ec12",
+      "committed_at": "2026-07-03T18:13:30-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T22:12:59Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-03T23-12-41Z",
+      "sha": "6fe5e43bce01d387a032601d84677dddcb6095e5",
+      "committed_at": "2026-07-03T19:13:17-04:00",
+      "subject": "capture: off-disk sync 2026-07-03T23:12:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T00-19-31Z",
+      "sha": "e92f3b9da245fa1606653d4344a6368f55180a60",
+      "committed_at": "2026-07-03T20:20:09-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T00:19:31Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T01-29-28Z",
+      "sha": "7250287bfc467d99ea2a0a73b1be2c482fdb242c",
+      "committed_at": "2026-07-03T21:30:09-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T01:29:28Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T01-42-05Z",
+      "sha": "bf49e0a4e0bad74eb4a5755fdfcd8c125cbcd248",
+      "committed_at": "2026-07-03T21:42:41-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T01:42:05Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T03-08-47Z",
+      "sha": "8eb08a1a7a08b5b0530eca03d21a48407ae0b0ab",
+      "committed_at": "2026-07-03T23:10:04-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T03:08:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T04-27-23Z",
+      "sha": "cee409aafdec5901c1df72319c098918e9097115",
+      "committed_at": "2026-07-04T00:27:56-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T04:27:23Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T08-55-17Z",
+      "sha": "992b470cf84511cc106bcdd296d368f527c9db2c",
+      "committed_at": "2026-07-04T04:56:08-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T08:55:17Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T15-35-53Z",
+      "sha": "339efb8503df7f66683eed13378a95f43d90f21b",
+      "committed_at": "2026-07-04T11:36:30-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T15:35:53Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T17-56-04Z",
+      "sha": "001dcc9078a4e8cac5c238f74b88f4ee26f8b965",
+      "committed_at": "2026-07-04T13:56:36-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T17:56:04Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T18-10-00Z",
+      "sha": "aee0a98026488765e5acdcbf7983dbb336ffd779",
+      "committed_at": "2026-07-04T14:10:40-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T18:10:00Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-04T18-44-48Z",
+      "sha": "efc4999f1d00fe7250e3d3b361c04e5c9f1096c3",
+      "committed_at": "2026-07-04T14:45:19-04:00",
+      "subject": "capture: off-disk sync 2026-07-04T18:44:48Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-05T14-46-04Z",
+      "sha": "d524f8833ab8745140fee26d5d79d2b95330b497",
+      "committed_at": "2026-07-05T10:46:51-04:00",
+      "subject": "capture: off-disk sync 2026-07-05T14:46:04Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-05T21-32-18Z",
+      "sha": "7c8b10a8df67e917aec8b9ca0fcd30bcf650814f",
+      "committed_at": "2026-07-05T17:33:02-04:00",
+      "subject": "capture: off-disk sync 2026-07-05T21:32:18Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-06T04-57-37Z",
+      "sha": "c94a9d30936e31e114d3a5bf25b1cb28e2148285",
+      "committed_at": "2026-07-06T00:58:18-04:00",
+      "subject": "capture: off-disk sync 2026-07-06T04:57:37Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-06T12-23-59Z",
+      "sha": "2e6c756d4053c05051245b6d81db5dfa14489c2b",
+      "committed_at": "2026-07-06T08:25:08-04:00",
+      "subject": "capture: off-disk sync 2026-07-06T12:23:59Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-06T17-09-22Z",
+      "sha": "c70eba00fe0cc1f941b95288966134f09cd037a1",
+      "committed_at": "2026-07-06T13:09:55-04:00",
+      "subject": "capture: off-disk sync 2026-07-06T17:09:22Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-06T17-22-12Z",
+      "sha": "328371e81677b247204e93a5f0c85e3ff45d3954",
+      "committed_at": "2026-07-06T13:22:54-04:00",
+      "subject": "capture: off-disk sync 2026-07-06T17:22:12Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-06T20-02-41Z",
+      "sha": "30c0267c04ab6870821c5c7b3067df4099df53a4",
+      "committed_at": "2026-07-06T16:03:54-04:00",
+      "subject": "capture: off-disk sync 2026-07-06T20:02:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-06T21-09-08Z",
+      "sha": "0ee926431d3ebb152465847cce400b582f878028",
+      "committed_at": "2026-07-06T17:09:50-04:00",
+      "subject": "capture: off-disk sync 2026-07-06T21:09:08Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-06T21-33-43Z",
+      "sha": "56bf292cb4aabd38821ead37bf2e1e4a680f4b4b",
+      "committed_at": "2026-07-06T17:36:01-04:00",
+      "subject": "capture: off-disk sync 2026-07-06T21:33:43Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-06T21-46-20Z",
+      "sha": "07caba43402027bb39bbefee4e83dfcc3a7236ec",
+      "committed_at": "2026-07-06T17:47:02-04:00",
+      "subject": "capture: off-disk sync 2026-07-06T21:46:20Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-06T23-17-35Z",
+      "sha": "e267f19fd35fd59748b2df4471b757dc67013117",
+      "committed_at": "2026-07-06T19:18:31-04:00",
+      "subject": "capture: off-disk sync 2026-07-06T23:17:35Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T00-02-25Z",
+      "sha": "e33dfa07f18abd3a875e8cc760ed419c93d49b44",
+      "committed_at": "2026-07-06T20:03:20-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T00:02:25Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T02-20-40Z",
+      "sha": "737b32d5136295df25bfba81b7639b149fe992f2",
+      "committed_at": "2026-07-06T22:21:28-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T02:20:40Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T04-00-14Z",
+      "sha": "c27b51febe026ba4d580eede72b69c1e6c9d8252",
+      "committed_at": "2026-07-07T00:01:11-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T04:00:14Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T04-25-55Z",
+      "sha": "9aeffed0609b6396036b5cffa67f4a692b185400",
+      "committed_at": "2026-07-07T00:26:24-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T04:25:55Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T04-45-22Z",
+      "sha": "14f96a502566d481668ac54c19f981916cd35cef",
+      "committed_at": "2026-07-07T00:46:24-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T04:45:22Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T04-58-02Z",
+      "sha": "99af7550f19ee954f52f74a50788209e90289979",
+      "committed_at": "2026-07-07T00:59:11-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T04:58:02Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T05-23-49Z",
+      "sha": "c50d30023b51ec6842bffab67d72661911e6d0db",
+      "committed_at": "2026-07-07T01:24:37-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T05:23:49Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T05-33-31Z",
+      "sha": "ea164c5c59d99142a672cea81b46693b9d78e261",
+      "committed_at": "2026-07-07T01:34:39-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T05:33:31Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T05-58-10Z",
+      "sha": "7082b18df4e2cc69baf1776def3bb67b00ad88d2",
+      "committed_at": "2026-07-07T01:59:05-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T05:58:10Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T06-29-22Z",
+      "sha": "fc9cdb41c0e1fd0b24f4e0bb122e9052835ef226",
+      "committed_at": "2026-07-07T02:30:10-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T06:29:22Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T06-44-58Z",
+      "sha": "2bffde75a7e3654d15f6bb530ccf447aef9e65d5",
+      "committed_at": "2026-07-07T02:46:02-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T06:44:58Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T06-57-00Z",
+      "sha": "5ae4b87edfc1686a33cdcd6cb3cf728d118c288f",
+      "committed_at": "2026-07-07T02:57:53-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T06:57:00Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T07-47-12Z",
+      "sha": "83f48bdae61569f697704e077ad3c8cac8fb16f6",
+      "committed_at": "2026-07-07T03:48:05-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T07:47:12Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T07-54-30Z",
+      "sha": "26e530f278d5c183227dd24e409305a8d5c0a464",
+      "committed_at": "2026-07-07T03:55:01-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T07:54:30Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T08-01-59Z",
+      "sha": "7539fbb68d9c1cf51ab3a0f8c1dde13d969b8f14",
+      "committed_at": "2026-07-07T04:02:36-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T08:01:59Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T08-25-51Z",
+      "sha": "b7f9c325ffb739fb850db5b1869b85ee5804a64d",
+      "committed_at": "2026-07-07T04:26:48-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T08:25:51Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T08-42-41Z",
+      "sha": "c47b76c53e8014113c7c74d8a66ee16bab660e91",
+      "committed_at": "2026-07-07T04:43:24-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T08:42:41Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T09-46-54Z",
+      "sha": "71b14b6ed279d04d7576bf1ca99c51d151d2b86c",
+      "committed_at": "2026-07-07T05:47:41-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T09:46:54Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T09-58-05Z",
+      "sha": "1a23522fcb8225bc1cd4bdebf5f561385ec7a73a",
+      "committed_at": "2026-07-07T05:58:52-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T09:58:05Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T10-19-32Z",
+      "sha": "5c6693cfdc11d4e8235d5a3e42b7805253fd198d",
+      "committed_at": "2026-07-07T06:20:03-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T10:19:32Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T10-29-28Z",
+      "sha": "c6e61eaa94009a0044a24584eb1801336a8038d2",
+      "committed_at": "2026-07-07T06:30:16-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T10:29:28Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T10-39-25Z",
+      "sha": "59fedfc8885cd690b7d7ff18359da8306c2d5eeb",
+      "committed_at": "2026-07-07T06:40:06-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T10:39:25Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-07T11-16-07Z",
+      "sha": "1b798901909d751de7ce23f120d078758a8bee83",
+      "committed_at": "2026-07-07T07:16:45-04:00",
+      "subject": "capture: off-disk sync 2026-07-07T11:16:07Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-08T02-21-47Z",
+      "sha": "8d9f4957d9aad52e50d426839c36d48f1e788c3c",
+      "committed_at": "2026-07-07T22:22:33-04:00",
+      "subject": "capture: off-disk sync 2026-07-08T02:21:47Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-08T11-20-38Z",
+      "sha": "20556a29825e3221885996f9bda1d9cd5b13f472",
+      "committed_at": "2026-07-08T07:21:23-04:00",
+      "subject": "capture: off-disk sync 2026-07-08T11:20:38Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-08T21-07-28Z",
+      "sha": "e6f6cce8985eff1c9d1976c5efe55e578e9b00d0",
+      "committed_at": "2026-07-08T17:08:08-04:00",
+      "subject": "capture: off-disk sync 2026-07-08T21:07:28Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-09T12-40-53Z",
+      "sha": "a723c2d524372da41d285d581ccb65d0e7d6949f",
+      "committed_at": "2026-07-09T08:41:13-04:00",
+      "subject": "capture: off-disk sync 2026-07-09T12:40:53Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-10T12-05-13Z",
+      "sha": "97af4ee2c5b161db85c7487bcafc7c7ed16a7350",
+      "committed_at": "2026-07-10T08:05:59-04:00",
+      "subject": "capture: off-disk sync 2026-07-10T12:05:13Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-12T09-46-35Z",
+      "sha": "a081d77efbdff8f73590baa2569f9f03832ccace",
+      "committed_at": "2026-07-12T05:47:23-04:00",
+      "subject": "capture: off-disk sync 2026-07-12T09:46:35Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-13T08-28-48Z",
+      "sha": "981a33bcd1eaf12eed0985cf5b4c504ea5948c0a",
+      "committed_at": "2026-07-13T04:29:31-04:00",
+      "subject": "capture: off-disk sync 2026-07-13T08:28:48Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-16T04-48-58Z",
+      "sha": "229fed9c7b9b9e0186ff588bceed68f4aae1f66a",
+      "committed_at": "2026-07-16T00:50:12-04:00",
+      "subject": "capture: off-disk sync 2026-07-16T04:48:58Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-2026-07-18T10-53-18Z",
+      "sha": "418dc90339eb9c85dbf168aa365a687fa1ad6fcb",
+      "committed_at": "2026-07-18T06:54:17-04:00",
+      "subject": "capture: off-disk sync 2026-07-18T10:53:18Z (main behind origin → side ref, HEAD untouched)",
+      "snapshot_signature": "3eaa17f14957",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 3eaa17f14957"
+    },
+    {
+      "ref": "capture/main-deferred",
+      "sha": "7306a0b9655d16dcba0730e7e71716dd44b3e980",
+      "committed_at": "2026-07-21T17:09:40-04:00",
+      "subject": "capture: off-disk sync 2026-07-21T21:06:08Z (main → capture/main-deferred, HEAD untouched)",
+      "snapshot_signature": "67b99271a8b2",
+      "linked_prs": [],
+      "disposition": "reap_repeated_capture",
+      "evidence": "automated snapshot signature 67b99271a8b2"
+    },
+    {
+      "ref": "codex/uma-literal-mail-union-154",
+      "sha": "16b62e50e4f7e2341ecebac4e07ceec87d941694",
+      "committed_at": "2026-07-10T14:34:58-04:00",
+      "subject": "universal-mail--automation: add In My Head transports plan (VOX-3b)",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 155,
+          "state": "MERGED",
+          "head_sha": "47fc100793232a06583691e3322c22029d66af76",
+          "merged_at": "2026-07-09T12:38:12Z",
+          "closed_at": "2026-07-09T12:38:12Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/155"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #155 merged"
+    },
+    {
+      "ref": "dependabot/pip/pip-deps-d392708d88",
+      "sha": "40231eee42d6a6575dab0c15ee51331ecced5e26",
+      "committed_at": "2026-08-11T04:15:08Z",
+      "subject": "chore(deps): bump the pip-deps group across 1 directory with 2 updates",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 190,
+          "state": "OPEN",
+          "head_sha": "40231eee42d6a6575dab0c15ee51331ecced5e26",
+          "merged_at": null,
+          "closed_at": null,
+          "url": "https://github.com/organvm/universal-mail--automation/pull/190"
+        }
+      ],
+      "disposition": "retain_open_pr",
+      "evidence": "open PR #190"
+    },
+    {
+      "ref": "docs/inbound-front-door",
+      "sha": "57c269234dde5918cba19c7ce2904944268c7f68",
+      "committed_at": "2026-06-25T17:11:02-04:00",
+      "subject": "[inbound] Front-door positioning treatment",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 89,
+          "state": "CLOSED",
+          "head_sha": "57c269234dde5918cba19c7ce2904944268c7f68",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:41Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/89"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #89 closed"
+    },
+    {
+      "ref": "docs/product-alchemy-surface",
+      "sha": "6e992c4fb1dfa21e4ef4130ebb41adc29b8fac0b",
+      "committed_at": "2026-06-05T08:34:50-04:00",
+      "subject": "Merge branch 'main' into docs/product-alchemy-surface",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 30,
+          "state": "MERGED",
+          "head_sha": "6e992c4fb1dfa21e4ef4130ebb41adc29b8fac0b",
+          "merged_at": "2026-06-05T12:35:59Z",
+          "closed_at": "2026-06-05T12:35:59Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/30"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #30 merged"
+    },
+    {
+      "ref": "feat/archived-scan-pipeline",
+      "sha": "e51754289e5380915d827a2a23a4c39a5e5fbfa3",
+      "committed_at": "2026-07-18T13:24:32-04:00",
+      "subject": "feat(archived-scan): cross-account Sent union + obligations_build consumes archive receipts",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 182,
+          "state": "MERGED",
+          "head_sha": "e51754289e5380915d827a2a23a4c39a5e5fbfa3",
+          "merged_at": "2026-07-18T17:30:53Z",
+          "closed_at": "2026-07-18T17:30:53Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/182"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #182 merged"
+    },
+    {
+      "ref": "feat/archived-unanswered-scan",
+      "sha": "eb87a3e258fc9edafd41172b299b8687d7fbea7f",
+      "committed_at": "2026-07-18T10:23:32-04:00",
+      "subject": "feat(scan): archived-unanswered scanner — close the INBOX-only completeness blind spot",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 179,
+          "state": "MERGED",
+          "head_sha": "eb87a3e258fc9edafd41172b299b8687d7fbea7f",
+          "merged_at": "2026-07-18T14:25:30Z",
+          "closed_at": "2026-07-18T14:25:30Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/179"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #179 merged"
+    },
+    {
+      "ref": "feat/correspondence-drain-gate",
+      "sha": "f782ccae9cbef050a01becdc34b7b943c5d4d022",
+      "committed_at": "2026-07-18T01:06:28-04:00",
+      "subject": "feat(obligations): drain gate — retire answered rows so reply_owed falls",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 178,
+          "state": "MERGED",
+          "head_sha": "f782ccae9cbef050a01becdc34b7b943c5d4d022",
+          "merged_at": "2026-07-18T05:13:33Z",
+          "closed_at": "2026-07-18T05:13:33Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/178"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #178 merged"
+    },
+    {
+      "ref": "feat/mailapp-seven-state-flags",
+      "sha": "2d5b9ee1d1307786d927d4228b806aa9eb02b1cf",
+      "committed_at": "2026-08-27T11:04:40-04:00",
+      "subject": "docs(flags): add adversarial verification packet",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 192,
+          "state": "OPEN",
+          "head_sha": "2d5b9ee1d1307786d927d4228b806aa9eb02b1cf",
+          "merged_at": null,
+          "closed_at": null,
+          "url": "https://github.com/organvm/universal-mail--automation/pull/192"
+        }
+      ],
+      "disposition": "retain_open_pr",
+      "evidence": "open PR #192"
+    },
+    {
+      "ref": "feat/operator-dashboard-mail-endzone",
+      "sha": "56835496be7d48e8d7db25967d39b14bb6afe019",
+      "committed_at": "2026-06-16T07:16:11-04:00",
+      "subject": "feat(ops): render the goal's tri-state invariant rollup in the cockpit",
+      "snapshot_signature": null,
+      "linked_prs": [],
+      "disposition": "reap_ancestor_of_main",
+      "evidence": "git cherry is empty and the branch diff against origin/main is empty"
+    },
+    {
+      "ref": "fix/acp-complete-convergence",
+      "sha": "8e6304ca9cfea5402f2691a0b1db9d4289be7fcc",
+      "committed_at": "2026-06-05T08:21:36-04:00",
+      "subject": "Merge remote-tracking branch 'origin/main' into fix/acp-complete-convergence",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 26,
+          "state": "MERGED",
+          "head_sha": "8e6304ca9cfea5402f2691a0b1db9d4289be7fcc",
+          "merged_at": "2026-06-05T12:22:41Z",
+          "closed_at": "2026-06-05T12:22:41Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/26"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #26 merged"
+    },
+    {
+      "ref": "fix/acp-session-account-binding",
+      "sha": "64bd32445d95baffaf508c886e8899ab53baa9c1",
+      "committed_at": "2026-06-04T09:00:12-04:00",
+      "subject": "fix(acp): bind a checkout session to its creator; gate completion by owner (U010)",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 19,
+          "state": "MERGED",
+          "head_sha": "64bd32445d95baffaf508c886e8899ab53baa9c1",
+          "merged_at": "2026-06-05T12:20:34Z",
+          "closed_at": "2026-06-05T12:20:34Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/19"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #19 merged"
+    },
+    {
+      "ref": "fix/applescript-protected-sender-gate",
+      "sha": "4665702d31c922b0e95a5a788687b5d1b65dc957",
+      "committed_at": "2026-06-05T08:25:33-04:00",
+      "subject": "Merge branch 'main' into fix/applescript-protected-sender-gate",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 17,
+          "state": "MERGED",
+          "head_sha": "4665702d31c922b0e95a5a788687b5d1b65dc957",
+          "merged_at": "2026-06-05T12:26:40Z",
+          "closed_at": "2026-06-05T12:26:40Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/17"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #17 merged"
+    },
+    {
+      "ref": "fix/archive-account-mailbox-resolution",
+      "sha": "fc805fd7b30057a3a63d682da48127215a339a2f",
+      "committed_at": "2026-07-18T11:40:26-04:00",
+      "subject": "fix(scan): resolve Gmail/Outlook archive+sent mailbox addressing",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 181,
+          "state": "MERGED",
+          "head_sha": "fc805fd7b30057a3a63d682da48127215a339a2f",
+          "merged_at": "2026-07-18T15:42:24Z",
+          "closed_at": "2026-07-18T15:42:25Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/181"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #181 merged"
+    },
+    {
+      "ref": "fix/archive-bounded-enumeration",
+      "sha": "8f5811dd95781d06cf97f1480b2f7096e05be658",
+      "committed_at": "2026-07-18T11:12:00-04:00",
+      "subject": "fix(scan): bounded archive enumeration — the archive scan that returned 0",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 180,
+          "state": "MERGED",
+          "head_sha": "8f5811dd95781d06cf97f1480b2f7096e05be658",
+          "merged_at": "2026-07-18T15:14:11Z",
+          "closed_at": "2026-07-18T15:14:11Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/180"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #180 merged"
+    },
+    {
+      "ref": "fix/auto-drain-dry-run",
+      "sha": "63416e3e1961bed82e676ebfc29e9a7e42673af5",
+      "committed_at": "2026-06-05T08:29:37-04:00",
+      "subject": "Merge branch 'main' into fix/auto-drain-dry-run",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 24,
+          "state": "MERGED",
+          "head_sha": "63416e3e1961bed82e676ebfc29e9a7e42673af5",
+          "merged_at": "2026-06-05T12:30:39Z",
+          "closed_at": "2026-06-05T12:30:39Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/24"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #24 merged"
+    },
+    {
+      "ref": "fix/backend-metering-auth-hardening",
+      "sha": "df2aae804c146e5a00fca9f04d6280dcd7c4d3a6",
+      "committed_at": "2026-06-05T08:39:34-04:00",
+      "subject": "Merge remote-tracking branch 'origin/main' into fix/backend-metering-auth-hardening",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 31,
+          "state": "MERGED",
+          "head_sha": "df2aae804c146e5a00fca9f04d6280dcd7c4d3a6",
+          "merged_at": "2026-06-05T12:40:53Z",
+          "closed_at": "2026-06-05T12:40:53Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/31"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #31 merged"
+    },
+    {
+      "ref": "fix/bound-inbox-sweep",
+      "sha": "14e99f8df42ac9a12cd804287b20b0bd18cb41e5",
+      "committed_at": "2026-08-02T10:32:14-04:00",
+      "subject": "fix(sweep): --limit never bounded Mail.app's work — the INBOX sweep hung it for 421s",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 189,
+          "state": "MERGED",
+          "head_sha": "14e99f8df42ac9a12cd804287b20b0bd18cb41e5",
+          "merged_at": "2026-08-02T15:23:34Z",
+          "closed_at": "2026-08-02T15:23:34Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/189"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #189 merged"
+    },
+    {
+      "ref": "fix/icloud-mailbox-wide-expunge",
+      "sha": "c40b66be7bed9221a3a84de5358bfc2a45caecd7",
+      "committed_at": "2026-06-05T08:28:18-04:00",
+      "subject": "Merge branch 'main' into fix/icloud-mailbox-wide-expunge",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 20,
+          "state": "MERGED",
+          "head_sha": "c40b66be7bed9221a3a84de5358bfc2a45caecd7",
+          "merged_at": "2026-06-05T12:29:24Z",
+          "closed_at": "2026-06-05T12:29:24Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/20"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #20 merged"
+    },
+    {
+      "ref": "fix/imap-archive-disposition",
+      "sha": "8594911934a7687abff151fcde3d5f674e0c3283",
+      "committed_at": "2026-06-04T09:58:33-04:00",
+      "subject": "fix(imap): archive() must report success only when the message left the inbox (U086, U131)",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 21,
+          "state": "MERGED",
+          "head_sha": "8594911934a7687abff151fcde3d5f674e0c3283",
+          "merged_at": "2026-06-05T12:22:48Z",
+          "closed_at": "2026-06-05T12:22:48Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/21"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #21 merged"
+    },
+    {
+      "ref": "fix/imap-store-result-checks",
+      "sha": "664cce7d252ed4b5bf12947076e3f32556823ff3",
+      "committed_at": "2026-06-05T08:24:03-04:00",
+      "subject": "Merge remote-tracking branch 'origin/main' into fix/imap-store-result-checks",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 23,
+          "state": "MERGED",
+          "head_sha": "664cce7d252ed4b5bf12947076e3f32556823ff3",
+          "merged_at": "2026-06-05T12:25:10Z",
+          "closed_at": "2026-06-05T12:25:10Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/23"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #23 merged"
+    },
+    {
+      "ref": "fix/outlook-silent-failures",
+      "sha": "09302d91beb475f1c2a9eceff5b3b7d2ba6bed5d",
+      "committed_at": "2026-06-05T08:30:49-04:00",
+      "subject": "Merge branch 'main' into fix/outlook-silent-failures",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 25,
+          "state": "MERGED",
+          "head_sha": "09302d91beb475f1c2a9eceff5b3b7d2ba6bed5d",
+          "merged_at": "2026-06-05T12:31:58Z",
+          "closed_at": "2026-06-05T12:31:58Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/25"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #25 merged"
+    },
+    {
+      "ref": "fix/pages-nojekyll",
+      "sha": "f0ca8d1595dd5e6264424c237a5d8b7c6a148318",
+      "committed_at": "2026-06-05T08:46:02-04:00",
+      "subject": "fix(pages): disable Jekyll processing",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 33,
+          "state": "MERGED",
+          "head_sha": "f0ca8d1595dd5e6264424c237a5d8b7c6a148318",
+          "merged_at": "2026-06-05T12:47:22Z",
+          "closed_at": "2026-06-05T12:47:22Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/33"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #33 merged"
+    },
+    {
+      "ref": "fix/protected-config-import-crash",
+      "sha": "d75e4b0f2b8368a6f789ac0eb51a5c0a6cbe6eca",
+      "committed_at": "2026-06-05T08:26:54-04:00",
+      "subject": "Merge branch 'main' into fix/protected-config-import-crash",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 18,
+          "state": "MERGED",
+          "head_sha": "d75e4b0f2b8368a6f789ac0eb51a5c0a6cbe6eca",
+          "merged_at": "2026-06-05T12:28:10Z",
+          "closed_at": "2026-06-05T12:28:10Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/18"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #18 merged"
+    },
+    {
+      "ref": "fix/reply-subject-unfold",
+      "sha": "690f9263a59eb9cc6921cd89089593e393be7345",
+      "committed_at": "2026-07-17T09:47:44-04:00",
+      "subject": "fix(send): unfold RFC 5322 folded subjects in the reply lane",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 176,
+          "state": "MERGED",
+          "head_sha": "690f9263a59eb9cc6921cd89089593e393be7345",
+          "merged_at": "2026-07-17T14:01:26Z",
+          "closed_at": "2026-07-17T14:01:26Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/176"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #176 merged"
+    },
+    {
+      "ref": "fix/rules-government-priority",
+      "sha": "dcb9212f0ecebda1c9d04fc35fc6062537d9b3a9",
+      "committed_at": "2026-06-05T08:32:11-04:00",
+      "subject": "Merge branch 'main' into fix/rules-government-priority",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 27,
+          "state": "MERGED",
+          "head_sha": "dcb9212f0ecebda1c9d04fc35fc6062537d9b3a9",
+          "merged_at": "2026-06-05T12:33:30Z",
+          "closed_at": "2026-06-05T12:33:30Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/27"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #27 merged"
+    },
+    {
+      "ref": "fix/sweep-protocol-fire",
+      "sha": "13c4718e2c2ac2fea5180d69ec1070b217011989",
+      "committed_at": "2026-07-17T09:13:58-04:00",
+      "subject": "fix(sweep): requires_reply protocol match outranks the noise router",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 175,
+          "state": "MERGED",
+          "head_sha": "13c4718e2c2ac2fea5180d69ec1070b217011989",
+          "merged_at": "2026-07-17T14:01:25Z",
+          "closed_at": "2026-07-17T14:01:25Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/175"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #175 merged"
+    },
+    {
+      "ref": "fix/worker-protected-sender-gate",
+      "sha": "45fce2c24b5dd7526e4aca9a87bf571108c5e34b",
+      "committed_at": "2026-06-04T08:41:11-04:00",
+      "subject": "fix(worker): make the share-demo protected-sender gate fail-closed and spoof-proof (G15)",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 16,
+          "state": "MERGED",
+          "head_sha": "45fce2c24b5dd7526e4aca9a87bf571108c5e34b",
+          "merged_at": "2026-06-05T12:18:55Z",
+          "closed_at": "2026-06-05T12:18:55Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/16"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #16 merged"
+    },
+    {
+      "ref": "fix/worker-receipt-honesty",
+      "sha": "6f95235245bb5ae6952657de5e76116b79cf94fc",
+      "committed_at": "2026-06-05T08:19:12-04:00",
+      "subject": "Merge branch 'main' into fix/worker-receipt-honesty",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 28,
+          "state": "MERGED",
+          "head_sha": "6f95235245bb5ae6952657de5e76116b79cf94fc",
+          "merged_at": "2026-06-05T12:20:25Z",
+          "closed_at": "2026-06-05T12:20:25Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/28"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #28 merged"
+    },
+    {
+      "ref": "frontend/protected-inbox-audit-experience",
+      "sha": "fd174ff18c58481441f0af50702e2bc056d6b6b2",
+      "committed_at": "2026-06-05T08:42:07-04:00",
+      "subject": "Merge remote-tracking branch 'origin/main' into frontend/protected-inbox-audit-experience",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 32,
+          "state": "MERGED",
+          "head_sha": "fd174ff18c58481441f0af50702e2bc056d6b6b2",
+          "merged_at": "2026-06-05T12:43:39Z",
+          "closed_at": "2026-06-05T12:43:39Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/32"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #32 merged"
+    },
+    {
+      "ref": "limen/bld-universal-mail--automation-readme-9031",
+      "sha": "29f6b4bcbe21da6454d9e458ca91914b5fa20220",
+      "committed_at": "2026-06-27T09:23:52-04:00",
+      "subject": "docs: modernize Universal Mail Automation README",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 108,
+          "state": "CLOSED",
+          "head_sha": "29f6b4bcbe21da6454d9e458ca91914b5fa20220",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:12:05Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/108"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #108 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-ci-green-0624-733c",
+      "sha": "0ea6f986bc5097de31c59f3d44e57d101551a620",
+      "committed_at": "2026-06-24T09:13:41-04:00",
+      "subject": "Make organvm/universal-mail--automation CI green",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 82,
+          "state": "CLOSED",
+          "head_sha": "0ea6f986bc5097de31c59f3d44e57d101551a620",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:27Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/82"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #82 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-ci-green-0625-b107",
+      "sha": "4ada5ff1d74ec08cac126be9f3c4e6c7481fe757",
+      "committed_at": "2026-06-25T00:18:02-04:00",
+      "subject": "Make organvm/universal-mail--automation CI green",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 87,
+          "state": "CLOSED",
+          "head_sha": "4ada5ff1d74ec08cac126be9f3c4e6c7481fe757",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:37Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/87"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #87 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-ci-green-0626-9541",
+      "sha": "10fbe30357e63b7b56a13b308216bf734c57b9c2",
+      "committed_at": "2026-06-26T20:23:47-04:00",
+      "subject": "Make organvm/universal-mail--automation CI green",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 92,
+          "state": "CLOSED",
+          "head_sha": "10fbe30357e63b7b56a13b308216bf734c57b9c2",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:46Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/92"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #92 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-ci-green-0628-27e6",
+      "sha": "f20d16477ab29db9d8bd070a7772d2089155fc97",
+      "committed_at": "2026-06-28T00:45:58-04:00",
+      "subject": "Make organvm/universal-mail--automation CI green",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 111,
+          "state": "CLOSED",
+          "head_sha": "f20d16477ab29db9d8bd070a7772d2089155fc97",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:12:38Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/111"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #111 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-ci-green-0630-ff48",
+      "sha": "993f29c9d2d6e29a511e838399514d160b1269d8",
+      "committed_at": "2026-06-30T01:00:40-04:00",
+      "subject": "Make organvm/universal-mail--automation CI green",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 122,
+          "state": "CLOSED",
+          "head_sha": "993f29c9d2d6e29a511e838399514d160b1269d8",
+          "merged_at": null,
+          "closed_at": "2026-07-09T00:19:58Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/122"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #122 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-ci-green-0701-2d83",
+      "sha": "640b7dcac37b6a4e84badca087dcbff2d9c22f10",
+      "committed_at": "2026-07-10T03:15:21-04:00",
+      "subject": "ci: expand matrix to 3.10, 3.11, 3.12, 3.14",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 133,
+          "state": "CLOSED",
+          "head_sha": "640b7dcac37b6a4e84badca087dcbff2d9c22f10",
+          "merged_at": null,
+          "closed_at": "2026-07-10T07:17:50Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/133"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #133 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-docs-0624-ad88",
+      "sha": "eb4a6168c7f14466be0822d19bd732dcb1da11f5",
+      "committed_at": "2026-06-26T23:57:17-04:00",
+      "subject": "Real usage docs for organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 99,
+          "state": "CLOSED",
+          "head_sha": "eb4a6168c7f14466be0822d19bd732dcb1da11f5",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:59Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/99"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #99 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-security-0624-d790",
+      "sha": "c9541e9ea20769e9742ed53cf765f3a42a9e853d",
+      "committed_at": "2026-06-24T09:17:29-04:00",
+      "subject": "Security hardening pass on organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 83,
+          "state": "CLOSED",
+          "head_sha": "c9541e9ea20769e9742ed53cf765f3a42a9e853d",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:29Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/83"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #83 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-security-0625-a9a3",
+      "sha": "5cb1da06294b0c4f0c76c731d971dc793b9a7868",
+      "committed_at": "2026-06-25T00:24:27-04:00",
+      "subject": "Security hardening pass on organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 88,
+          "state": "CLOSED",
+          "head_sha": "5cb1da06294b0c4f0c76c731d971dc793b9a7868",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:39Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/88"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #88 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-security-0626-bbb4",
+      "sha": "28a74f1ed4d6599414104e99e3a6aaf2d4b00679",
+      "committed_at": "2026-06-26T00:17:40-04:00",
+      "subject": "Security hardening pass on organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 90,
+          "state": "CLOSED",
+          "head_sha": "28a74f1ed4d6599414104e99e3a6aaf2d4b00679",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:43Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/90"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #90 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-security-0626-be03",
+      "sha": "7e165d1358de813685011dd92c605dfb63f3d05d",
+      "committed_at": "2026-06-26T21:30:17-04:00",
+      "subject": "Security hardening pass on organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 95,
+          "state": "CLOSED",
+          "head_sha": "7e165d1358de813685011dd92c605dfb63f3d05d",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:52Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/95"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #95 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-simplify-0624-80a2",
+      "sha": "6405043c6e31536c1c50c155cf995156a45820c2",
+      "committed_at": "2026-06-24T12:06:50-04:00",
+      "subject": "Reduce complexity in organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 85,
+          "state": "CLOSED",
+          "head_sha": "6405043c6e31536c1c50c155cf995156a45820c2",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:33Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/85"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #85 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-simplify-0624-9955",
+      "sha": "0b237fc66086e3b8494b5dfe473d361e32275573",
+      "committed_at": "2026-06-24T14:37:19-04:00",
+      "subject": "Reduce complexity in organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 86,
+          "state": "CLOSED",
+          "head_sha": "0b237fc66086e3b8494b5dfe473d361e32275573",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:35Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/86"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #86 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-test-coverage-0624-ac0a",
+      "sha": "9fcd6dd45a87824eb5c2279acf0f512e2dbbcf89",
+      "committed_at": "2026-06-24T09:54:15-04:00",
+      "subject": "Raise test coverage in organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 84,
+          "state": "CLOSED",
+          "head_sha": "9fcd6dd45a87824eb5c2279acf0f512e2dbbcf89",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:31Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/84"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #84 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-test-coverage-0626-a6db",
+      "sha": "2eb4febd1671817882bbb46862671e3d00fe22ba",
+      "committed_at": "2026-06-26T23:00:48-04:00",
+      "subject": "Raise test coverage in organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 98,
+          "state": "CLOSED",
+          "head_sha": "2eb4febd1671817882bbb46862671e3d00fe22ba",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:57Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/98"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #98 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-typing-0626-0bb7",
+      "sha": "75b77fbf58ffa4e75477ada356a936cec52a13b4",
+      "committed_at": "2026-06-26T22:30:01-04:00",
+      "subject": "Tighten types in organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 97,
+          "state": "CLOSED",
+          "head_sha": "75b77fbf58ffa4e75477ada356a936cec52a13b4",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:55Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/97"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #97 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-typing-0628-dbbf",
+      "sha": "3363e8fd0ec47453253890a0f72fa2f8a1d823f1",
+      "committed_at": "2026-06-28T01:43:14-04:00",
+      "subject": "Tighten types in organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 113,
+          "state": "CLOSED",
+          "head_sha": "3363e8fd0ec47453253890a0f72fa2f8a1d823f1",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:12:40Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/113"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #113 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-typing-0630-eb57",
+      "sha": "e5dd5bec2f175118c5a964bc22ddcb293805e273",
+      "committed_at": "2026-06-30T11:53:13-04:00",
+      "subject": "Tighten types in organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 131,
+          "state": "CLOSED",
+          "head_sha": "e5dd5bec2f175118c5a964bc22ddcb293805e273",
+          "merged_at": null,
+          "closed_at": "2026-07-09T22:54:24Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/131"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #131 closed"
+    },
+    {
+      "ref": "limen/gen-organvm-universal-mail--automation-typing-0701-0212",
+      "sha": "30ef23bb29f6c60dd57253bdaae01132fd2ee76b",
+      "committed_at": "2026-07-07T04:03:30-04:00",
+      "subject": "Merge main into pr-134",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 134,
+          "state": "CLOSED",
+          "head_sha": "30ef23bb29f6c60dd57253bdaae01132fd2ee76b",
+          "merged_at": null,
+          "closed_at": "2026-07-10T07:19:41Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/134"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #134 closed"
+    },
+    {
+      "ref": "limen/heal-cifix-organvm-universal-mail--automation-123-6b5a7b43",
+      "sha": "f09cc6d47b3656d834144c1b16fb3362baff8f78",
+      "committed_at": "2026-07-09T17:50:59-04:00",
+      "subject": "fix(web): use uma-pending-key for Stripe redirect API key handoff, add p.features to renderPlans",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 158,
+          "state": "OPEN",
+          "head_sha": "f09cc6d47b3656d834144c1b16fb3362baff8f78",
+          "merged_at": null,
+          "closed_at": null,
+          "url": "https://github.com/organvm/universal-mail--automation/pull/158"
+        }
+      ],
+      "disposition": "retain_open_pr",
+      "evidence": "open PR #158"
+    },
+    {
+      "ref": "limen/heal-cifix-organvm-universal-mail--automation-125-317b0eb4",
+      "sha": "68ecdc3986b83d6fc965913e295eeb22a906f715",
+      "committed_at": "2026-07-08T22:19:00-04:00",
+      "subject": "fix failing CI on organvm/universal-mail--automation#125",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 152,
+          "state": "CLOSED",
+          "head_sha": "68ecdc3986b83d6fc965913e295eeb22a906f715",
+          "merged_at": null,
+          "closed_at": "2026-07-09T22:54:45Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/152"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #152 closed"
+    },
+    {
+      "ref": "limen/heal-cifix-organvm-universal-mail--automation-131-50de9c5b",
+      "sha": "c5daca5a31f7b165c42cc19fc942c52edc3fed83",
+      "committed_at": "2026-07-07T10:00:57-04:00",
+      "subject": "fix failing CI on organvm/universal-mail--automation#131",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 149,
+          "state": "CLOSED",
+          "head_sha": "c5daca5a31f7b165c42cc19fc942c52edc3fed83",
+          "merged_at": null,
+          "closed_at": "2026-07-09T22:54:29Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/149"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #149 closed"
+    },
+    {
+      "ref": "limen/heal-cifix-organvm-universal-mail--automation-135-5931079e",
+      "sha": "8a8431f1d49d39122af3f35d825362eeb708313c",
+      "committed_at": "2026-07-08T22:04:59-04:00",
+      "subject": "restore pricing checkout web behaviors",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 153,
+          "state": "CLOSED",
+          "head_sha": "8a8431f1d49d39122af3f35d825362eeb708313c",
+          "merged_at": null,
+          "closed_at": "2026-07-09T22:54:47Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/153"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #153 closed"
+    },
+    {
+      "ref": "limen/heal-cifix-organvm-universal-mail--automation-138-fa4c8153",
+      "sha": "f33ac22a6955a8d3de7d3aefde1242bad7aca2ec",
+      "committed_at": "2026-07-08T15:21:27-04:00",
+      "subject": "restore checkout key handoff",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 151,
+          "state": "CLOSED",
+          "head_sha": "f33ac22a6955a8d3de7d3aefde1242bad7aca2ec",
+          "merged_at": null,
+          "closed_at": "2026-07-09T22:54:43Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/151"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #151 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-readiness-0623-06d9",
+      "sha": "31c92d2a5ed5323d0dcc330dff47cc8d7a7e536f",
+      "committed_at": "2026-06-23T23:00:34-04:00",
+      "subject": "First-paying-customer readiness pass on Universal Mail Automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 80,
+          "state": "CLOSED",
+          "head_sha": "31c92d2a5ed5323d0dcc330dff47cc8d7a7e536f",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:23Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/80"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #80 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-readiness-0623-0f58",
+      "sha": "e757b8d6a03a5ca0609eba34908a54e9ac483432",
+      "committed_at": "2026-06-23T16:18:43-04:00",
+      "subject": "Fix stdlib module naming conflict: rename platform/ → licensing/",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 77,
+          "state": "CLOSED",
+          "head_sha": "e757b8d6a03a5ca0609eba34908a54e9ac483432",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:18Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/77"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #77 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-readiness-0623-413e",
+      "sha": "85d8304632753c08e2593603f2ceb7881215734a",
+      "committed_at": "2026-06-23T21:26:48-04:00",
+      "subject": "First-paying-customer readiness pass on Universal Mail Automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 79,
+          "state": "CLOSED",
+          "head_sha": "85d8304632753c08e2593603f2ceb7881215734a",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:21Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/79"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #79 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-readiness-0623-f5bf",
+      "sha": "f0bdccab6c4d6bf05360419a8c20458ebc1e2353",
+      "committed_at": "2026-06-23T19:18:18-04:00",
+      "subject": "First-paying-customer readiness pass on Universal Mail Automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 78,
+          "state": "CLOSED",
+          "head_sha": "f0bdccab6c4d6bf05360419a8c20458ebc1e2353",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:19Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/78"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #78 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-readiness-0626-00be",
+      "sha": "2f9665c07fa42ada8eb77b8f54f21565c8ef01b3",
+      "committed_at": "2026-06-26T21:25:09-04:00",
+      "subject": "First-paying-customer readiness pass on Universal Mail Automation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 94,
+          "state": "CLOSED",
+          "head_sha": "2f9665c07fa42ada8eb77b8f54f21565c8ef01b3",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:50Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/94"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #94 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-readiness-0628-7813",
+      "sha": "146bc6e1283217d35cfe46c6717b7ed09cc0cdb5",
+      "committed_at": "2026-06-28T00:19:56-04:00",
+      "subject": "fix(web): persist API key across Stripe redirect so new subscribers can use the product",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 110,
+          "state": "CLOSED",
+          "head_sha": "146bc6e1283217d35cfe46c6717b7ed09cc0cdb5",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:12:09Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/110"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #110 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-ship-0624-9595",
+      "sha": "5efb141a7c22cb147bae99263f722721936938d1",
+      "committed_at": "2026-06-24T00:24:54-04:00",
+      "subject": "Drive Universal Mail Automation to deploy-ready",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 81,
+          "state": "CLOSED",
+          "head_sha": "5efb141a7c22cb147bae99263f722721936938d1",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:25Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/81"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #81 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-ship-0626-0da2",
+      "sha": "df27c7982d64b7f31447ef50a80139665d94f681",
+      "committed_at": "2026-06-26T21:38:55-04:00",
+      "subject": "Drive Universal Mail Automation to deploy-ready",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 96,
+          "state": "CLOSED",
+          "head_sha": "df27c7982d64b7f31447ef50a80139665d94f681",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:53Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/96"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #96 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-ship-0626-67fc",
+      "sha": "b056c9a00f9d95f96c06ad08a3579776d5819126",
+      "committed_at": "2026-06-26T00:18:09-04:00",
+      "subject": "Drive Universal Mail Automation to deploy-ready",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 91,
+          "state": "CLOSED",
+          "head_sha": "b056c9a00f9d95f96c06ad08a3579776d5819126",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:45Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/91"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #91 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-ship-0626-cb44",
+      "sha": "5ce0a3d40ecb0ae5ea5898acf0d8359bfb7c8b0f",
+      "committed_at": "2026-06-26T21:03:31-04:00",
+      "subject": "Drive Universal Mail Automation to deploy-ready",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 93,
+          "state": "CLOSED",
+          "head_sha": "5ce0a3d40ecb0ae5ea5898acf0d8359bfb7c8b0f",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:11:48Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/93"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #93 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-ship-0627-90af",
+      "sha": "f792b00a917bf31827b82a74773468ede801d8f6",
+      "committed_at": "2026-06-27T03:25:12-04:00",
+      "subject": "Drive Universal Mail Automation to deploy-ready",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 103,
+          "state": "CLOSED",
+          "head_sha": "f792b00a917bf31827b82a74773468ede801d8f6",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:12:03Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/103"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #103 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-ship-0628-bc0c",
+      "sha": "be79c843468e4ffaae92cc6b1ece4961aa822102",
+      "committed_at": "2026-06-28T00:16:42-04:00",
+      "subject": "Drive Universal Mail Automation to deploy-ready",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 109,
+          "state": "CLOSED",
+          "head_sha": "be79c843468e4ffaae92cc6b1ece4961aa822102",
+          "merged_at": null,
+          "closed_at": "2026-06-29T05:12:07Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/109"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #109 closed"
+    },
+    {
+      "ref": "limen/rev-organvm-universal-mail--automation-revenue-ship-0630-dfbf",
+      "sha": "f09cc6d47b3656d834144c1b16fb3362baff8f78",
+      "committed_at": "2026-07-09T17:50:59-04:00",
+      "subject": "fix(web): use uma-pending-key for Stripe redirect API key handoff, add p.features to renderPlans",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 123,
+          "state": "CLOSED",
+          "head_sha": "f09cc6d47b3656d834144c1b16fb3362baff8f78",
+          "merged_at": null,
+          "closed_at": "2026-07-09T22:54:36Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/123"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #123 closed"
+    },
+    {
+      "ref": "pr-134",
+      "sha": "ab407da9a3e6d7a105ed5013b68374443d59ad11",
+      "committed_at": "2026-07-06T18:23:47-04:00",
+      "subject": "Tighten types in organvm/universal-mail--automation",
+      "snapshot_signature": null,
+      "linked_prs": [],
+      "disposition": "reap_closed_pr_backup",
+      "evidence": "backup ref for closed PR #134"
+    },
+    {
+      "ref": "pr-53",
+      "sha": "b351813f37a56197973b2dbf4843c1bd7d660da6",
+      "committed_at": "2026-07-01T20:33:22-04:00",
+      "subject": "capture: autonomic off-disk sync 2026-07-02T00:25:52Z",
+      "snapshot_signature": null,
+      "linked_prs": [],
+      "disposition": "reap_capture_backup",
+      "evidence": "autonomic capture ref; PR #53 is merged on a different head"
+    },
+    {
+      "ref": "review/bug-coverage-2026-06-03",
+      "sha": "a912337f5d273d714af506b0e33c93b43c5084bc",
+      "committed_at": "2026-06-05T08:33:41-04:00",
+      "subject": "Merge branch 'main' into review/bug-coverage-2026-06-03",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 29,
+          "state": "MERGED",
+          "head_sha": "a912337f5d273d714af506b0e33c93b43c5084bc",
+          "merged_at": "2026-06-05T12:34:41Z",
+          "closed_at": "2026-06-05T12:34:41Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/29"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #29 merged"
+    },
+    {
+      "ref": "work/mail-send-reacceptance-20260716",
+      "sha": "b1b31b1ab25e994a7a8442728269263312011d71",
+      "committed_at": "2026-07-28T12:11:13-04:00",
+      "subject": "test(mail-send): exercise valid key rotation",
+      "snapshot_signature": null,
+      "linked_prs": [
+        {
+          "number": 174,
+          "state": "MERGED",
+          "head_sha": "b1b31b1ab25e994a7a8442728269263312011d71",
+          "merged_at": "2026-07-28T16:14:43Z",
+          "closed_at": "2026-07-28T16:14:43Z",
+          "url": "https://github.com/organvm/universal-mail--automation/pull/174"
+        }
+      ],
+      "disposition": "reap_terminal_pr",
+      "evidence": "terminal PR #174 merged"
+    }
+  ]
+}

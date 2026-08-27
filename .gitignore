@@ -11,6 +11,16 @@ config/protected_senders.local.txt
 *.log
 gmail_labeler.log
 
+# Test, coverage, and package-build output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
 # Triage audit receipts (PII: real sender addresses) — never commit.
 # audit/README.md documents the format and is tracked; the receipts are not.
 audit/*.jsonl
@@ -20,6 +30,11 @@ data/
 *.db
 *.db-wal
 *.db-shm
+
+# Local runtime cursors and exports. These are generated from mailbox state and
+# must never become source artifacts, even when a particular snapshot is empty.
+labeler_state.json
+mail_export.tsv
 
 # Python
 __pycache__/
@@ -37,4 +52,10 @@ venv/
 # Local agent/session state — contains transcripts, prompts, and private context.
 .claude/sessions/
 .claude/worktrees/
+.codex/sessions/
+.worktrees/
 .serena/
+
+# Merge/rebase scratch files are not product source.
+*.main
+pr[0-9]*.txt
