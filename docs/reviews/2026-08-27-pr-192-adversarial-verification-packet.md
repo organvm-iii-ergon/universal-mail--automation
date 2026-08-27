@@ -140,7 +140,7 @@ gh api "repos/organvm/universal-mail--automation/commits/$(gh pr view 192 --repo
 
 ## Artifact availability and operational evidence
 
-- GitHub reported `total_count: 0` downloadable Actions artifacts for corrective implementation run `33090253731`; a zero-step run is not an artifact receipt.
+- GitHub reported `total_count: 0` downloadable Actions artifacts for corrective implementation run `33093981601`; a zero-step run is not an artifact receipt.
 - No tracked Mail.app doctor report, read-only inventory, immutable migration plan, canary receipt, apply receipt, or rollback receipt exists for this corrective head.
 - The corrective validation used only isolated fakes and local source/package tooling. It did not invoke `osascript`, launch or query Mail.app, construct a live provider, or mutate a mailbox/provider.
 - Doctor and inventory commands remain deliberately unrun under this batch's zero-Mail.app boundary. Their absence blocks operational-readiness claims; it is not silently treated as a pass.
