@@ -14,10 +14,17 @@ from enum import Enum
 
 def _stable_digest(payload) -> str:
     """Deterministic SHA-256 over canonical JSON (full 64 hex chars)."""
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                   ensure_ascii=False, default=str).encode("utf-8")
-    ).hexdigest()
+    try:
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("digest payload must be strict JSON") from exc
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -50,6 +57,7 @@ class MessageReference:
     @property
     def ref_digest(self) -> str:
         """PII-free stable digest of the qualified location."""
+        self.validate_scoped()
         return _stable_digest({
             "provider": self.provider,
             "account": self.account,
@@ -62,6 +70,12 @@ class MessageReference:
                                 sender: Optional[str],
                                 subject: Optional[str]) -> str:
         """Evidence digest from raw observed fields."""
+        if received_iso is not None and not isinstance(received_iso, str):
+            raise ValueError("received_iso must be a string or None")
+        if sender is not None and not isinstance(sender, str):
+            raise ValueError("sender must be a string or None")
+        if subject is not None and not isinstance(subject, str):
+            raise ValueError("subject must be a string or None")
         return _stable_digest({
             "received_iso": received_iso,
             "sender_digest": _stable_digest(sender or "")
@@ -86,7 +100,7 @@ class MessageReference:
                     f"MessageReference.{name} must be a non-empty string"
                 )
 
-    def with_resolved_evidence(self, received_iso: str,
+    def with_resolved_evidence(self, received_iso: Optional[str],
                                sender: str, subject: str,
                                message_id_raw: Optional[str] = None
                                ) -> "MessageReference":
@@ -466,6 +480,11 @@ class LabelAction:
                 "colored flag operation requires a qualified MessageReference"
             )
         if is_flag_mutation and self.message_ref is not None:
+            if self.message_id != self.message_ref.provider_id:
+                raise LabelActionValidationError(
+                    "message_id must match message_ref.provider_id for a "
+                    "colored flag operation"
+                )
             if self.message_ref.evidence_digest is None:
                 raise LabelActionValidationError(
                     "message reference lacks durable evidence digest; "

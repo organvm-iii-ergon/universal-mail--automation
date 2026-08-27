@@ -12,15 +12,12 @@ a dedicated regression test.
 """
 
 import json
-import math
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 import core.flag_workflow as fw
 from core.flag_transactions import (
-    TransactionEngine,
-    TransactionLedger,
     TransactionRollbackReceipt,
 )
 from core.models import FlagColor
@@ -91,7 +88,7 @@ class TestSnapshotArtifactFuzz:
         d["content_hash"] = fw.sha256_hex(d)
         p = tmp_path / "miss.json"
         p.write_text(json.dumps(d))
-        with pytest.raises(Exception):
+        with pytest.raises(fw.FlagWorkflowError):
             fw.load_snapshot(p)
 
     @pytest.mark.parametrize("field,value,expectation", [
@@ -113,7 +110,7 @@ class TestSnapshotArtifactFuzz:
                   since_days=None, total_matched=1, returned_count=1,
                   hidden_by_limit=0)
         if expectation == "build":
-            with pytest.raises((fw.FlagWorkflowError, TypeError, ValueError)):
+            with pytest.raises(fw.FlagWorkflowError):
                 fw.build_snapshot(**{**kw, field: value})
             return
         snap = fw.build_snapshot(**kw)
@@ -123,20 +120,19 @@ class TestSnapshotArtifactFuzz:
         d["content_hash"] = fw.sha256_hex(d)
         p = tmp_path / f"f-{abs(hash(field))}.json"
         p.write_text(json.dumps(d))
-        with pytest.raises((fw.FlagWorkflowError, ValueError, TypeError)):
+        with pytest.raises(fw.FlagWorkflowError):
             fw.load_snapshot(p)
 
-    def test_bool_as_int_limit_is_documented_admission(self):
-        """bool IS an int in Python; True==1 is a coherent limit. Admitted,
-        hash-bound — not a rejection case."""
-        snap = fw.build_snapshot(
-            provider_name="mailapp", account="a", mailbox="m",
-            rows=[_row("1")], complete=True, scope_complete=True,
-            status="complete", errors=[], inaccessible_count=0,
-            timeout_count=0, unknown_index_count=0, limit=True,
-            since_days=None, total_matched=1, returned_count=1,
-            hidden_by_limit=0)
-        assert snap.limit == 1
+    def test_bool_is_rejected_for_integer_limit(self):
+        """JSON booleans never enter numeric artifact fields as 0 or 1."""
+        with pytest.raises(fw.FlagWorkflowError, match="limit"):
+            fw.build_snapshot(
+                provider_name="mailapp", account="a", mailbox="m",
+                rows=[_row("1")], complete=True, scope_complete=True,
+                status="complete", errors=[], inaccessible_count=0,
+                timeout_count=0, unknown_index_count=0, limit=True,
+                since_days=None, total_matched=1, returned_count=1,
+                hidden_by_limit=0)
 
     @pytest.mark.parametrize("bad", ["a" * 63, "a" * 65, "g" * 64])
     def test_malformed_digest_lengths_rejected(self, tmp_path, bad):
@@ -154,12 +150,15 @@ class TestSnapshotArtifactFuzz:
         d["content_hash"] = fw.sha256_hex(d)
         p = tmp_path / f"d-{len(bad)}.json"
         p.write_text(json.dumps(d))
-        with pytest.raises((fw.FlagWorkflowError, Exception)):
+        with pytest.raises(fw.FlagWorkflowError):
             fw.load_snapshot(p)
 
-    def test_nan_admitted_by_json_is_hash_bound_and_inert(self, tmp_path):
-        """python json admits NaN; document behavior: it must not crash
-        validation and MUST be covered by the canonical hash."""
+    @pytest.mark.parametrize("hostile", [
+        float("nan"), float("inf"), float("-inf"),
+    ])
+    def test_nonfinite_number_is_rejected_by_canonical_hash(
+            self, hostile):
+        """Authoritative hashes never emit JavaScript-only number tokens."""
         d = fw.build_snapshot(
             provider_name="mailapp", account="a", mailbox="m",
             rows=[_row("1")], complete=True, scope_complete=True,
@@ -168,13 +167,9 @@ class TestSnapshotArtifactFuzz:
             since_days=None, total_matched=1, returned_count=1,
             hidden_by_limit=0).to_dict()
         d.pop("content_hash")
-        d["since_days"] = float("nan")
-        h1 = fw.sha256_hex(d)
-        d2 = dict(d)
-        d2["since_days"] = float("inf")
-        h2 = fw.sha256_hex(d2)
-        assert isinstance(h1, str) and isinstance(h2, str)
-        assert h1 != h2                             # distinct junk ≠ same hash
+        d["since_days"] = hostile
+        with pytest.raises(fw.FlagWorkflowError, match="non-finite"):
+            fw.sha256_hex(d)
 
     def test_key_order_does_not_change_canonical_hash(self):
         a = {"z": 1, "a": {"y": 2, "b": [3, {"q": 4, "p": 5}]}}
@@ -327,17 +322,14 @@ class TestPlanIntegrity:
         forged["mutations"] = self._flip(plan["mutations"], field)
         forged.pop("plan_hash")
         forged["plan_hash"] = fw.compute_plan_hash(forged)
-        refused, why = False, None
         try:
             muts = fw.validate_plan_schema(forged)
-        except Exception as e:
-            refused, why = True, repr(e)         # parse-time gate
-        else:
-            try:
-                old_approval.validate(plan=dict(forged), plan_mutations=muts)
-            except Exception as e:
-                refused, why = True, repr(e)     # approval-binding gate
-        assert refused, f"field {field} forgery was not refused ({why})"
+        except fw.FlagWorkflowError:
+            return                                  # parse-time gate
+        with pytest.raises(fw.FlagWorkflowError):
+            old_approval.validate(
+                plan=dict(forged), plan_mutations=muts
+            )                                       # approval-binding gate
 
     def test_same_id_different_ref_rejected(self):
         plan = self._plan()
@@ -364,14 +356,12 @@ class TestPlanIntegrity:
     def test_snapshot_id_drift_inside_mutation_rejected(self):
         plan = self._plan()
         muts = [dict(m) for m in plan["mutations"]]
-        real_sid = plan["snapshot_id"]
         muts[0] = dict(muts[0], snapshot_id="snap-elsewhere")
         forged = dict(plan, mutations=muts)
         forged.pop("plan_hash")
         forged["plan_hash"] = fw.compute_plan_hash(forged)
         with pytest.raises(fw.FlagWorkflowError, match="snapshot_id"):
             fw.validate_plan_schema(forged)
-        del real_sid
 
     def test_unknown_provider_fails_closed(self):
         plan = self._plan()
@@ -430,16 +420,16 @@ class TestApprovalHostilityDirectEngine:
         def mutate(h, a):
             a.expires_at = "2026-13-45T99:99:99+99:99"
             a.content_hash = a.to_dict()["content_hash"]
-        with pytest.raises(Exception):
-            self._run(tmp_path, mutate)
+        _, result = self._run(tmp_path, mutate)
+        assert "approval_invalid" in result.error_code
 
     def test_naive_timestamp_treated_as_local_fails_expired_check(
             self, tmp_path):
         def mutate(h, a):
             a.expires_at = "2000-01-01T00:00:00"       # naive & ancient
             a.content_hash = a.to_dict()["content_hash"]
-        with pytest.raises(Exception):
-            self._run(tmp_path, mutate)
+        _, result = self._run(tmp_path, mutate)
+        assert "approval_invalid" in result.error_code
 
     def test_approval_from_previous_snapshot_rejected(self, tmp_path):
         h = Harness(tmp_path, pids=("1",))
@@ -575,17 +565,19 @@ class TestHostileProviderClassification:
 
     def test_set_silent_noop_is_ambiguous(self, tmp_path):
         h, r = self._single(tmp_path, {"set": "silent_noop"})
-        assert r.status == "partially_failed"
+        assert r.status == "ambiguous"
         assert r.failed[0]["status"] == "ambiguous"
         assert r.writes_performed == 1          # True returned: count it
 
     def test_set_wrong_state_is_ambiguous(self, tmp_path):
         h, r = self._single(tmp_path, {"set": "wrong_state"})
+        assert r.status == "ambiguous"
         assert r.failed[0]["status"] == "ambiguous"
         assert r.writes_performed == 1
 
     def test_unsupported_native_index_is_ambiguous(self, tmp_path):
         h, r = self._single(tmp_path, {"set": "unsupported_index"})
+        assert r.status == "ambiguous"
         assert r.failed[0]["status"] == "ambiguous"
 
 
@@ -646,13 +638,11 @@ class TestBatchOfTenAtomicPreflight:
         "rolled_back+pending",
     ])
     def test_mixed_histories_deterministic(self, tmp_path, prestate):
-        h = _ten_msg_harness(tmp_path, ) if False else \
-            Harness(tmp_path, pids=tuple(str(i) for i in range(1, 11)))
+        h = Harness(tmp_path, pids=tuple(str(i) for i in range(1, 11)))
         # Pre-run subset through a REAL apply, then reset live state so
         # remaining pendings still preflight cleanly.
         first_two_ids = [h.mutations[0].mutation_id,
                          h.mutations[1].mutation_id]
-        full = h.approval
         limited = fw.ApprovalReceipt.create(
             plan_hash=h.plan["plan_hash"],
             snapshot_sha256=h.plan["snapshot_sha256"],

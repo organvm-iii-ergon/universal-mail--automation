@@ -1,4 +1,3 @@
-from tests.test_commit6_transactions import ELIG_SUBJECT
 """Commit 7 adversarial suite, part 2 — Groups F–P.
 
 F mid-write matrix · G idempotency/state stress · H ledger corruption
@@ -20,16 +19,21 @@ import cli
 import core.flag_workflow as fw
 from core.flag_transactions import (
     AdvisoryFileLock,
+    FROZEN_LATEST_STATUSES,
     LedgerCorrupted,
+    ST_FROZEN_UNATTEMPTED,
+    ST_PARTIALLY_FAILED,
     ST_ROLLED_BACK,
+    ST_VERIFIED,
     TransactionLedger,
+    TransactionRecord,
     TransactionRollbackReceipt,
 )
 from core.models import FlagColor
 from providers.mailapp import mailapp_index_from_flag
 
 from tests.test_commit6_transactions import (
-    FakeMessage,
+    ELIG_SUBJECT,
     FakeScopedProvider,
     Harness,
 )
@@ -85,7 +89,7 @@ class TestMidWriteFailureMatrix:
         h = Harness(tmp_path, pids=("1",))
         h.provider.set_flag_color_ref = lambda ref, color: True   # liar
         result = h.apply()
-        assert result.status == "partially_failed"
+        assert result.status == "ambiguous"
         statuses = [e["status"] for e in h.ledger.entries()]
         assert "verified" not in statuses
 
@@ -132,39 +136,96 @@ class TestIdempotencyStress:
 
     def test_events_between_authoritative_rows_do_not_corrupt(self, tmp_path):
         led = TransactionLedger(tmp_path / "l.jsonl")
-        from core.flag_transactions import TransactionRecord
-        rec = lambda st, ts: TransactionRecord(     # noqa: E731
-            transaction_id="tx", plan_sha256="a" * 64,
-            approval_sha256="b" * 64, mutation_id="m",
-            ref_digest="c" * 64, pre_state=None, intended_state="red",
-            verified_post_state=None, timestamp=ts, status=st)
+
+        def rec(st, ts):
+            return TransactionRecord(
+                transaction_id="tx-" + "1" * 24,
+                plan_sha256="a" * 64,
+                approval_sha256="b" * 64,
+                mutation_id="mut-" + "2" * 24,
+                ref_digest="c" * 64, pre_state=None, intended_state="red",
+                verified_post_state=(
+                    "red" if st in {"verified", "rolled_back"} else None
+                ),
+                timestamp=ts, status=st)
         led.record(rec("verified", "2026-01-01T00:00:00+00:00"))
         led.record(rec("already_verified", "2026-01-02T00:00:00+00:00"))
         led.record(rec("blocked", "2026-01-03T00:00:00+00:00"))
         led.record(rec("verified", "2026-01-04T00:00:00+00:00"))
-        assert led.authoritative_state("a" * 64, "m") == "verified"
+        mutation_id = "mut-" + "2" * 24
+        assert led.authoritative_state("a" * 64, mutation_id) == "verified"
         led.record(rec("rolled_back", "2026-01-05T00:00:00+00:00"))
-        assert led.authoritative_state("a" * 64, "m") == "rolled_back"
-        assert led.has_verified("a" * 64, "m") is False
+        assert led.authoritative_state("a" * 64, mutation_id) == "rolled_back"
+        assert led.has_verified("a" * 64, mutation_id) is False
 
-    def test_malformed_event_row_cannot_supersede(self, tmp_path):
-        """An unknown-status row (valid JSON but foreign vocabulary) must be
-        an inert event — authority unchanged."""
+    def test_unknown_status_row_blocks_authority_reconstruction(self, tmp_path):
+        """A foreign status cannot be skipped as a harmless event."""
         led = TransactionLedger(tmp_path / "l.jsonl")
-        from core.flag_transactions import TransactionRecord
-        rec = lambda st, ts: TransactionRecord(     # noqa: E731
-            transaction_id="tx", plan_sha256="a" * 64,
-            approval_sha256="b" * 64, mutation_id="m",
-            ref_digest="c" * 64, pre_state=None, intended_state="red",
-            verified_post_state=None, timestamp=ts, status=st)
+
+        def rec(st, ts):
+            return TransactionRecord(
+                transaction_id="tx-" + "1" * 24,
+                plan_sha256="a" * 64,
+                approval_sha256="b" * 64,
+                mutation_id="mut-" + "2" * 24,
+                ref_digest="c" * 64, pre_state=None, intended_state="red",
+                verified_post_state=("red" if st == "verified" else None),
+                timestamp=ts, status=st)
         led.record(rec("verified", "2026-01-01T00:00:00+00:00"))
         with open(led.path, "a") as f:
-            f.write(json.dumps({"plan_sha256": "a" * 64,
-                                "mutation_id": "m",
-                                "status": "SOMEONE_ELSES_STATE",
-                                "timestamp": "9999-01-01T00:00:00+00:00"})
-                     + "\n")
-        assert led.authoritative_state("a" * 64, "m") == "verified"
+            f.write(json.dumps(rec(
+                "SOMEONE_ELSES_STATE",
+                "9999-01-01T00:00:00+00:00",
+            ).to_dict()) + "\n")
+        with pytest.raises(LedgerCorrupted, match="unknown status"):
+            led.authoritative_state("a" * 64, "mut-" + "2" * 24)
+
+    def test_ambiguous_apply_replay_is_frozen_with_zero_writes(self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+        h.provider.set_flag_color_ref = lambda ref, color: True
+        first = h.apply()
+        assert first.status == "ambiguous"
+        assert h.ledger.latest_status(
+            h.plan["plan_hash"], h.mutations[0].mutation_id
+        ) in FROZEN_LATEST_STATUSES
+
+        h.provider.calls.clear()
+        second = h.apply()
+        assert second.status == "blocked"
+        assert second.error_code == "transaction_recovery_required"
+        assert second.writes_performed == 0
+        assert h.provider.calls == []
+
+    @pytest.mark.parametrize("legacy_status", [
+        ST_PARTIALLY_FAILED,
+        ST_FROZEN_UNATTEMPTED,
+    ])
+    def test_legacy_uncertain_rows_freeze_replay_with_zero_writes(
+            self, tmp_path, legacy_status):
+        h = Harness(tmp_path, pids=("1",))
+        mutation = h.mutations[0]
+        h.ledger.record(TransactionRecord(
+            transaction_id=h.engine._txid(
+                h.plan["plan_hash"], mutation, h.approval
+            ),
+            plan_sha256=h.plan["plan_hash"],
+            approval_sha256=h.approval.content_hash,
+            mutation_id=mutation.mutation_id,
+            ref_digest=mutation.ref_digest,
+            pre_state=mutation.observed_flag.value,
+            intended_state=mutation.proposed_flag.value,
+            verified_post_state=None,
+            timestamp="2026-08-27T12:00:00+00:00",
+            status=legacy_status,
+            error_code="legacy_uncertain_write",
+        ))
+
+        result = h.apply()
+
+        assert result.status == "blocked"
+        assert result.error_code == "transaction_recovery_required"
+        assert result.writes_performed == 0
+        assert h.provider.calls == []
 
 
 # --- GROUP H: ledger corruption doctrine --------------------------------------------
@@ -237,6 +298,154 @@ class TestLedgerCorruptionDoctrine:
         flag_calls = [c for c in h.provider.calls if c[0] in ("set_flag_color_ref", "clear_flag_ref")]
         assert flag_calls == []
 
+    def test_fifo_ledger_is_rejected_without_blocking_or_writes(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+        h.ledger.path.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(h.ledger.path)
+
+        result = h.apply()
+
+        assert result.status == "blocked"
+        assert "private_state_failure" in result.error_code
+        assert result.writes_performed == 0
+        assert h.provider.calls == []
+
+    def test_symlinked_verified_ledger_blocks_rollback_before_write(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+        applied = h.apply()
+        mutation = h.mutations[0]
+        receipt = TransactionRollbackReceipt.create(
+            transaction_id=applied.verified[0]["transaction_id"],
+            plan_sha256=h.plan["plan_hash"],
+            approval_sha256=h.approval.content_hash,
+            mutation_id=mutation.mutation_id,
+            ref_digest=mutation.ref_digest,
+            pre_native_flag=mutation.observed_native_flag,
+            pre_semantic_flag=mutation.observed_flag.value,
+            applied_native_flag=mailapp_index_from_flag(
+                mutation.proposed_flag),
+            applied_semantic_flag=mutation.proposed_flag.value,
+        )
+        outside = tmp_path / "verified-outside.jsonl"
+        outside.write_text(h.ledger.path.read_text(encoding="utf-8"),
+                           encoding="utf-8")
+        h.ledger.path.unlink()
+        os.symlink(outside, h.ledger.path)
+        h.provider.calls.clear()
+
+        result = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider)
+
+        assert result.status == "blocked"
+        assert "private_state_failure" in result.error_code
+        assert result.writes_performed == 0
+        assert _write_calls(h) == []
+
+    def test_symlinked_ledger_parent_is_never_followed(self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+        outside = tmp_path / "outside-ledger"
+        outside.mkdir()
+        h.state_dir.mkdir(parents=True, exist_ok=True)
+        os.symlink(outside, h.ledger.path.parent)
+
+        result = h.apply()
+
+        assert result.status == "blocked"
+        assert "private_state_failure" in result.error_code
+        assert result.writes_performed == 0
+        assert h.provider.calls == []
+        assert list(outside.iterdir()) == []
+
+    def test_short_ledger_write_is_completed_before_fsync(
+            self, tmp_path, monkeypatch):
+        ledger = TransactionLedger(tmp_path / "ledger.jsonl")
+        original_write = os.write
+        calls = 0
+
+        def short_first_write(fd, data):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                prefix_length = max(1, len(data) // 2)
+                return original_write(fd, data[:prefix_length])
+            return original_write(fd, data)
+
+        monkeypatch.setattr("core.flag_transactions.os.write", short_first_write)
+        ledger.record(TransactionRecord(
+            transaction_id="tx-" + "a" * 24,
+            plan_sha256="b" * 64,
+            approval_sha256="c" * 64,
+            mutation_id="mut-" + "1" * 24,
+            ref_digest="d" * 64,
+            pre_state="orange",
+            intended_state="red",
+            verified_post_state=None,
+            timestamp="2026-08-27T12:00:00+00:00",
+            status="applying",
+        ))
+
+        assert calls >= 2
+        assert len(ledger.entries()) == 1
+
+    @pytest.mark.parametrize("field,value", [
+        ("intended_state", "magenta"),
+        ("pre_state", "orange-ish"),
+        ("verified_post_state", None),
+    ])
+    def test_exact_shape_ledger_rejects_invalid_state_semantics(
+            self, tmp_path, field, value):
+        ledger = TransactionLedger(tmp_path / "ledger.jsonl")
+        row = TransactionRecord(
+            transaction_id="tx-" + "a" * 24,
+            plan_sha256="b" * 64,
+            approval_sha256="c" * 64,
+            mutation_id="mut-" + "1" * 24,
+            ref_digest="d" * 64,
+            pre_state="orange",
+            intended_state="red",
+            verified_post_state="red",
+            timestamp="2026-08-27T12:00:00+00:00",
+            status=ST_VERIFIED,
+        ).to_dict()
+        row[field] = value
+        ledger.path.parent.mkdir(parents=True, exist_ok=True)
+        ledger.path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+        with pytest.raises(LedgerCorrupted):
+            ledger.entries()
+
+    def test_duplicate_authority_key_blocks_with_zero_provider_writes(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+        mutation = h.mutations[0]
+        row = TransactionRecord(
+            transaction_id=h.engine._txid(
+                h.plan["plan_hash"], mutation, h.approval
+            ),
+            plan_sha256=h.plan["plan_hash"],
+            approval_sha256=h.approval.content_hash,
+            mutation_id=mutation.mutation_id,
+            ref_digest=mutation.ref_digest,
+            pre_state=mutation.observed_flag.value,
+            intended_state=mutation.proposed_flag.value,
+            verified_post_state=mutation.proposed_flag.value,
+            timestamp="2026-08-27T12:00:00+00:00",
+            status=ST_VERIFIED,
+        ).to_dict()
+        encoded = json.dumps(row)
+        duplicate = encoded[:-1] + ', "status": "rolled_back"}\n'
+        h.ledger.path.parent.mkdir(parents=True, exist_ok=True)
+        h.ledger.path.write_text(duplicate, encoding="utf-8")
+
+        result = h.apply()
+
+        assert result.status == "blocked"
+        assert "private_state_failure" in result.error_code
+        assert result.writes_performed == 0
+        assert h.provider.calls == []
+
 
 # --- GROUP I: concurrency / lock stress -----------------------------------------------
 
@@ -297,7 +506,7 @@ print("RELEASED")
         h = Harness(tmp_path, pids=("1",))
         m = h.mutations[0]
         receipt = TransactionRollbackReceipt.create(
-            transaction_id="tx-unborn",          # lineage will refuse later;
+            transaction_id="tx-" + "f" * 24,     # lineage will refuse later;
             plan_sha256=h.plan["plan_hash"],     # the POINT is lock ordering
             approval_sha256=h.approval.content_hash,
             mutation_id=m.mutation_id,
@@ -334,9 +543,14 @@ class TestOverrideStateMachine:
         # Restart persistence: fresh store instance over same file.
         store2 = fw.OverrideStore(h.overrides.path)
         assert store2.is_suppressed(ref)
-        # Re-applying the same plan after override detection returns already_applied
-        # (engine tracks plan application state independently of overrides).
-        assert h.apply().status == "already_applied"
+        # Re-applying the same plan remains blocked by the persisted human
+        # override even though the ledger remembers the original write.
+        h.provider.calls.clear()
+        replay = h.apply()
+        assert replay.status == "blocked"
+        assert replay.error_code == "human_override_suppressed"
+        assert replay.writes_performed == 0
+        assert h.provider.calls == []
         # Unlock by named operator.
         store2.unlock(ref, actor="human-operator")
         assert not store2.is_suppressed(ref)
@@ -348,7 +562,7 @@ class TestOverrideStateMachine:
         assert store2.is_suppressed(ref)
         # Rollback after override blocked + never implicitly unlocks.
         receipt = TransactionRollbackReceipt.create(
-            transaction_id="tx-any",
+            transaction_id="tx-" + "e" * 24,
             plan_sha256=h.plan["plan_hash"],
             approval_sha256=h.approval.content_hash,
             mutation_id=m.mutation_id,
@@ -416,7 +630,6 @@ class TestCLISafetyMatrix:
         import sys as _sys
         monkeypatch_argv = ["prog", "flags", "apply",
                             "--force", "--plan", "/x"]
-        import io, contextlib
         from unittest import mock
         with mock.patch.object(_sys, "argv", monkeypatch_argv):
             with pytest.raises(SystemExit) as exc:
@@ -489,13 +702,6 @@ print("RC", rc)
 
     @staticmethod
     def _make_snapshot_file(tmp_path):
-        from types import SimpleNamespace
-        row = SimpleNamespace(
-            provider_id="42", account="acct", mailbox="INBOX",
-            sender="billing@corp.example", subject=ELIG_SUBJECT,
-            native_index=mailapp_index_from_flag(FlagColor.ORANGE),
-            flag_color=FlagColor.ORANGE,
-            received_iso="2026-07-01T00:00:00")
         code = f"""
 import sys
 sys.path.insert(0, {str(REPO_ROOT)!r})
@@ -561,8 +767,6 @@ class TestPropertyInvariants:
     def test_mutation_serialize_parse_roundtrip(self, tmp_path):
         h = Harness(tmp_path, pids=("1",))
         original = h.mutations[0].to_dict()
-        parsed = fw.validate_plan_schema(dict(
-            h.plan)).__class__ and None  # keep linters quiet
         muts = fw.validate_plan_schema(h.plan)
         assert muts[0].to_dict() == original
 

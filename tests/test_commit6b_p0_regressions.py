@@ -47,7 +47,13 @@ class TestNativeZeroIsValid:
         hash — a self-consistent artifact the engine parses itself."""
         muts = [dict(m, auto_eligible=True, review_required=False)
                 for m in plan["mutations"]]
-        out = dict(plan, mutations=muts)
+        out = dict(
+            plan,
+            mutations=muts,
+            auto_eligible_count=sum(
+                mutation["auto_eligible"] for mutation in muts
+            ),
+        )
         out.pop("plan_hash")
         out["plan_hash"] = fw.compute_plan_hash(out)
         return out
@@ -168,19 +174,11 @@ class TestNativeZeroIsValid:
         h.plan = dict(h.plan, mutations=muts)
         h.plan.pop("plan_hash")
         h.plan["plan_hash"] = fw.compute_plan_hash(h.plan)
-        # Approval must bind THIS artifact (engine validates lineage).
-        parsed = fw.validate_plan_schema(h.plan)
-        h.approval = fw.ApprovalReceipt.create(
-            plan_hash=h.plan["plan_hash"],
-            snapshot_sha256=h.plan["snapshot_sha256"],
-            policy_sha256=h.plan["policy_sha256"],
-            approved_mutation_ids=[m.mutation_id for m in parsed],
-            approving_operator="operator",
-            canary_limit=max(1, len(parsed)))
-        result = h.apply()
-        assert result.status == "blocked"
-        assert result.failed[0]["error_code"] == \
-            "missing_observed_native_flag"
+        # Strict artifact validation refuses the incoherent native/semantic
+        # pair before approval or provider construction.
+        with pytest.raises(fw.FlagWorkflowError, match="native"):
+            fw.validate_plan_schema(h.plan)
+        assert h.provider.calls == []
 
     def test_live_native_unavailable_refused(self, tmp_path):
         h = Harness(tmp_path, pids=("1",))
@@ -302,8 +300,10 @@ class TestRehardenPrivateState:
         ledger = TransactionLedger(ledger_path)
         from core.flag_transactions import TransactionRecord
         ledger.record(TransactionRecord(
-            transaction_id="tx-x", plan_sha256=fw.sha256_hex("p"),
-            approval_sha256=fw.sha256_hex("a"), mutation_id="m",
+            transaction_id="tx-" + "a" * 24,
+            plan_sha256=fw.sha256_hex("p"),
+            approval_sha256=fw.sha256_hex("a"),
+            mutation_id="mut-" + "b" * 24,
             ref_digest=fw.sha256_hex("r"), pre_state=None,
             intended_state="red", verified_post_state=None,
             timestamp="2026-08-26T00:00:00+00:00", status="prepared"))
@@ -350,7 +350,9 @@ class TestRehardenPrivateState:
 
     def test_preexisting_loose_override_store_hardened(self, tmp_path):
         store_path = tmp_path / "overrides.json"
-        store_path.write_text("{}")
+        store_path.write_text(
+            '{"last_automation": {}, "overrides": {}, "suppressed": {}}'
+        )
         os.chmod(store_path, 0o644)
         os.chmod(tmp_path, 0o755)
         store = fw.OverrideStore(store_path)

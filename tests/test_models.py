@@ -13,7 +13,35 @@ from core.models import (
     FlagColor,
     StateSource,
     FlagMutation,
+    MessageReference,
 )
+
+
+class TestMessageReference:
+    def test_ref_digest_rejects_unscoped_values(self):
+        ref = MessageReference(
+            provider="mailapp",
+            account="acct",
+            mailbox="INBOX",
+            provider_id="",
+        )
+        with pytest.raises(ValueError, match="provider_id"):
+            _ = ref.ref_digest
+
+    @pytest.mark.parametrize("field,value", [
+        ("received_iso", float("nan")),
+        ("sender", False),
+        ("subject", 7),
+    ])
+    def test_evidence_digest_rejects_non_string_values(self, field, value):
+        values = {
+            "received_iso": None,
+            "sender": "sender@example.com",
+            "subject": "Subject",
+        }
+        values[field] = value
+        with pytest.raises(ValueError, match=field):
+            MessageReference.compute_evidence_digest(**values)
 
 
 class TestActionType:
@@ -181,7 +209,7 @@ class TestLabelAction:
         """End-to-end: merge product of two ref'd actions still validates."""
         a = LabelAction(message_id="1", message_ref=_vref())
         b = LabelAction(message_id="1", flag_color=FlagColor.ORANGE,
-                        message_ref=_vref(provider_id="2"))
+                        message_ref=_vref(provider_id="1"))
         merged = a.merge(b)
         merged.validate()          # must not raise
 
@@ -242,6 +270,26 @@ class TestLabelActionValidation:
             match="lacks durable evidence",
         ):
             action.validate()
+
+    def test_message_id_must_match_scoped_provider_id(self):
+        action = LabelAction(
+            message_id="1",
+            flag_color=FlagColor.RED,
+            message_ref=_vref(provider_id="2"),
+        )
+        with pytest.raises(
+            LabelActionValidationError,
+            match="message_id must match message_ref.provider_id",
+        ):
+            action.validate()
+
+    def test_resolved_evidence_preserves_missing_received_date(self):
+        reference = _vref(evidence=False)
+        resolved = reference.with_resolved_evidence(
+            None, "a@b.com", "Subject"
+        )
+        assert resolved.received_iso is None
+        assert resolved.evidence_digest is not None
 
     def test_star_with_flag_color_rejected(self):
         action = LabelAction(message_id="1", star=True, flag_color=FlagColor.RED)

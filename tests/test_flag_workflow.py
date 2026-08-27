@@ -3,6 +3,7 @@ approvals, ledger, overrides, rollback receipts (Commit 3 extraction)."""
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from core.models import FlagColor
 from core import flag_workflow as fw
 from core.flag_policy import (
+    AUTO_ELIGIBLE_THRESHOLD,
     MIGRATION_POLICY_VERSION,
     POLICY_SHA256,
     propose,
@@ -80,11 +82,36 @@ class TestCanonicalHashing:
         with pytest.raises(fw.FlagWorkflowError, match="full 64-char"):
             fw.require_hex256("abc123", "field")
 
+    def test_require_hex256_rejects_uppercase_without_normalizing(self):
+        with pytest.raises(fw.FlagWorkflowError, match="full 64-char"):
+            fw.require_hex256("A" * 64, "field")
+
     def test_plan_hash_excludes_itself(self):
         plan = {"schema": "x", "plan_hash": "PLACEHOLDER", "n": 1}
         h = fw.compute_plan_hash(plan)
         assert h == fw.compute_plan_hash({**plan, "plan_hash": "OTHER"})
         assert len(h) == 64
+
+    @pytest.mark.parametrize("payload", [
+        {"value": float("nan")},
+        {"value": float("inf")},
+        {"value": object()},
+        {"value": ("tuple",)},
+        {1: "coerced-key"},
+        {"value": FlagColor.RED},
+    ])
+    def test_non_json_or_coercive_values_fail_with_workflow_error(
+            self, payload):
+        with pytest.raises(fw.FlagWorkflowError):
+            fw.sha256_hex(payload)
+
+    def test_artifact_loader_rejects_duplicate_json_keys(self, tmp_path):
+        artifact = tmp_path / "duplicate.json"
+        artifact.write_text(
+            '{"schema":"first","schema":"second"}', encoding="utf-8"
+        )
+        with pytest.raises(fw.FlagWorkflowError, match="invalid JSON"):
+            fw.load_snapshot(artifact)
 
 
 class TestSnapshotModel:
@@ -135,7 +162,7 @@ class TestSnapshotModel:
         path.write_text(json.dumps(receipt))
         loaded = json.loads(path.read_text())
 
-        loaded_tampered = dict(loaded, complete=not loaded["complete"])
+        loaded_tampered = dict(loaded, content_hash="0" * 64)
         with pytest.raises(fw.FlagWorkflowError, match="tampered"):
             fw.validate_public_receipt(loaded_tampered)
 
@@ -143,6 +170,70 @@ class TestSnapshotModel:
                         content_hash=receipt["content_hash"])
         with pytest.raises(fw.FlagWorkflowError, match="forbidden keys"):
             fw.validate_public_receipt(injected)
+
+        unsafe_code = dict(loaded, error_codes=["acct/SecretMailbox"])
+        unsafe_code["content_hash"] = fw.sha256_hex({
+            key: value
+            for key, value in unsafe_code.items()
+            if key != "content_hash"
+        })
+        with pytest.raises(fw.FlagWorkflowError, match="allowlist"):
+            fw.validate_public_receipt(unsafe_code)
+
+    @pytest.mark.parametrize("location,key,value", [
+        ("top", "operator_note", "private"),
+        ("counts", "raw_errors", ["private"]),
+        ("message", "sender", "secret@example.test"),
+    ])
+    def test_public_receipt_rejects_hash_valid_unknown_nested_keys(
+            self, location, key, value):
+        public = _snapshot([_msg()]).to_public_safe()
+        if location == "top":
+            public[key] = value
+        elif location == "counts":
+            public["counts"][key] = value
+        else:
+            public["messages"][0][key] = value
+        public["content_hash"] = fw.sha256_hex({
+            name: field
+            for name, field in public.items()
+            if name != "content_hash"
+        })
+        with pytest.raises(fw.FlagWorkflowError, match="schema|forbidden"):
+            fw.validate_public_receipt(public)
+
+    @pytest.mark.parametrize("location,key", [
+        ("top", "provider"),
+        ("counts", "returned"),
+        ("message", "flag"),
+    ])
+    def test_public_receipt_requires_every_schema_key(self, location, key):
+        public = _snapshot([_msg()]).to_public_safe()
+        if location == "top":
+            public.pop(key)
+        elif location == "counts":
+            public["counts"].pop(key)
+        else:
+            public["messages"][0].pop(key)
+        with pytest.raises(fw.FlagWorkflowError, match="missing"):
+            fw.validate_public_receipt(public)
+
+    @pytest.mark.parametrize("attack", [
+        lambda public: public["counts"].__setitem__("returned", True),
+        lambda public: public["messages"][0].__setitem__("flag", "Red"),
+        lambda public: public.__setitem__("zero_write_mode", "true"),
+    ])
+    def test_public_receipt_rejects_hash_valid_coercive_values(
+            self, attack):
+        public = _snapshot([_msg()]).to_public_safe()
+        attack(public)
+        public["content_hash"] = fw.sha256_hex({
+            name: field
+            for name, field in public.items()
+            if name != "content_hash"
+        })
+        with pytest.raises(fw.FlagWorkflowError):
+            fw.validate_public_receipt(public)
 
     def test_snapshot_ids_unique_across_identical_audits(self):
         """P0 #1: same scope + same count + different runs → different ids,
@@ -268,6 +359,72 @@ class TestSnapshotModel:
         with pytest.raises(fw.FlagWorkflowError, match="tampered"):
             fw.load_snapshot(path)
 
+    @pytest.mark.parametrize("payload", ["{broken", "[]", '"scalar"'])
+    def test_load_snapshot_wraps_malformed_json_as_typed_error(
+            self, tmp_path, payload):
+        path = tmp_path / "malformed.json"
+        path.write_text(payload, encoding="utf-8")
+        with pytest.raises(fw.FlagWorkflowError):
+            fw.load_snapshot(path)
+
+    def test_complete_snapshot_requires_coherent_counts(self, tmp_path):
+        snap = _snapshot([_msg()])
+        raw = snap.to_dict()
+        raw["total_matched"] = 2
+        raw["content_hash"] = fw.sha256_hex({
+            key: value
+            for key, value in raw.items()
+            if key != "content_hash"
+        })
+        path = tmp_path / "incoherent.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        with pytest.raises(fw.FlagWorkflowError, match="counts are incoherent"):
+            fw.load_snapshot(path)
+
+    @pytest.mark.parametrize("field,value", [
+        ("limit", 0),
+        ("limit", -1),
+        ("since_days", 0),
+        ("since_days", -1),
+    ])
+    def test_snapshot_rejects_nonpositive_scan_bounds(
+            self, tmp_path, field, value):
+        raw = _snapshot([_msg()]).to_dict()
+        raw[field] = value
+        raw["content_hash"] = fw.sha256_hex({
+            key: item for key, item in raw.items() if key != "content_hash"
+        })
+        path = tmp_path / "bad-bound.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        with pytest.raises(fw.FlagWorkflowError, match=field):
+            fw.load_snapshot(path)
+
+    def test_public_error_codes_are_fixed_allowlist_without_scope(self):
+        private_error = "secret@example/Private Mailbox: permission denied"
+        snap = fw.build_snapshot(
+            provider_name="mailapp",
+            account="secret@example",
+            mailbox="Private Mailbox",
+            rows=[],
+            complete=False,
+            scope_complete=False,
+            status="failed",
+            errors=[private_error],
+            inaccessible_count=0,
+            timeout_count=0,
+            unknown_index_count=0,
+            limit=500,
+            since_days=None,
+            total_matched=0,
+            returned_count=0,
+            hidden_by_limit=0,
+        )
+        public = snap.to_public_safe()
+        assert public["error_codes"] == ["provider_error"]
+        assert "secret@example" not in json.dumps(public)
+        assert "Private Mailbox" not in json.dumps(public)
+
 
 class TestPlanBuildingAndValidation:
     def _complete_snapshot(self):
@@ -288,7 +445,7 @@ class TestPlanBuildingAndValidation:
             # Measured confidence — never None-by-laziness, never fake 0.7.
             assert isinstance(m["confidence"], float)
             assert 0.0 <= m["confidence"] <= 1.0
-            if m["confidence"] < fw.AUTO_ELIGIBLE_THRESHOLD:
+            if m["confidence"] < AUTO_ELIGIBLE_THRESHOLD:
                 assert m["review_required"] is True
             # Durable private bindings ride along for Commit 6 preflight.
             for key in ("provider", "account", "mailbox", "provider_id",
@@ -300,7 +457,13 @@ class TestPlanBuildingAndValidation:
     def test_incomplete_snapshot_cannot_produce_plan(self):
         snap = self._complete_snapshot()
         broken = fw.FlagSnapshot(
-            **{**snap.__dict__, "complete": False, "status": "bounded_partial"},
+            **{
+                **snap.__dict__,
+                "complete": False,
+                "scope_complete": False,
+                "status": "failed",
+                "errors": ["scope incomplete"],
+            },
         )
         broken.content_hash = ""
         broken.content_hash = broken.to_dict()["content_hash"]
@@ -313,7 +476,8 @@ class TestPlanBuildingAndValidation:
         bounded = fw.FlagSnapshot(
             **{**snap.__dict__, "complete": False,
                "scope_complete": True, "status": "bounded_partial",
-               "hidden_by_limit": 144, "next_cursor": '{"resume":"widen"}'},
+               "total_matched": 146, "hidden_by_limit": 144,
+               "next_cursor": '{"resume":"widen"}'},
         )
         bounded.content_hash = ""
         bounded.content_hash = bounded.to_dict()["content_hash"]
@@ -356,6 +520,116 @@ class TestPlanBuildingAndValidation:
         plan["plan_hash"] = fw.compute_plan_hash(plan)
         with pytest.raises(fw.FlagWorkflowError, match="full 64-char"):
             fw.validate_plan_schema(plan)
+
+    @pytest.mark.parametrize("field", ["review_required", "auto_eligible"])
+    def test_validate_rejects_string_booleans(self, field):
+        plan = fw.build_plan(self._complete_snapshot())
+        plan["mutations"][0][field] = "false"
+        plan["plan_hash"] = fw.compute_plan_hash(plan)
+        with pytest.raises(fw.FlagWorkflowError, match="must be a boolean"):
+            fw.validate_plan_schema(plan)
+
+    @pytest.mark.parametrize("field", ["reason", "confidence"])
+    def test_validate_requires_reason_and_confidence_keys(self, field):
+        plan = fw.build_plan(self._complete_snapshot())
+        plan["mutations"][0].pop(field)
+        plan["plan_hash"] = fw.compute_plan_hash(plan)
+        with pytest.raises(fw.FlagWorkflowError, match="missing required key"):
+            fw.validate_plan_schema(plan)
+
+    def test_validate_recomputes_ref_digest_from_scoped_identity(self):
+        plan = fw.build_plan(self._complete_snapshot())
+        plan["mutations"][0]["ref_digest"] = "b" * 64
+        plan["plan_hash"] = fw.compute_plan_hash(plan)
+        with pytest.raises(fw.FlagWorkflowError, match="ref_digest does not match"):
+            fw.validate_plan_schema(plan)
+
+    def test_public_projection_revalidates_private_plan(self):
+        plan = fw.build_plan(self._complete_snapshot())
+        plan["snapshot_complete"] = False
+        plan["plan_hash"] = fw.compute_plan_hash(plan)
+        with pytest.raises(fw.FlagWorkflowError, match="snapshot_complete"):
+            fw.to_public_safe_plan(plan)
+
+    @pytest.mark.parametrize("location,key,value", [
+        ("top", "operator_note", "private"),
+        ("mutation", "account", "secret@example.test"),
+    ])
+    def test_public_plan_rejects_hash_valid_unknown_keys(
+            self, location, key, value):
+        public = fw.to_public_safe_plan(
+            fw.build_plan(self._complete_snapshot())
+        )
+        if location == "top":
+            public[key] = value
+        else:
+            public["mutations"][0][key] = value
+        public["plan_public_hash"] = fw.sha256_hex({
+            name: field
+            for name, field in public.items()
+            if name != "plan_public_hash"
+        })
+        with pytest.raises(fw.FlagWorkflowError, match="schema|forbidden"):
+            fw.validate_public_plan(public)
+
+    @pytest.mark.parametrize("location,key", [
+        ("top", "source_plan_sha256"),
+        ("mutation", "reason_code"),
+    ])
+    def test_public_plan_requires_every_schema_key(self, location, key):
+        public = fw.to_public_safe_plan(
+            fw.build_plan(self._complete_snapshot())
+        )
+        if location == "top":
+            public.pop(key)
+        else:
+            public["mutations"][0].pop(key)
+        with pytest.raises(fw.FlagWorkflowError, match="missing"):
+            fw.validate_public_plan(public)
+
+    @pytest.mark.parametrize("field,value", [
+        ("review_required", "false"),
+        ("auto_eligible", 1),
+        ("confidence", float("nan")),
+        ("observed_flag", "Red"),
+    ])
+    def test_public_plan_rejects_hash_valid_coercive_mutation_values(
+            self, field, value):
+        public = fw.to_public_safe_plan(
+            fw.build_plan(self._complete_snapshot())
+        )
+        public["mutations"][0][field] = value
+        if isinstance(value, float) and not value == value:
+            with pytest.raises(fw.FlagWorkflowError, match="non-finite"):
+                fw.sha256_hex(public)
+            return
+        public["plan_public_hash"] = fw.sha256_hex({
+            name: item
+            for name, item in public.items()
+            if name != "plan_public_hash"
+        })
+        with pytest.raises(fw.FlagWorkflowError):
+            fw.validate_public_plan(public)
+
+    def test_private_plan_writer_is_atomic_0600_and_revalidates(
+            self, tmp_path):
+        plan = fw.build_plan(self._complete_snapshot())
+        private_dir = tmp_path / "loose-private-dir"
+        private_dir.mkdir(mode=0o755)
+        os.chmod(private_dir, 0o755)
+        output = fw.write_private_plan(
+            plan, private_dir / "private-plan.json"
+        )
+        assert output == private_dir / "private-plan.json"
+        assert oct(os.stat(private_dir).st_mode)[-3:] == "700"
+        assert oct(os.stat(output).st_mode)[-3:] == "600"
+        assert json.loads(output.read_text(encoding="utf-8")) == plan
+        assert not list(private_dir.glob(".tmp-flags-plan-*"))
+
+        plan["mutations"][0]["ref_digest"] = "c" * 64
+        plan["plan_hash"] = fw.compute_plan_hash(plan)
+        with pytest.raises(fw.FlagWorkflowError, match="ref_digest"):
+            fw.write_private_plan(plan, private_dir / "forged-plan.json")
 
 
 class TestApprovalValidation:
@@ -526,6 +800,34 @@ class TestApprovalValidation:
         with pytest.raises(fw.FlagWorkflowError, match="expired"):
             approval.validate(plan=dict(plan), plan_mutations=muts, now=now)
 
+    def test_future_issued_at_rejected(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        now = datetime.now(timezone.utc)
+        approval = self._approval(
+            plan,
+            muts,
+            issued_at=(now + timedelta(minutes=1)).isoformat(),
+        )
+        with pytest.raises(fw.FlagWorkflowError, match="future"):
+            approval.validate(
+                plan=dict(plan), plan_mutations=muts, now=now
+            )
+
+    @pytest.mark.parametrize("bad_now", [
+        "2026-01-01T00:00:00+00:00",
+        0,
+        datetime(2026, 1, 1),
+    ])
+    def test_validation_clock_requires_typed_aware_datetime(self, bad_now):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        approval = self._approval(plan, muts)
+        with pytest.raises(fw.FlagWorkflowError, match="validation clock"):
+            approval.validate(
+                plan=dict(plan), plan_mutations=muts, now=bad_now
+            )
+
     def test_unknown_mutation_id_rejected(self):
         plan = fw.build_plan(self._eligible_snapshot("1"))
         muts = fw.validate_plan_schema(plan)
@@ -534,6 +836,41 @@ class TestApprovalValidation:
         self._rehash(approval)
         with pytest.raises(fw.FlagWorkflowError, match="absent from plan"):
             approval.validate(plan=dict(plan), plan_mutations=muts)
+
+    def test_expiry_is_derived_from_supplied_issued_at(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        issued = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        approval = self._approval(
+            plan,
+            muts,
+            issued_at=issued.isoformat(),
+            ttl_seconds=90,
+        )
+        assert datetime.fromisoformat(approval.expires_at) == (
+            issued + timedelta(seconds=90)
+        )
+
+    @pytest.mark.parametrize(
+        "issued_at", ["not-a-timestamp", "2026-01-01T12:00:00"]
+    )
+    def test_create_rejects_malformed_or_naive_issued_at(
+            self, issued_at):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        with pytest.raises(fw.FlagWorkflowError):
+            self._approval(plan, muts, issued_at=issued_at)
+
+    def test_create_rejects_unrepresentable_expiry(self):
+        plan = fw.build_plan(self._eligible_snapshot("1"))
+        muts = fw.validate_plan_schema(plan)
+        with pytest.raises(fw.FlagWorkflowError, match="cannot be represented"):
+            self._approval(
+                plan,
+                muts,
+                issued_at="9999-12-31T23:59:59+00:00",
+                ttl_seconds=2,
+            )
 
 
 class TestAppliedPlanLedger:
@@ -550,6 +887,15 @@ class TestAppliedPlanLedger:
         fw.AppliedPlanLedger(tmp_path / "l.jsonl").record(ph, "m", True)
         assert fw.AppliedPlanLedger(tmp_path / "l.jsonl").has(ph, "m")
 
+    def test_malformed_authoritative_history_fails_closed(self, tmp_path):
+        ledger = fw.AppliedPlanLedger(tmp_path / "ledger.jsonl")
+        plan_hash = fw.sha256_hex("plan")
+        ledger.record(plan_hash, "mut-1", True)
+        with ledger.path.open("a", encoding="utf-8") as handle:
+            handle.write("{malformed\n")
+        with pytest.raises(fw.FlagWorkflowError, match="corrupt"):
+            ledger.has(plan_hash, "mut-1")
+
 
 class TestOverrideStore:
     def test_record_suppress_unlock_roundtrip(self, tmp_path):
@@ -563,8 +909,14 @@ class TestOverrideStore:
         assert store.is_suppressed(ref) is False
         # History (with unlock audit fields) persists after unlock.
         history = store.list_overrides()[ref]
+        assert history["suppressed"] is False
         assert history["unlock_actor"] == "human-operator"
         assert history["unlocked_at"] is not None
+
+    def test_constructor_expands_user_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        store = fw.OverrideStore("~/state/overrides.json")
+        assert store.path == tmp_path / "state" / "overrides.json"
 
     def test_automation_state_does_NOT_clear_override(self, tmp_path):
         """Commit 6 UNLOCK-ONLY contract: only explicit operator unlock
@@ -586,16 +938,173 @@ class TestOverrideStore:
         with pytest.raises(fw.FlagWorkflowError, match="corrupt"):
             store.list_overrides()
 
+    def test_duplicate_suppression_key_fails_closed(self, tmp_path):
+        path = tmp_path / "o.json"
+        path.write_text(
+            '{"overrides":{},"suppressed":{},"suppressed":{},'
+            '"last_automation":{}}',
+            encoding="utf-8",
+        )
+        with pytest.raises(fw.FlagWorkflowError, match="corrupt"):
+            fw.OverrideStore(path).list_overrides()
+
+    def test_dangling_symlink_store_is_not_treated_as_fresh(self, tmp_path):
+        path = tmp_path / "dangling.json"
+        os.symlink(tmp_path / "missing-target.json", path)
+        with pytest.raises(fw.FlagWorkflowError, match="unreadable"):
+            fw.OverrideStore(path).list_overrides()
+
+    def test_fifo_store_is_rejected_without_blocking(self, tmp_path):
+        path = tmp_path / "override.fifo"
+        os.mkfifo(path)
+        with pytest.raises(fw.FlagWorkflowError, match="regular file"):
+            fw.OverrideStore(path).list_overrides()
+
+    def test_symlinked_store_parent_is_not_followed(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        state_link = tmp_path / "state"
+        os.symlink(outside, state_link)
+        store = fw.OverrideStore(state_link / "overrides.json")
+
+        with pytest.raises(fw.FlagWorkflowError, match="unavailable"):
+            store.list_overrides()
+        assert list(outside.iterdir()) == []
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            [],
+            {},
+            {"overrides": {}, "suppressed": {}},
+            {
+                "overrides": {},
+                "suppressed": {},
+                "last_automation": {},
+                "unexpected": {},
+            },
+            {
+                "overrides": [],
+                "suppressed": {},
+                "last_automation": {},
+            },
+            {
+                "overrides": {fw.sha256_hex("ref"): []},
+                "suppressed": {},
+                "last_automation": {},
+            },
+            {
+                "overrides": {},
+                "suppressed": {},
+                "last_automation": [],
+            },
+        ],
+    )
+    def test_invalid_mapping_shapes_fail_closed(self, tmp_path, payload):
+        path = tmp_path / "o.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(fw.FlagWorkflowError, match="corrupt"):
+            fw.OverrideStore(path).list_overrides()
+
+    @staticmethod
+    def _active_override(ref):
+        return {
+            "ref_digest": ref,
+            "detected_at": "2026-08-27T12:00:00+00:00",
+            "automation_expected_state": "red",
+            "human_observed_state": "gray",
+            "suppressed": True,
+            "unlocked_at": None,
+            "unlock_actor": None,
+        }
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "active_missing_suppression",
+            "orphan_suppression",
+            "active_with_unlock_fields",
+            "unlocked_missing_audit",
+            "unlocked_naive_timestamp",
+            "unlocked_empty_actor",
+            "unlocked_still_suppressed",
+        ],
+    )
+    def test_inconsistent_override_lifecycle_fails_closed(
+            self, tmp_path, case):
+        ref = fw.sha256_hex("ref")
+        record = self._active_override(ref)
+        payload = {
+            "overrides": {ref: record},
+            "suppressed": {ref: True},
+            "last_automation": {},
+        }
+        if case == "active_missing_suppression":
+            payload["suppressed"] = {}
+        elif case == "orphan_suppression":
+            payload["overrides"] = {}
+        elif case == "active_with_unlock_fields":
+            record["unlocked_at"] = "2026-08-27T12:01:00+00:00"
+            record["unlock_actor"] = "operator"
+        else:
+            record["suppressed"] = False
+            payload["suppressed"] = {}
+            if case == "unlocked_naive_timestamp":
+                record["unlocked_at"] = "2026-08-27T12:01:00"
+                record["unlock_actor"] = "operator"
+            elif case == "unlocked_empty_actor":
+                record["unlocked_at"] = "2026-08-27T12:01:00+00:00"
+                record["unlock_actor"] = ""
+            elif case == "unlocked_still_suppressed":
+                record["unlocked_at"] = "2026-08-27T12:01:00+00:00"
+                record["unlock_actor"] = "operator"
+                payload["suppressed"] = {ref: True}
+
+        path = tmp_path / "o.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(fw.FlagWorkflowError):
+            fw.OverrideStore(path).list_overrides()
+
+    def test_store_wide_lock_preserves_concurrent_distinct_updates(
+            self, tmp_path):
+        path = tmp_path / "o.json"
+        references = [fw.sha256_hex(f"ref-{index}") for index in range(32)]
+
+        def record(reference):
+            fw.OverrideStore(path).detect_override(reference, "red", "gray")
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(record, references))
+
+        store = fw.OverrideStore(path)
+        assert set(store.list_overrides()) == set(references)
+        assert all(store.is_suppressed(reference) for reference in references)
+        assert oct(os.stat(path).st_mode)[-3:] == "600"
+        assert not list(tmp_path.glob(".tmp-o.json-*"))
+
 
 class TestRollbackReceipt:
+    @staticmethod
+    def _receipt():
+        return fw.RollbackReceipt.create(
+            fw.sha256_hex("plan"),
+            [fw.RollbackEntry(
+                ref_digest=fw.sha256_hex("r"),
+                pre_apply_native_index=0,
+                pre_apply_flag=FlagColor.RED,
+                automation_applied_flag=FlagColor.ORANGE,
+            )],
+        )
+
+    @staticmethod
+    def _rehash(raw):
+        raw["content_hash"] = fw.sha256_hex({
+            key: value for key, value in raw.items()
+            if key != "content_hash"
+        })
+
     def test_create_validate_roundtrip(self):
-        entries = [fw.RollbackEntry(
-            ref_digest=fw.sha256_hex("r"),
-            pre_apply_native_index=0,
-            pre_apply_flag=FlagColor.RED,
-            automation_applied_flag=FlagColor.ORANGE,
-        )]
-        receipt = fw.RollbackReceipt.create(fw.sha256_hex("plan"), entries)
+        receipt = self._receipt()
         receipt.validate()
         restored = fw.RollbackReceipt.from_dict(receipt.to_dict())
         assert restored.plan_hash == receipt.plan_hash
@@ -611,6 +1120,67 @@ class TestRollbackReceipt:
         raw = receipt.to_dict()
         raw["entries"][0]["pre_apply_native_index"] = 6
         with pytest.raises(fw.FlagWorkflowError, match="tampered"):
+            fw.RollbackReceipt.from_dict(raw)
+
+    @pytest.mark.parametrize("bad_index", [True, "0", 0.0])
+    def test_recomputed_receipt_rejects_untyped_native_index(
+            self, bad_index):
+        raw = self._receipt().to_dict()
+        raw["entries"][0]["pre_apply_native_index"] = bad_index
+        self._rehash(raw)
+        with pytest.raises(fw.FlagWorkflowError,
+                           match="pre_apply_native_index"):
+            fw.RollbackReceipt.from_dict(raw)
+
+    def test_recomputed_receipt_rejects_native_flag_mismatch(self):
+        raw = self._receipt().to_dict()
+        raw["entries"][0]["pre_apply_native_index"] = 6
+        self._rehash(raw)
+        with pytest.raises(fw.FlagWorkflowError, match="disagree"):
+            fw.RollbackReceipt.from_dict(raw)
+
+    @pytest.mark.parametrize("unknown_index", [None, 99])
+    def test_recomputed_receipt_rejects_unknown_pre_apply_state(
+            self, unknown_index):
+        raw = self._receipt().to_dict()
+        raw["entries"][0]["pre_apply_native_index"] = unknown_index
+        raw["entries"][0]["pre_apply_flag"] = "unknown"
+        self._rehash(raw)
+        with pytest.raises(fw.FlagWorkflowError, match="not rollbackable"):
+            fw.RollbackReceipt.from_dict(raw)
+
+    @pytest.mark.parametrize("field,value", [
+        ("created_at", "not-a-timestamp"),
+        ("receipt_id", "rb-short"),
+    ])
+    def test_recomputed_receipt_rejects_malformed_metadata(
+            self, field, value):
+        raw = self._receipt().to_dict()
+        raw[field] = value
+        self._rehash(raw)
+        with pytest.raises(fw.FlagWorkflowError):
+            fw.RollbackReceipt.from_dict(raw)
+
+    def test_recomputed_receipt_rejects_noncanonical_flag_alias(self):
+        raw = self._receipt().to_dict()
+        raw["entries"][0]["automation_applied_flag"] = "grey"
+        self._rehash(raw)
+        with pytest.raises(fw.FlagWorkflowError, match="non-canonical"):
+            fw.RollbackReceipt.from_dict(raw)
+
+    def test_recomputed_receipt_rejects_unknown_nested_key(self):
+        raw = self._receipt().to_dict()
+        raw["entries"][0]["provider_id"] = "private"
+        self._rehash(raw)
+        with pytest.raises(fw.FlagWorkflowError, match="schema"):
+            fw.RollbackReceipt.from_dict(raw)
+
+    def test_recomputed_receipt_rejects_duplicate_references(self):
+        raw = self._receipt().to_dict()
+        raw["entries"].append(dict(raw["entries"][0]))
+        raw["entries"][1]["automation_applied_flag"] = "blue"
+        self._rehash(raw)
+        with pytest.raises(fw.FlagWorkflowError, match="duplicated"):
             fw.RollbackReceipt.from_dict(raw)
 
 
@@ -649,8 +1219,9 @@ class TestEstateEnumeration:
     """Multi-surface enumeration: discovery fallback, dedupe, partial."""
 
     class _Surface:
-        def __init__(self, account, mailbox):
+        def __init__(self, account, mailbox, path_components=None):
             self.account, self.mailbox = account, mailbox
+            self.path_components = path_components
 
     class _Provider:
         name = "mailapp"
@@ -665,7 +1236,9 @@ class TestEstateEnumeration:
             return self._surfaces
 
         def enumerate_flagged(self, mailbox, limit=500, since_days=None,
-                              timeout_seconds=600, account=None):
+                              timeout_seconds=600, account=None,
+                              mailbox_path=None):
+            del mailbox_path
             for s in self._surfaces:
                 if s.mailbox == mailbox and s.account == account and \
                         (s.account, s.mailbox) in self._results:
@@ -681,19 +1254,20 @@ class TestEstateEnumeration:
             errors=list(errors or []), inaccessible_count=inaccessible,
             timeout_count=timeouts, unknown_index_count=0,
             hidden_by_limit=hidden,
-            scanned_boundary={"total_flagged_seen": len(rows) + hidden,
+            scanned_boundary={"total_flagged_seen": (
+                                  len(rows) + hidden + inaccessible),
                               "hidden_by_limit": hidden,
                               "account": rows[0].account if rows else "?",
                               "mailbox": rows[0].mailbox if rows else "?"},
         )
 
     @staticmethod
-    def _trow(pid, account, mailbox):
+    def _trow(pid, account, mailbox, color=FlagColor.RED):
         from types import SimpleNamespace
         return SimpleNamespace(
             provider_id=pid, account=account, mailbox=mailbox,
-            sender="s@x.com", subject="S", native_index=0,
-            flag_color=FlagColor.RED, received_iso=None)
+            sender="s@x.com", subject="S", native_index=_native(color),
+            flag_color=color, received_iso=None)
 
     def test_discovers_surfaces_when_none_given(self):
         surfaces = [self._Surface("a@x", "INBOX")]
@@ -701,6 +1275,18 @@ class TestEstateEnumeration:
         out = fw.enumerate_estate(prov)
         assert prov.discover_called is True
         # One real, cleanly-scanned, genuinely-empty surface IS complete.
+        assert out["estate_complete"] is True
+
+    def test_legacy_surface_omits_optional_mailbox_path_keyword(self):
+        surface = self._Surface("a@x", "INBOX")
+        result = self._result([])
+
+        class LegacyProvider(self._Provider):
+            def enumerate_flagged(self, mailbox, limit=500, since_days=None,
+                                  timeout_seconds=600, account=None):
+                return result
+
+        out = fw.enumerate_estate(LegacyProvider([surface]))
         assert out["estate_complete"] is True
 
     def test_zero_discovered_surfaces_is_not_complete(self):
@@ -781,7 +1367,8 @@ class TestEstateEnumeration:
 
             def enumerate_flagged(self, mailbox="INBOX", limit=500,
                                   since_days=None, timeout_seconds=600,
-                                  account=None):
+                                  account=None, mailbox_path=None):
+                del mailbox_path
                 if account == "b@y":
                     raise RuntimeError("AppleScript timed out")
                 return self._results[("a@x", "INBOX")]
@@ -814,8 +1401,78 @@ class TestEstateEnumeration:
             ("a@x", "INBOX"): self._result([self._trow("1", "a@x", "INBOX")]),
             ("a@x", "Archive"): self._result([self._trow("2", "a@x", "Archive")]),
         }
-        out = fw.enumerate_estate(self._Provider([s1, s2], results))
+        out = fw.enumerate_estate(
+            self._Provider([s1, s2], results),
+            per_surface_limit=25,
+            since_days=30,
+        )
         assert out["estate_complete"] is True
         snap = fw.build_estate_snapshot(out, provider_name="mailapp")
+        assert snap.limit == 25
+        assert snap.since_days == 30
         plan = fw.build_plan(snap)      # must not raise
         assert plan["schema"] == fw.PLAN_SCHEMA
+
+    def test_inaccessible_only_estate_is_canonical_partial(self):
+        surface = self._Surface("a@x", "INBOX")
+        result = self._result([], inaccessible=1, scope_complete=True)
+        out = fw.enumerate_estate(
+            self._Provider([surface], {("a@x", "INBOX"): result})
+        )
+        assert out["scope_complete"] is True
+        assert out["estate_complete"] is False
+        assert out["status"] == "partial"
+        snapshot = fw.build_estate_snapshot(out, provider_name="mailapp")
+        assert snapshot.scope_complete is True
+        assert snapshot.status == "partial"
+
+    def test_hidden_rows_preserve_aggregate_scope_complete(self):
+        surface = self._Surface("a@x", "INBOX")
+        result = self._result([], hidden=2, scope_complete=True)
+        out = fw.enumerate_estate(
+            self._Provider([surface], {("a@x", "INBOX"): result})
+        )
+        assert out["scope_complete"] is True
+        assert out["status"] == "bounded_partial"
+        snapshot = fw.build_estate_snapshot(out, provider_name="mailapp")
+        assert snapshot.scope_complete is True
+
+    def test_nested_surface_passes_exact_path_components(self):
+        surface = self._Surface(
+            "a@x", "Projects/PRs", ("Projects", "PRs")
+        )
+        result = self._result([])
+
+        class CapturingProvider(self._Provider):
+            def __init__(self):
+                super().__init__(
+                    [surface], {("a@x", "Projects/PRs"): result}
+                )
+                self.mailbox_paths = []
+
+            def enumerate_flagged(self, *args, mailbox_path=None, **kwargs):
+                self.mailbox_paths.append(mailbox_path)
+                return super().enumerate_flagged(
+                    *args, mailbox_path=mailbox_path, **kwargs
+                )
+
+        provider = CapturingProvider()
+        fw.enumerate_estate(provider)
+        assert provider.mailbox_paths == [("Projects", "PRs")]
+
+    def test_unknown_count_recomputed_after_estate_deduplication(self):
+        inbox = self._Surface("a@x", "INBOX")
+        archive = self._Surface("a@x", "Archive")
+        duplicate = self._trow(
+            "7", "a@x", "INBOX", color=FlagColor.UNKNOWN
+        )
+        results = {
+            ("a@x", "INBOX"): self._result([duplicate]),
+            ("a@x", "Archive"): self._result([duplicate]),
+        }
+        out = fw.enumerate_estate(
+            self._Provider([inbox, archive], results)
+        )
+        assert len(out["rows"]) == 1
+        assert out["deduplicated_removed"] == 1
+        assert out["unknown_index_count"] == 1

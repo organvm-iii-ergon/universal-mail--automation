@@ -10,12 +10,13 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from providers.base import (
     EmailProvider,
-    ProviderCapabilities,
     ListMessagesResult,
+    ProviderCapabilities,
+    ProviderWriteAmbiguous,
 )
 from core.models import EmailMessage, FlagColor, MessageReference
 from core.protocols import CAPTURE_HEADERS
@@ -36,6 +37,10 @@ class ProviderTimeoutError(ProviderScriptError):
     """
 
 
+class ProviderDispatchUnavailable(ProviderScriptError):
+    """A provider command could not be dispatched, so no write occurred."""
+
+
 class MessageNotFoundError(ProviderScriptError):
     """Scoped lookup resolved zero candidates in the exact account+mailbox."""
 
@@ -50,6 +55,15 @@ class SurfaceRef:
     """One discovered account/mailbox surface of the local Mail estate."""
     account: str
     mailbox: str
+    path_components: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        components = self.path_components or _mailbox_path_from_scope(
+            self.mailbox,
+        )
+        canonical = _canonical_mailbox_scope(components)
+        object.__setattr__(self, "path_components", components)
+        object.__setattr__(self, "mailbox", canonical)
 
 # --- Mail.app native index <-> semantic FlagColor mapping ---
 # The mapping is OWNED by the pure, I/O-free module providers.flag_codecs so
@@ -67,6 +81,35 @@ from providers.flag_codecs import mailapp_index_from_flag  # noqa: F401 E402
 _FIELD_SEP = "\x1f"   # unit separator — between columns
 _HDR_SEP = "\x1e"     # record separator — between header lines in the headers column
 _ROW_SEP = "\x1d"     # group separator — between flagged-enumeration rows
+
+
+def _canonical_mailbox_scope(path_components: Sequence[str]) -> str:
+    """Encode exact Mail.app mailbox path components into a stable scope.
+
+    This uses JSON Pointer escaping so a nested ``Parent/Child`` path cannot
+    collide with a single mailbox literally named ``Parent/Child``.  A
+    top-level ordinary mailbox remains the familiar ``INBOX`` string.
+    """
+    if not path_components:
+        raise ProviderScriptError("mailbox path must contain at least one component")
+    encoded: List[str] = []
+    for component in path_components:
+        if not isinstance(component, str) or not component:
+            raise ProviderScriptError(
+                "mailbox path components must be non-empty strings",
+            )
+        encoded.append(component.replace("~", "~0").replace("/", "~1"))
+    return "/".join(encoded)
+
+
+def _mailbox_path_from_scope(mailbox: str) -> Tuple[str, ...]:
+    """Decode a canonical mailbox scope back to its exact path tuple."""
+    if not isinstance(mailbox, str) or not mailbox:
+        raise ProviderScriptError("mailbox scope must be a non-empty string")
+    return tuple(
+        component.replace("~1", "/").replace("~0", "~")
+        for component in mailbox.split("/")
+    )
 
 
 @dataclass(frozen=True)
@@ -181,6 +224,27 @@ def _parse_bulk_headers(blob: str) -> Dict[str, str]:
     return out
 
 
+def _flag_color_from_raw(raw_index: str) -> FlagColor:
+    """Map a native index token without letting malformed metadata abort a read."""
+    try:
+        return flag_from_mailapp_index(int(raw_index.strip()))
+    except (AttributeError, ValueError):
+        return FlagColor.UNKNOWN
+
+
+def _parse_received_datetime(received_iso: Optional[str]) -> Optional[datetime]:
+    """Parse Mail.app ISO text as an aware UTC datetime when available."""
+    if not received_iso:
+        return None
+    try:
+        parsed = datetime.fromisoformat(received_iso.replace("Z", "+00:00"))
+    except (OverflowError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 class MailAppProvider(EmailProvider):
     """
     macOS Mail.app provider using AppleScript.
@@ -244,13 +308,19 @@ class MailAppProvider(EmailProvider):
             if result.returncode != 0:
                 logger.error(f"AppleScript error: {result.stderr}")
                 raise RuntimeError(f"AppleScript failed: {result.stderr}")
-            return result.stdout.strip()
+            # Preserve C0 field/record separators.  ``str.strip()`` treats
+            # \x1c-\x1f as whitespace and corrupts valid empty result frames
+            # such as ``"0\x1f"``.  osascript's line ending is the only
+            # transport suffix removed here.
+            return result.stdout.rstrip("\r\n")
         except subprocess.TimeoutExpired as exc:
             raise ProviderTimeoutError(
                 f"AppleScript timed out after {timeout}s"
             ) from exc
-        except FileNotFoundError:
-            raise RuntimeError("osascript not found - this provider only works on macOS")
+        except OSError as exc:
+            raise ProviderDispatchUnavailable(
+                "osascript unavailable - this provider only works on macOS",
+            ) from exc
 
     def connect(self) -> None:
         """Verify Mail.app is accessible."""
@@ -470,7 +540,7 @@ class MailAppProvider(EmailProvider):
                     subject=subject,
                     is_read=is_read.lower() == "true",
                     is_starred=is_flagged.lower() == "true",
-                    flag_color=flag_from_mailapp_index(int(flag_index)),
+                    flag_color=_flag_color_from_raw(flag_index),
                     headers=_parse_bulk_headers(bulk_blob),
                 ))
 
@@ -486,6 +556,9 @@ class MailAppProvider(EmailProvider):
 
     def get_message_details(self, message_id: str) -> Optional[EmailMessage]:
         """Fetch message details by ID."""
+        if not message_id.strip().lstrip("-").isdigit():
+            logger.error("Refusing non-numeric Mail.app message id")
+            return None
         script = f'''
         tell application "Mail"
             set targetMsg to first message whose id is {message_id}
@@ -522,7 +595,7 @@ class MailAppProvider(EmailProvider):
             subject=subject,
             is_read=is_read.lower() == "true",
             is_starred=is_flagged.lower() == "true",
-            flag_color=flag_from_mailapp_index(int(flag_index)),
+            flag_color=_flag_color_from_raw(flag_index),
             labels={mailbox} if mailbox else set(),
         )
 
@@ -610,22 +683,61 @@ class MailAppProvider(EmailProvider):
     #   resolve within exact account+mailbox -> verify evidence digest ->
     #   mutate -> re-read and verify native result.
 
+    def _mailbox_reference(
+        self,
+        mailbox: str,
+        account: str,
+        path_components: Optional[Sequence[str]] = None,
+    ) -> str:
+        """Render an exact nested mailbox reference for AppleScript.
+
+        ``mailbox`` is the canonical, reversible public scope.  Discovery
+        additionally carries ``path_components`` so no parsing is needed;
+        direct/scoped callers decode the same canonical representation.
+        """
+        if not isinstance(account, str) or not account.strip():
+            raise ProviderScriptError(
+                "an explicit Mail.app account is required",
+            )
+        components = (
+            tuple(path_components)
+            if path_components is not None
+            else _mailbox_path_from_scope(mailbox)
+        )
+        canonical = _canonical_mailbox_scope(components)
+        if canonical != mailbox:
+            raise ProviderScriptError(
+                "mailbox scope does not match its exact path components",
+            )
+        reference = f"account {self._as_applescript(account)}"
+        for component in components:
+            reference = (
+                f"mailbox {self._as_applescript(component)} of {reference}"
+            )
+        return reference
+
     def _build_scoped_lookup_script(self, mailbox: str, account: str,
                                     provider_id: str) -> str:
         """PURE builder for the scoped resolve. No 'first message whose id is'
         outside an exact mailbox-of-account context; ids validated numeric;
         account/mailbox escaped as AppleScript string expressions."""
-        if not provider_id.strip().lstrip("-").isdigit():
+        if (
+            not isinstance(provider_id, str)
+            or not provider_id
+            or not provider_id.isascii()
+            or not provider_id.isdigit()
+            or provider_id[0] == "0"
+        ):
             raise ProviderScriptError(
-                f"refusing to interpolate non-numeric Mail.app id: "
+                f"refusing to interpolate non-numeric or non-positive "
+                f"Mail.app id: "
                 f"{provider_id!r}"
             )
-        mailbox_e = self._as_applescript(mailbox)
-        account_e = self._as_applescript(account)
+        mailbox_ref = self._mailbox_reference(mailbox, account)
         return (
             '        set fieldSep to (ASCII character 31)\n'
             '        tell application "Mail"\n'
-            f'            set targetMailbox to mailbox {mailbox_e} of account {account_e}\n'
+            f'            set targetMailbox to {mailbox_ref}\n'
             f'            set candidates to (messages of targetMailbox whose id is {provider_id})\n'
             '            if (count of candidates) is 0 then return "NOT_FOUND"\n'
             '            set m to item 1 of candidates\n'
@@ -658,15 +770,49 @@ class MailAppProvider(EmailProvider):
             '                end repeat\n'
             '            end try\n'
             '            set outp to outp & fieldSep & msgIdHeader\n'
+            '            set outp to outp & fieldSep\n'
+            '            try\n'
+            '                set outp to outp & (read status of m as string)\n'
+            '            on error\n'
+            '                set outp to outp & ""\n'
+            '            end try\n'
+            '            set outp to outp & fieldSep\n'
+            '            try\n'
+            '                set outp to outp & (flagged status of m as string)\n'
+            '            on error\n'
+            '                set outp to outp & ""\n'
+            '            end try\n'
             '            return outp\n'
             '        end tell\n'
             '        '
         )
 
+    @staticmethod
+    def _validate_mailapp_ref(ref: MessageReference) -> None:
+        """Reject foreign or noncanonical refs before AppleScript exists."""
+        try:
+            ref.validate_scoped()
+        except ValueError as exc:
+            raise ProviderScriptError(f"invalid scoped reference: {exc}") \
+                from exc
+        if ref.provider != "mailapp":
+            raise ProviderScriptError(
+                f"Mail.app refuses foreign provider {ref.provider!r}"
+            )
+        provider_id = ref.provider_id
+        if (
+            not provider_id.isascii()
+            or not provider_id.isdigit()
+            or provider_id[0] == "0"
+        ):
+            raise ProviderScriptError(
+                "Mail.app provider_id must be a positive ASCII decimal"
+            )
+
     def _resolve_scoped_fields(self, ref: MessageReference
                                ) -> Dict[str, Optional[str]]:
         """Resolve one reference inside its exact scope. Raises typed errors."""
-        ref.validate_scoped()
+        self._validate_mailapp_ref(ref)
         script = self._build_scoped_lookup_script(
             ref.mailbox, ref.account, ref.provider_id)
         try:
@@ -686,6 +832,8 @@ class MailAppProvider(EmailProvider):
             raise ProviderScriptError(
                 f"malformed scoped-resolve output for {ref}")
         native_raw, received_iso, sender, subject, msgid_header = parts[:5]
+        is_read = parts[5] if len(parts) > 5 else None
+        is_flagged = parts[6] if len(parts) > 6 else None
         try:
             native_index: Optional[int] = int(native_raw.strip())
         except ValueError:
@@ -697,6 +845,8 @@ class MailAppProvider(EmailProvider):
             "sender": sender,
             "subject": subject,
             "message_id_raw": msgid_header or None,
+            "is_read": is_read,
+            "is_flagged": is_flagged,
         }
 
     def resolve_scoped(self, ref: MessageReference) -> MessageReference:
@@ -706,9 +856,10 @@ class MailAppProvider(EmailProvider):
         computed evidence_digest + RFC Message-ID digest when present. Callers
         compare digests against their snapshot-bound ref BEFORE mutating.
         """
+        self._validate_mailapp_ref(ref)
         fields = self._resolve_scoped_fields(ref)
         enriched = ref.with_resolved_evidence(
-            received_iso=fields["received_iso"] or "",
+            received_iso=fields["received_iso"],
             sender=fields["sender"] or "",
             subject=fields["subject"] or "",
             message_id_raw=fields["message_id_raw"],
@@ -719,12 +870,47 @@ class MailAppProvider(EmailProvider):
                "observed_native_flag": int(raw_idx) if raw_idx else None},
         )
 
+    def get_message_details_ref(
+        self,
+        ref: MessageReference,
+    ) -> Optional[EmailMessage]:
+        """Fetch message details inside an exact qualified Mail.app scope."""
+        self._validate_mailapp_ref(ref)
+        try:
+            fields = self._resolve_scoped_fields(ref)
+        except MessageNotFoundError:
+            return None
+        raw_index = fields["native_index"]
+        color = (
+            flag_from_mailapp_index(int(raw_index))
+            if raw_index is not None
+            else FlagColor.UNKNOWN
+        )
+        flagged_raw = fields.get("is_flagged")
+        is_starred = (
+            flagged_raw.lower() == "true"
+            if flagged_raw is not None
+            else color not in (FlagColor.NO_FLAG, FlagColor.UNKNOWN)
+        )
+        read_raw = fields.get("is_read")
+        return EmailMessage(
+            id=ref.provider_id,
+            sender=fields["sender"] or "",
+            subject=fields["subject"] or "",
+            date=_parse_received_datetime(fields["received_iso"]),
+            labels={ref.mailbox},
+            is_read=read_raw is not None and read_raw.lower() == "true",
+            is_starred=is_starred,
+            flag_color=color,
+        )
+
     def _verify_evidence(self, ref: MessageReference) -> Dict[str, Optional[str]]:
         """Resolve live fields and enforce the evidence binding.
 
         Refuses mutation when the reference carries no durable evidence, or
         when live evidence no longer matches what was observed.
         """
+        self._validate_mailapp_ref(ref)
         if ref.evidence_digest is None:
             raise FlagStateDriftError(
                 f"{ref}: no durable evidence bound; automatic mutation "
@@ -742,6 +928,7 @@ class MailAppProvider(EmailProvider):
 
     def get_flag_color_ref(self, ref: MessageReference) -> FlagColor:
         """Scoped read: exact account+mailbox lookup, mapped semantic color."""
+        self._validate_mailapp_ref(ref)
         fields = self._resolve_scoped_fields(ref)
         raw = fields["native_index"]
         if raw is None:
@@ -759,13 +946,13 @@ class MailAppProvider(EmailProvider):
         (b) the native flag index equals the expected value exactly.
         Returns True only when both hold.
         """
+        self._validate_mailapp_ref(ref)
         index = mailapp_index_from_flag(color)   # KeyError for UNKNOWN
         self._verify_evidence(ref)
-        mailbox_e = self._as_applescript(ref.mailbox)
-        account_e = self._as_applescript(ref.account)
+        mailbox_ref = self._mailbox_reference(ref.mailbox, ref.account)
         script = (
             '        tell application "Mail"\n'
-            f'            set targetMailbox to mailbox {mailbox_e} of account {account_e}\n'
+            f'            set targetMailbox to {mailbox_ref}\n'
             f'            set candidates to (messages of targetMailbox whose id is {ref.provider_id})\n'
             '            if (count of candidates) is 0 then error "NOT_FOUND"\n'
             '            set flag index of item 1 of candidates to '
@@ -776,20 +963,32 @@ class MailAppProvider(EmailProvider):
         )
         try:
             self._run_applescript(script)
+        except ProviderDispatchUnavailable:
+            # Process creation failed before osascript could receive the
+            # command.  This is an ordinary zero-write provider failure.
+            raise
         except RuntimeError as e:
             logger.error(f"scoped set failed for {ref}: {e}")
-            raise ProviderScriptError(f"scoped set failed for {ref}") from e
+            raise ProviderWriteAmbiguous(
+                f"scoped set dispatch failed for {ref}; write may have occurred",
+            ) from e
         # Post-write: re-resolve ALL evidence fields and require the digest
         # to still match, then verify the exact native index.
-        fields = self._resolve_scoped_fields(ref)
+        try:
+            fields = self._resolve_scoped_fields(ref)
+        except RuntimeError as e:
+            raise ProviderWriteAmbiguous(
+                f"post-write verification failed for {ref}",
+            ) from e
         live_digest = MessageReference.compute_evidence_digest(
             fields["received_iso"], fields["sender"], fields["subject"])
         bound_digest = ref.evidence_digest
         if bound_digest is None:      # unreachable: _verify_evidence enforced
-            raise FlagStateDriftError(
-                f"{ref}: evidence binding vanished during write; ambiguous")
+            raise ProviderWriteAmbiguous(
+                f"{ref}: evidence binding vanished during write",
+            )
         if live_digest != bound_digest:
-            raise FlagStateDriftError(
+            raise ProviderWriteAmbiguous(
                 f"{ref}: evidence changed during write ({live_digest[:12]}… "
                 f"!= {bound_digest[:12]}…); outcome ambiguous"
             )
@@ -798,7 +997,7 @@ class MailAppProvider(EmailProvider):
             -1 if color == FlagColor.NO_FLAG else int(index)
         )
         if post_native_raw is None or int(post_native_raw) != expected_native:
-            raise ProviderScriptError(
+            raise ProviderWriteAmbiguous(
                 f"post-write verification failed for {ref}: expected native "
                 f"index {expected_native}, read back {post_native_raw}"
             )
@@ -806,6 +1005,7 @@ class MailAppProvider(EmailProvider):
 
     def clear_flag_ref(self, ref: MessageReference) -> bool:
         """Evidence-verified unflag with read-after-write verification."""
+        self._validate_mailapp_ref(ref)
         return self.set_flag_color_ref(ref, FlagColor.NO_FLAG)
 
     def discover_surfaces(self, timeout_seconds: int = 300
@@ -822,13 +1022,31 @@ class MailAppProvider(EmailProvider):
             '            set outRows to {}\n'
             '            repeat with acct in accounts\n'
             '                set acctName to name of acct\n'
-            '                repeat with mbx in mailboxes of acct\n'
-            '                    set end of outRows to (acctName & fieldSep & (name of mbx))\n'
-            '                end repeat\n'
+            '                set foundRows to my collectMailboxRows('
+            'acct, acctName, {}, fieldSep)\n'
+            '                set outRows to outRows & foundRows\n'
             '            end repeat\n'
             '            set AppleScript\'s text item delimiters to recSep\n'
             '            return outRows as string\n'
             '        end tell\n'
+            '\n'
+            '        on collectMailboxRows(containerRef, acctName, '
+            'parentPath, fieldSep)\n'
+            '            tell application "Mail"\n'
+            '                set gathered to {}\n'
+            '                repeat with mbx in (mailboxes of containerRef)\n'
+            '                    set componentName to (name of mbx as string)\n'
+            '                    set exactPath to parentPath & {componentName}\n'
+            '                    set rowParts to {acctName} & exactPath\n'
+            '                    set AppleScript\'s text item delimiters to fieldSep\n'
+            '                    set end of gathered to (rowParts as string)\n'
+            '                    set childRows to my collectMailboxRows('
+            'mbx, acctName, exactPath, fieldSep)\n'
+            '                    set gathered to gathered & childRows\n'
+            '                end repeat\n'
+            '                return gathered\n'
+            '            end tell\n'
+            '        end collectMailboxRows\n'
             '        '
         )
         try:
@@ -843,7 +1061,12 @@ class MailAppProvider(EmailProvider):
             parts = line.split(_FIELD_SEP)
             if len(parts) < 2:
                 continue
-            surfaces.append(SurfaceRef(account=parts[0], mailbox=parts[1]))
+            path_components = tuple(parts[1:])
+            surfaces.append(SurfaceRef(
+                account=parts[0],
+                mailbox=_canonical_mailbox_scope(path_components),
+                path_components=path_components,
+            ))
         return surfaces
 
     def ensure_label_exists(self, label: str) -> str:
@@ -1013,6 +1236,7 @@ class MailAppProvider(EmailProvider):
         mailbox: str,
         account: str,
         since_days: Optional[int],
+        mailbox_path: Optional[Sequence[str]] = None,
     ) -> str:
         """Build the flagged-enumeration AppleScript. PURE (no I/O).
 
@@ -1021,12 +1245,23 @@ class MailAppProvider(EmailProvider):
         field degrades independently (empty placeholder) so one bad property
         never drops the whole message.
         """
-        mailbox_e = self._as_applescript(mailbox)
-        account_e = self._as_applescript(account)
+        if since_days is not None and (
+            isinstance(since_days, bool)
+            or not isinstance(since_days, int)
+            or since_days <= 0
+        ):
+            raise ProviderScriptError(
+                "since_days must be a positive integer or None"
+            )
+        mailbox_ref = self._mailbox_reference(
+            mailbox,
+            account,
+            mailbox_path,
+        )
         if since_days is not None:
             predicate = (
                 "set cutoffDate to (current date) - "
-                f"({int(since_days)} * days)\n"
+                f"({since_days} * days)\n"
                 "            set flaggedMsgs to (messages of targetMailbox "
                 "whose flagged status is true and date received > cutoffDate)"
             )
@@ -1039,7 +1274,7 @@ class MailAppProvider(EmailProvider):
             '        set fieldSep to (ASCII character 31)\n'
             '        set recSep to (ASCII character 29)\n'
             '        tell application "Mail"\n'
-            f'            set targetMailbox to mailbox {mailbox_e} of account {account_e}\n'
+            f'            set targetMailbox to {mailbox_ref}\n'
             f'            {predicate}\n'
             '            set rowCount to count of flaggedMsgs\n'
             '            set outRows to {}\n'
@@ -1081,6 +1316,7 @@ class MailAppProvider(EmailProvider):
         since_days: Optional[int] = None,
         timeout_seconds: int = 600,
         account: Optional[str] = None,
+        mailbox_path: Optional[Sequence[str]] = None,
     ) -> EnumerationResult:
         """Enumerate flagged messages in one account-scoped mailbox surface.
 
@@ -1095,11 +1331,29 @@ class MailAppProvider(EmailProvider):
         empty success.
         """
         account = account if account is not None else (self.account or "")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ProviderScriptError("limit must be a positive integer")
+        if since_days is not None and (
+            isinstance(since_days, bool)
+            or not isinstance(since_days, int)
+            or since_days <= 0
+        ):
+            raise ProviderScriptError(
+                "since_days must be a positive integer or None"
+            )
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int)
+            or timeout_seconds <= 0
+        ):
+            raise ProviderScriptError(
+                "timeout_seconds must be a positive integer"
+            )
         boundary: Dict[str, Any] = {
             "provider": self.name,
             "account": account,
             "mailbox": mailbox,
-            "limit": int(limit),
+            "limit": limit,
             "since_days": since_days,
             "ordering": "received_desc",
         }
@@ -1108,7 +1362,32 @@ class MailAppProvider(EmailProvider):
         unknown_index = 0
         timeout_count = 0
 
-        script = self._build_flagged_script(mailbox, account, since_days)
+        if not isinstance(account, str) or not account.strip():
+            errors.append(
+                "account_required: explicit Mail.app account scope is required",
+            )
+            return EnumerationResult.build(
+                rows=[], scope_complete=False, errors=errors,
+                inaccessible_count=0, timeout_count=0,
+                unknown_index_count=0, hidden_by_limit=0,
+                scanned_boundary=boundary,
+            )
+
+        try:
+            script = self._build_flagged_script(
+                mailbox,
+                account,
+                since_days,
+                mailbox_path,
+            )
+        except ProviderScriptError as e:
+            errors.append(f"enumeration setup failed: {e}")
+            return EnumerationResult.build(
+                rows=[], scope_complete=False, errors=errors,
+                inaccessible_count=0, timeout_count=0,
+                unknown_index_count=0, hidden_by_limit=0,
+                scanned_boundary=boundary,
+            )
         try:
             output = self._run_applescript(script, timeout=timeout_seconds)
         except ProviderTimeoutError as e:
@@ -1154,7 +1433,13 @@ class MailAppProvider(EmailProvider):
                 inaccessible += 1
                 continue
             provider_id, sender, subject, index_s, received_iso = parts[:5]
-            if not provider_id.strip().lstrip("-").isdigit():
+            candidate_id = provider_id.strip()
+            if (
+                not candidate_id
+                or not candidate_id.isascii()
+                or not candidate_id.isdigit()
+                or candidate_id[0] == "0"
+            ):
                 inaccessible += 1
                 continue
             try:
@@ -1163,10 +1448,8 @@ class MailAppProvider(EmailProvider):
                 native_index = None
             color = flag_from_mailapp_index(native_index) if native_index is not None \
                 else FlagColor.UNKNOWN
-            if color == FlagColor.UNKNOWN:
-                unknown_index += 1
             parsed_rows.append(FlaggedRow(
-                provider_id=provider_id.strip(),
+                provider_id=candidate_id,
                 account=account,
                 mailbox=mailbox,
                 sender=sender,
@@ -1177,18 +1460,17 @@ class MailAppProvider(EmailProvider):
             ))
 
         # Newest-first by received date where parseable; unparseable dates sink.
-        def _sort_key(r: FlaggedRow):
-            if r.received_iso:
-                try:
-                    return datetime.fromisoformat(
-                        r.received_iso.replace("Z", "+00:00"))
-                except ValueError:
-                    pass
-            return datetime.min.replace(tzinfo=timezone.utc)
+        def _sort_key(r: FlaggedRow) -> datetime:
+            return _parse_received_datetime(
+                r.received_iso,
+            ) or datetime.min.replace(tzinfo=timezone.utc)
 
         parsed_rows.sort(key=_sort_key, reverse=True)
-        hidden_by_limit = max(0, len(parsed_rows) - int(limit))
-        rows = parsed_rows[:max(0, int(limit))]
+        hidden_by_limit = max(0, len(parsed_rows) - limit)
+        rows = parsed_rows[:limit]
+        unknown_index = sum(
+            row.flag_color == FlagColor.UNKNOWN for row in rows
+        )
         boundary["total_flagged_seen"] = (
             total_seen if total_seen >= 0 else len(parsed_rows))
         boundary["returned_count"] = len(rows)

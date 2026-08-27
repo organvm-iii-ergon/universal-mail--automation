@@ -19,19 +19,26 @@ import cli
 from core import flag_workflow as fw
 from core.flag_transactions import (
     AdvisoryFileLock,
+    LedgerCorrupted,
+    ROLLBACK_TX_SCHEMA,
     ST_ALREADY_VERIFIED,
     ST_AMBIGUOUS,
+    ST_APPLYING,
     ST_BLOCKED,
     ST_FROZEN_UNATTEMPTED,
     ST_ROLLED_BACK,
     ST_ROLLBACK_BLOCKED,
+    ST_ROLLBACK_PENDING,
     ST_VERIFIED,
+    ST_VERIFIED_PENDING_PRIVATE_STATE,
     ScopedRollbackEngine,
     TransactionLedger,
+    TransactionRecord,
     TransactionRollbackReceipt,
     TransactionEngine,
 )
 from core.models import FlagColor, MessageReference
+from providers.base import ProviderWriteAmbiguous
 from providers.mailapp import mailapp_index_from_flag
 
 ELIG_SENDER = "billing@corp.example"
@@ -186,6 +193,7 @@ class TestAutoEligiblePersistence:
         flipped2 = dict(h.plan)
         flipped2["mutations"] = [dict(d, auto_eligible=False)] + [
             mm.to_dict() for mm in h.mutations[1:]]
+        flipped2["auto_eligible_count"] -= 1
         flipped2.pop("plan_hash")
         flipped2["plan_hash"] = fw.compute_plan_hash(flipped2)
         muts2 = fw.validate_plan_schema(flipped2)      # parses fine
@@ -312,6 +320,24 @@ class TestAllOrZeroPreflight:
         assert any(f["error_code"] == "human_override_suppressed"
                    for f in result.failed)
 
+    def test_corrupt_override_state_blocks_before_provider_contact(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+        h.overrides.path.parent.mkdir(parents=True, exist_ok=True)
+        h.overrides.path.write_text("[]", encoding="utf-8")
+
+        result = h.apply()
+
+        assert result.status == "blocked"
+        assert result.writes_performed == 0
+        assert result.blocked_reason == "override_state_unusable"
+        assert result.error_code.startswith("override_state_failure:")
+        assert result.failed == []
+        assert result.unattempted == [{
+            "mutation_id": h.mutations[0].mutation_id,
+        }]
+        assert h.provider.calls == []
+
     def test_already_consumed_mutation_is_deterministic_skip(self, tmp_path):
         h = Harness(tmp_path, pids=("1",))
         first = h.apply()
@@ -335,6 +361,27 @@ class TestAllOrZeroPreflight:
         assert result.writes_performed == 0
         assert h.ledger.entries() == []
 
+    def test_malformed_authoritative_history_blocks_without_further_writes(
+            self, tmp_path):
+        """Corruption cannot be skipped as if verified history never existed."""
+        h = Harness(tmp_path, pids=("1",))
+        first = h.apply()
+        assert first.status == "applied"
+
+        # Replace the authoritative history with a torn row.  A permissive
+        # skip-row parser would now reconstruct an empty ledger and repeat the
+        # provider write; fail-closed parsing must stop before any provider
+        # contact instead.
+        h.ledger.path.write_text("{\"schema\":", encoding="utf-8")
+        calls_before = list(h.provider.calls)
+
+        result = h.apply()
+
+        assert result.status == "blocked"
+        assert result.writes_performed == 0
+        assert result.error_code.startswith("private_state_failure")
+        assert h.provider.calls == calls_before
+
 
 # --- Write phase honesty ---------------------------------------------------------------
 
@@ -350,7 +397,7 @@ class TestWritePhaseVerification:
 
         h.provider.set_flag_color_ref = lying_set
         result = h.apply()
-        assert result.status == "partially_failed"
+        assert result.status == "ambiguous"
         # A write MAY have happened at the provider — counted honestly.
         assert result.writes_performed == 1
         assert result.failed[0]["status"] == ST_AMBIGUOUS
@@ -358,6 +405,144 @@ class TestWritePhaseVerification:
                    for e in h.ledger.entries())
         assert not h.ledger.has_verified(h.plan["plan_hash"],
                                          h.mutations[0].mutation_id)
+
+    def test_typed_provider_ambiguity_counts_possible_write_and_freezes(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1", "2"))
+
+        def write_then_lose_proof(ref, color):
+            h.provider.messages[ref.provider_id].native = \
+                mailapp_index_from_flag(color)
+            raise ProviderWriteAmbiguous("connection lost after dispatch")
+
+        h.provider.set_flag_color_ref = write_then_lose_proof
+        result = h.apply()
+
+        assert result.status == "ambiguous"
+        assert result.writes_performed == 1
+        assert result.failed[0]["status"] == ST_AMBIGUOUS
+        assert result.unattempted == [
+            {"mutation_id": h.by_pid("2").mutation_id}
+        ]
+        assert h.provider.messages["1"].native == mailapp_index_from_flag(
+            FlagColor.RED
+        )
+
+    def test_verified_ledger_failure_cannot_reset_write_count(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+        original_record = h.ledger.record
+
+        def fail_verified_record(record):
+            if record.status == ST_VERIFIED:
+                raise LedgerCorrupted(
+                    "simulated fsync failure after provider write"
+                )
+            original_record(record)
+
+        h.ledger.record = fail_verified_record
+        result = h.apply()
+
+        assert result.status == "ambiguous"
+        assert result.writes_performed == 1
+        assert result.failed[0]["status"] == ST_AMBIGUOUS
+        assert h.provider.messages["1"].native == mailapp_index_from_flag(
+            FlagColor.RED
+        )
+        assert h.ledger.latest_status(
+            h.plan["plan_hash"], h.mutations[0].mutation_id
+        ) == ST_VERIFIED_PENDING_PRIVATE_STATE
+
+        h.provider.calls.clear()
+        replay = h.apply()
+        assert replay.status == "blocked"
+        assert replay.writes_performed == 0
+        assert h.provider.calls == []
+
+    def test_post_write_ledger_parent_chmod_failure_is_ambiguous(
+            self, tmp_path, monkeypatch):
+        h = Harness(tmp_path, pids=("1",))
+        real_set = h.provider.set_flag_color_ref
+        real_fchmod = os.fchmod
+        write_crossed = False
+
+        def set_and_mark(ref, color):
+            nonlocal write_crossed
+            result = real_set(ref, color)
+            write_crossed = True
+            return result
+
+        def fail_chmod_after_write(fd, mode):
+            if write_crossed:
+                raise PermissionError("simulated post-write chmod failure")
+            return real_fchmod(fd, mode)
+
+        h.provider.set_flag_color_ref = set_and_mark
+        monkeypatch.setattr(
+            "core.flag_transactions.os.fchmod", fail_chmod_after_write
+        )
+
+        result = h.apply()
+
+        assert result.status == "ambiguous"
+        assert result.writes_performed == 1
+        assert result.failed[0]["status"] == ST_AMBIGUOUS
+        assert "private_state_failure" in result.error_code
+
+    def test_override_persistence_failure_cannot_reset_write_count(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+
+        def fail_override_state(*_args, **_kwargs):
+            raise fw.FlagWorkflowError("override store unavailable")
+
+        h.overrides.record_automation_state = fail_override_state
+        result = h.apply()
+
+        assert result.status == "ambiguous"
+        assert result.writes_performed == 1
+        assert result.failed[0]["status"] == ST_AMBIGUOUS
+        assert result.failed[0]["error_code"].startswith(
+            "override_state_failure"
+        )
+        assert h.ledger.has_verified(
+            h.plan["plan_hash"], h.mutations[0].mutation_id
+        )
+        assert h.ledger.latest_status(
+            h.plan["plan_hash"], h.mutations[0].mutation_id
+        ) == ST_AMBIGUOUS
+
+        h.provider.calls.clear()
+        replay = h.apply()
+        assert replay.status == "blocked"
+        assert replay.error_code == "transaction_recovery_required"
+        assert replay.writes_performed == 0
+        assert h.provider.calls == []
+
+    def test_private_state_failure_after_first_write_enumerates_remainder(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1", "2", "3"))
+        original_record = h.ledger.record
+        blocked_mid = h.by_pid("2").mutation_id
+
+        def fail_second_applying(record):
+            if record.status == ST_APPLYING and \
+                    record.mutation_id == blocked_mid:
+                raise LedgerCorrupted("cannot persist second applying row")
+            original_record(record)
+
+        h.ledger.record = fail_second_applying
+        result = h.apply()
+
+        assert result.status == "ambiguous"
+        assert result.writes_performed == 1
+        assert [item["mutation_id"] for item in result.verified] == [
+            h.by_pid("1").mutation_id
+        ]
+        assert result.unattempted == [
+            {"mutation_id": h.by_pid("2").mutation_id},
+            {"mutation_id": h.by_pid("3").mutation_id},
+        ]
 
     def test_mid_batch_failure_records_exact_partial_state(self, tmp_path):
         h = Harness(tmp_path, pids=("1", "2", "3"))
@@ -458,6 +643,111 @@ class TestTransactionBoundRollback:
         latest = h.ledger.latest_status(h.plan["plan_hash"], m.mutation_id)
         assert latest == ST_ROLLED_BACK
 
+    def test_post_rollback_read_failure_is_ambiguous_and_counted(
+            self, tmp_path):
+        h, m, receipt = self._applied(tmp_path)
+        real_resolve = h.provider.resolve_scoped
+        resolve_count = 0
+
+        def fail_final_read(ref):
+            nonlocal resolve_count
+            resolve_count += 1
+            if resolve_count == 2:
+                raise RuntimeError("readback unavailable")
+            return real_resolve(ref)
+
+        h.provider.resolve_scoped = fail_final_read
+        result = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+
+        assert result.status == "ambiguous"
+        assert result.writes_performed == 1
+        assert h.provider.messages[m.provider_id].native == \
+            m.observed_native_flag
+        assert h.ledger.latest_status(
+            h.plan["plan_hash"], m.mutation_id
+        ) == ST_ROLLBACK_PENDING
+
+        calls_before_retry = len(h.provider.calls)
+        retry = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+        assert retry.status == "blocked"
+        assert retry.error_code == "transaction_frozen(rollback_pending)"
+        assert retry.writes_performed == 0
+        assert len(h.provider.calls) == calls_before_retry
+
+    def test_typed_provider_ambiguity_during_rollback_is_counted(
+            self, tmp_path):
+        h, m, receipt = self._applied(tmp_path)
+
+        def write_then_lose_proof(ref, color):
+            h.provider.messages[ref.provider_id].native = \
+                mailapp_index_from_flag(color)
+            raise ProviderWriteAmbiguous("verification transport failed")
+
+        h.provider.set_flag_color_ref = write_then_lose_proof
+        result = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+
+        assert result.status == "ambiguous"
+        assert result.writes_performed == 1
+        assert h.provider.messages[m.provider_id].native == \
+            m.observed_native_flag
+
+    def test_crash_after_rollback_claim_freezes_retry_before_write(
+            self, tmp_path):
+        h, m, receipt = self._applied(tmp_path)
+        dispatches = 0
+
+        def crash_after_dispatch_claim(ref, color):
+            nonlocal dispatches
+            dispatches += 1
+            raise SystemExit("simulated process death")
+
+        h.provider.set_flag_color_ref = crash_after_dispatch_claim
+        with pytest.raises(SystemExit, match="simulated process death"):
+            h.rb_engine.rollback_transaction(
+                receipt=receipt, provider=h.provider
+            )
+        assert dispatches == 1
+        assert h.ledger.latest_status(
+            h.plan["plan_hash"], m.mutation_id
+        ) == ST_ROLLBACK_PENDING
+
+        retry = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+        assert retry.status == "blocked"
+        assert retry.error_code == "transaction_frozen(rollback_pending)"
+        assert retry.writes_performed == 0
+        assert dispatches == 1
+
+    def test_post_rollback_ledger_failure_is_ambiguous_and_counted(
+            self, tmp_path):
+        h, m, receipt = self._applied(tmp_path)
+        original_record = h.ledger.record
+
+        def fail_rolled_back_record(record):
+            if record.status == ST_ROLLED_BACK:
+                raise LedgerCorrupted("simulated rollback fsync failure")
+            original_record(record)
+
+        h.ledger.record = fail_rolled_back_record
+        result = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+
+        assert result.status == "ambiguous"
+        assert result.writes_performed == 1
+        assert h.provider.messages[m.provider_id].native == \
+            m.observed_native_flag
+        assert h.ledger.latest_status(
+            h.plan["plan_hash"], m.mutation_id
+        ) == ST_ROLLBACK_PENDING
+
     def test_second_rollback_is_zero_write_noop(self, tmp_path):
         h, m, receipt = self._applied(tmp_path)
         first = h.rb_engine.rollback_transaction(receipt=receipt,
@@ -486,6 +776,33 @@ class TestTransactionBoundRollback:
         # Detection persisted as suppression.
         assert h.overrides.is_suppressed(m.ref_digest) is True
 
+        # Returning the live color to the automation-applied value does not
+        # clear human authority. A retry stays zero-write until explicit
+        # unlock.
+        h.provider.messages[m.provider_id].native = \
+            mailapp_index_from_flag(m.proposed_flag)
+        writes_before = len([
+            call for call in h.provider.calls
+            if call[0] in ("set_flag_color_ref", "clear_flag_ref")
+        ])
+        suppressed_retry = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+        assert suppressed_retry.status == "rollback_blocked_by_override"
+        assert suppressed_retry.error_code == "human_override_suppressed"
+        assert suppressed_retry.writes_performed == 0
+        assert len([
+            call for call in h.provider.calls
+            if call[0] in ("set_flag_color_ref", "clear_flag_ref")
+        ]) == writes_before
+
+        h.overrides.unlock(m.ref_digest, actor="human-operator")
+        unlocked_retry = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+        assert unlocked_retry.status == "rolled_back"
+        assert unlocked_retry.writes_performed == 1
+
     def test_tampered_rollback_receipt_rejected(self, tmp_path):
         h, m, receipt = self._applied(tmp_path)
         receipt.applied_native_flag = 9               # mutate AFTER hashing
@@ -493,6 +810,115 @@ class TestTransactionBoundRollback:
                            match="content_hash mismatch"):
             h.rb_engine.rollback_transaction(receipt=receipt,
                                              provider=h.provider)
+
+    @pytest.mark.parametrize("field,value,error", [
+        ("pre_native_flag", True, "must be an integer"),
+        ("applied_native_flag", "0", "must be an integer"),
+        ("created_at", "not-a-timestamp", "must be an ISO timestamp"),
+        ("pre_semantic_flag", "orange-ish", "canonical FlagColor"),
+    ])
+    def test_rehashed_malformed_rollback_receipt_is_rejected(
+            self, tmp_path, field, value, error):
+        _, _, receipt = self._applied(tmp_path)
+        setattr(receipt, field, value)
+        receipt.content_hash = receipt.to_dict()["content_hash"]
+
+        with pytest.raises(fw.FlagWorkflowError, match=error):
+            receipt.validate()
+
+    def test_rollback_receipt_create_does_not_coerce_native_flags(
+            self, tmp_path):
+        h, mutation, _ = self._applied(tmp_path)
+        with pytest.raises(fw.FlagWorkflowError, match="must be an integer"):
+            TransactionRollbackReceipt.create(
+                transaction_id="tx-strict",
+                plan_sha256=h.plan["plan_hash"],
+                approval_sha256=h.approval.content_hash,
+                mutation_id=mutation.mutation_id,
+                ref_digest=mutation.ref_digest,
+                pre_native_flag=True,
+                pre_semantic_flag=mutation.observed_flag.value,
+                applied_native_flag=mailapp_index_from_flag(
+                    mutation.proposed_flag),
+                applied_semantic_flag=mutation.proposed_flag.value,
+            )
+
+    def test_transaction_id_path_traversal_is_rejected_before_state_touch(
+            self, tmp_path):
+        state_dir = tmp_path / "private-state"
+        receipt = TransactionRollbackReceipt(
+            schema=ROLLBACK_TX_SCHEMA,
+            rollback_id="rbx-" + "a" * 32,
+            transaction_id="x/../../../escape",
+            plan_sha256="b" * 64,
+            approval_sha256="c" * 64,
+            mutation_id="mut-1",
+            ref_digest="d" * 64,
+            pre_native_flag=1,
+            pre_semantic_flag="orange",
+            applied_native_flag=0,
+            applied_semantic_flag="red",
+            created_at="2026-08-27T12:00:00+00:00",
+        )
+        receipt.content_hash = receipt.to_dict()["content_hash"]
+        engine = ScopedRollbackEngine(
+            state_dir,
+            TransactionLedger(state_dir / "ledger" / "transactions.jsonl"),
+            overrides=None,
+            plan={},
+        )
+
+        with pytest.raises(fw.FlagWorkflowError, match="transaction_id"):
+            engine.rollback_transaction(receipt=receipt, provider=object())
+
+        assert not state_dir.exists()
+        assert not (tmp_path / "escap.lock").exists()
+
+    def test_forged_verified_ledger_lineage_cannot_authorize_rollback(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+        mutation = h.mutations[0]
+        transaction_id = h.engine._txid(
+            h.plan["plan_hash"], mutation, h.approval
+        )
+        h.ledger.record(TransactionRecord(
+            transaction_id=transaction_id,
+            plan_sha256=h.plan["plan_hash"],
+            approval_sha256=h.approval.content_hash,
+            mutation_id=mutation.mutation_id,
+            ref_digest="f" * 64,
+            pre_state=mutation.observed_flag.value,
+            intended_state=mutation.proposed_flag.value,
+            verified_post_state=mutation.proposed_flag.value,
+            timestamp="2026-08-27T12:00:00+00:00",
+            status=ST_VERIFIED,
+        ))
+        h.provider.messages[mutation.provider_id].native = \
+            mailapp_index_from_flag(mutation.proposed_flag)
+        receipt = TransactionRollbackReceipt.create(
+            transaction_id=transaction_id,
+            plan_sha256=h.plan["plan_hash"],
+            approval_sha256=h.approval.content_hash,
+            mutation_id=mutation.mutation_id,
+            ref_digest=mutation.ref_digest,
+            pre_native_flag=mutation.observed_native_flag,
+            pre_semantic_flag=mutation.observed_flag.value,
+            applied_native_flag=mailapp_index_from_flag(
+                mutation.proposed_flag
+            ),
+            applied_semantic_flag=mutation.proposed_flag.value,
+        )
+        h.provider.calls.clear()
+
+        result = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+
+        assert result.status == "blocked"
+        assert result.error_code == \
+            "receipt_lineage_mismatch:ledger_ref_digest"
+        assert result.writes_performed == 0
+        assert h.provider.calls == []
 
     def test_rollback_on_unverified_transaction_refused(self, tmp_path):
         h, m, receipt = self._applied(tmp_path)
@@ -505,6 +931,57 @@ class TestTransactionBoundRollback:
                                                   provider=h.provider)
         assert result.status == "blocked"
         assert result.writes_performed == 0
+
+    def test_rolled_back_item_blocks_and_enumerates_pending_sibling(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1", "2"))
+        second_pid = h.by_pid("2").provider_id
+        real_set = FakeScopedProvider.set_flag_color_ref
+
+        def fail_second(ref, color):
+            if ref.provider_id == second_pid:
+                raise RuntimeError("pre-dispatch refusal")
+            return real_set(h.provider, ref, color)
+
+        h.provider.set_flag_color_ref = fail_second
+        applied = h.apply()
+        assert len(applied.verified) == 1
+        first = h.by_pid("1")
+        receipt = TransactionRollbackReceipt.create(
+            transaction_id=applied.verified[0]["transaction_id"],
+            plan_sha256=h.plan["plan_hash"],
+            approval_sha256=h.approval.content_hash,
+            mutation_id=first.mutation_id,
+            ref_digest=first.ref_digest,
+            pre_native_flag=first.observed_native_flag,
+            pre_semantic_flag=first.observed_flag.value,
+            applied_native_flag=mailapp_index_from_flag(
+                first.proposed_flag
+            ),
+            applied_semantic_flag=first.proposed_flag.value,
+        )
+        h.provider.set_flag_color_ref = lambda ref, color: real_set(
+            h.provider, ref, color
+        )
+        rolled_back = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+        assert rolled_back.status == "rolled_back"
+
+        result = h.apply()
+
+        assert result.status == "blocked"
+        assert result.writes_performed == 0
+        assert result.failed == [{
+            "mutation_id": first.mutation_id,
+            "error_code": "previously_rolled_back",
+        }]
+        assert result.unattempted == [{
+            "mutation_id": h.by_pid("2").mutation_id,
+        }]
+        assert h.ledger.latest_status(
+            h.plan["plan_hash"], h.by_pid("2").mutation_id
+        ) == ST_FROZEN_UNATTEMPTED
 
 
 # --- Private-state hygiene + gates ------------------------------------------------------

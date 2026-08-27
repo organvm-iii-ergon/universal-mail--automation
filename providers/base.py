@@ -43,6 +43,20 @@ class ProviderCapabilities(Flag):
     COLORED_FLAGS = auto()        # Supports 7-color flag index (Mail.app)
 
 
+class ProviderWriteAmbiguous(RuntimeError):
+    """A provider write crossed dispatch but its outcome is not provable.
+
+    Providers raise this only when a mutating request may have reached the
+    backing service (including failures during provider-internal post-write
+    verification).  Callers must conservatively count the operation as a
+    possible write and must not report a zero-write refusal.
+
+    Exceptions raised before dispatch use their ordinary provider-specific
+    type; an explicit ``False`` return continues to mean the provider refused
+    the write before it occurred.
+    """
+
+
 @dataclass
 class ListMessagesResult:
     """Result from listing messages, including pagination info."""
@@ -306,7 +320,12 @@ class EmailProvider(ABC):
 
     def set_flag_color_ref(self, ref: MessageReference, color: FlagColor) -> bool:
         """Evidence-verified scoped write; True only when post-write
-        re-read confirms the expected native value."""
+        re-read confirms the expected native value.
+
+        Raises:
+            ProviderWriteAmbiguous: Dispatch may have crossed the provider's
+                write boundary but the final outcome cannot be proved.
+        """
         if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
             raise NotImplementedError(
                 f"{self.name} does not support COLORED_FLAGS capability"
@@ -389,6 +408,25 @@ class EmailProvider(ABC):
             # normalized into a valid-looking flag-only operation.
             try:
                 action.validate()
+                if action.star and not (
+                    self.capabilities & ProviderCapabilities.STAR
+                ):
+                    raise LabelActionValidationError(
+                        "provider does not support STAR capability"
+                    )
+                if action.category and not (
+                    self.capabilities & ProviderCapabilities.CATEGORIES
+                ):
+                    raise LabelActionValidationError(
+                        "provider does not support CATEGORIES capability"
+                    )
+                if action.clear_flag or action.flag_color is not None:
+                    if not (
+                        self.capabilities & ProviderCapabilities.COLORED_FLAGS
+                    ):
+                        raise LabelActionValidationError(
+                            "provider does not support COLORED_FLAGS capability"
+                        )
                 protected = self._drop_if_protected(action)
                 # For providers where apply_label IS a move (Outlook/Mail.app), a
                 # protected sender must not have labels applied either — that would
@@ -425,10 +463,6 @@ class EmailProvider(ABC):
                 # through the scoped, evidence-verified ref API — there is no
                 # bare-id colored path anywhere in the codebase.
                 if action.clear_flag or action.flag_color is not None:
-                    if not (self.capabilities & ProviderCapabilities.COLORED_FLAGS):
-                        raise LabelActionValidationError(
-                            "provider does not support COLORED_FLAGS capability"
-                        )
                     if action.message_ref is None:   # belt+braces; validate() also enforces
                         raise LabelActionValidationError(
                             "colored flag operation requires a qualified "

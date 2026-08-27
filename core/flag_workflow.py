@@ -18,18 +18,22 @@ with ``validate()`` contracts that fail closed on unknown values.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import math
 import os
-import tempfile
+import secrets
+import stat
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from core.models import FlagColor, MessageReference
 from core.flag_policy import (
-    AUTO_ELIGIBLE_THRESHOLD,
     MIGRATION_POLICY_VERSION,
     POLICY_SHA256,
     Proposal,
@@ -52,20 +56,188 @@ CANARY_MAX = 10
 
 _HEX_CHARS = set("0123456789abcdef")
 
+_PUBLIC_ERROR_CODES = frozenset({
+    "discovery_failed",
+    "provider_error",
+    "scan_timed_out",
+    "scope_incomplete",
+})
+
+_OVERRIDE_LOCKS_GUARD = threading.Lock()
+_OVERRIDE_LOCKS: Dict[str, threading.RLock] = {}
+
 
 class FlagWorkflowError(ValueError):
     """Raised when a workflow artifact fails schema/integrity validation."""
 
 
+def _require_bool(value: Any, name: str) -> bool:
+    """Return an actual JSON boolean; never accept truthy substitutes."""
+    if type(value) is not bool:
+        raise FlagWorkflowError(
+            f"{name} must be a boolean, got {type(value).__name__}"
+        )
+    return value
+
+
+def _require_int(value: Any, name: str, *, minimum: Optional[int] = None) -> int:
+    """Return an actual integer while rejecting bool and scalar coercion."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise FlagWorkflowError(
+            f"{name} must be an int, got {type(value).__name__}"
+        )
+    if minimum is not None and value < minimum:
+        raise FlagWorkflowError(f"{name} must be >= {minimum}, got {value}")
+    return value
+
+
+def _require_optional_int(value: Any, name: str) -> Optional[int]:
+    if value is None:
+        return None
+    return _require_int(value, name)
+
+
+def _require_string(value: Any, name: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str):
+        raise FlagWorkflowError(
+            f"{name} must be a string, got {type(value).__name__}"
+        )
+    if not allow_empty and not value.strip():
+        raise FlagWorkflowError(f"{name} must be a non-empty string")
+    return value
+
+
+def _require_optional_string(value: Any, name: str) -> Optional[str]:
+    if value is None:
+        return None
+    return _require_string(value, name, allow_empty=True)
+
+
+def _parse_aware_timestamp(value: Any, name: str) -> datetime:
+    """Parse an ISO timestamp and require an explicit UTC offset."""
+    text = _require_string(value, name)
+    try:
+        parsed = datetime.fromisoformat(
+            text[:-1] + "+00:00" if text.endswith("Z") else text
+        )
+        offset = parsed.utcoffset()
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise FlagWorkflowError(f"{name} malformed: {value!r}") from exc
+    if parsed.tzinfo is None or offset is None:
+        raise FlagWorkflowError(f"{name} must be timezone-aware")
+    return parsed
+
+
+def _normalize_aware_datetime(value: Any, name: str) -> datetime:
+    """Type-check an aware runtime clock and normalize it to UTC."""
+    if not isinstance(value, datetime):
+        raise FlagWorkflowError(
+            f"{name} must be a datetime, got {type(value).__name__}"
+        )
+    try:
+        offset = value.utcoffset()
+        if value.tzinfo is None or offset is None:
+            raise FlagWorkflowError(f"{name} must be timezone-aware")
+        return value.astimezone(timezone.utc)
+    except FlagWorkflowError:
+        raise
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise FlagWorkflowError(f"{name} is invalid") from exc
+
+
+def _reject_nonfinite_json(value: str) -> Any:
+    raise ValueError(f"non-finite JSON number {value}")
+
+
+def _reject_duplicate_json_keys(
+    pairs: List[tuple[str, Any]],
+) -> Dict[str, Any]:
+    """Build a JSON object while rejecting last-value-wins ambiguity."""
+    parsed: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in parsed:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        parsed[key] = value
+    return parsed
+
+
+def _json_object_from_path(path: Path, artifact_name: str) -> Dict[str, Any]:
+    """Read one strict UTF-8 JSON object and convert failures to our type."""
+    try:
+        raw_text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise FlagWorkflowError(
+            f"{artifact_name} unreadable: {Path(path)}"
+        ) from exc
+    try:
+        raw = json.loads(
+            raw_text,
+            parse_constant=_reject_nonfinite_json,
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise FlagWorkflowError(
+            f"{artifact_name} contains invalid JSON: {Path(path)}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise FlagWorkflowError(f"{artifact_name} must be a JSON object")
+    return raw
+
+
 # --- Canonical hashing ------------------------------------------------------
+
+
+def _validate_strict_json_value(value: Any, path: str = "$") -> None:
+    """Require values that can exist in decoded JSON without coercion.
+
+    ``json.dumps`` otherwise accepts Python-only conveniences such as tuples,
+    integer mapping keys, ``str`` subclasses, and a ``default`` converter.
+    Authoritative hashes must bind one unambiguous JSON value, so those values
+    fail before serialization instead of being silently transformed.
+    """
+    if value is None or type(value) in (bool, int, str):
+        return
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise FlagWorkflowError(
+                f"{path} contains a non-finite JSON number"
+            )
+        return
+    if type(value) is list:
+        for index, item in enumerate(value):
+            _validate_strict_json_value(item, f"{path}[{index}]")
+        return
+    if type(value) is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise FlagWorkflowError(
+                    f"{path} contains a non-string JSON object key"
+                )
+            _validate_strict_json_value(item, f"{path}.{key}")
+        return
+    raise FlagWorkflowError(
+        f"{path} contains non-JSON value {type(value).__name__}"
+    )
 
 
 def canonical_json_bytes(payload: Any) -> bytes:
     """Deterministic JSON encoding used for EVERY authoritative hash."""
-    return json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        default=str,
-    ).encode("utf-8")
+    try:
+        _validate_strict_json_value(payload)
+        return json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except FlagWorkflowError:
+        raise
+    except (OverflowError, RecursionError, TypeError, UnicodeEncodeError,
+            ValueError) as exc:
+        raise FlagWorkflowError(
+            "payload cannot be encoded as strict canonical JSON"
+        ) from exc
 
 
 def sha256_hex(payload: Any) -> str:
@@ -78,12 +250,31 @@ def require_hex256(value: Any, name: str) -> str:
     if (
         not isinstance(value, str)
         or len(value) != 64
-        or not set(value.lower()) <= _HEX_CHARS
+        or not set(value) <= _HEX_CHARS
     ):
         raise FlagWorkflowError(
             f"{name} must be a full 64-char SHA-256 hex digest, got {value!r}"
         )
-    return value.lower()
+    return value
+
+
+def _require_exact_keys(raw: Dict[str, Any], expected: set[str],
+                        name: str) -> None:
+    """Reject missing, unknown, and non-string object keys."""
+    if not all(type(key) is str for key in raw):
+        raise FlagWorkflowError(f"{name} keys must be strings")
+    actual = set(raw)
+    missing = expected - actual
+    unexpected = actual - expected
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing={sorted(missing)}")
+        if unexpected:
+            details.append(f"unexpected={sorted(unexpected)}")
+        raise FlagWorkflowError(
+            f"{name} keys must match the schema exactly " + ", ".join(details)
+        )
 
 
 def compute_plan_hash(plan: Dict[str, Any]) -> str:
@@ -167,6 +358,14 @@ def canonical_scan_status(*, scope_complete: bool, errors: List[str],
     validation — precedence: timeouts > failed(errors/scope) >
     partial(inaccessible) > bounded_partial(hidden) > complete.
     """
+    _require_bool(scope_complete, "scope_complete")
+    if not isinstance(errors, list) or not all(
+        isinstance(error, str) for error in errors
+    ):
+        raise FlagWorkflowError("errors must be a list of strings")
+    _require_int(inaccessible_count, "inaccessible_count", minimum=0)
+    _require_int(timeout_count, "timeout_count", minimum=0)
+    _require_int(hidden_by_limit, "hidden_by_limit", minimum=0)
     if timeout_count:
         return "timed_out"
     if errors or not scope_complete:
@@ -176,6 +375,22 @@ def canonical_scan_status(*, scope_complete: bool, errors: List[str],
     if hidden_by_limit:
         return "bounded_partial"
     return "complete"
+
+
+def _public_error_code(error: str) -> str:
+    """Map private failure detail onto a fixed, scope-free code allowlist."""
+    lowered = error.casefold()
+    if lowered.startswith("discovery_failed:"):
+        code = "discovery_failed"
+    elif "timed out" in lowered or "timeout" in lowered:
+        code = "scan_timed_out"
+    elif lowered.endswith(": scope incomplete"):
+        code = "scope_incomplete"
+    else:
+        code = "provider_error"
+    if code not in _PUBLIC_ERROR_CODES:  # pragma: no cover - closed mapping
+        raise FlagWorkflowError("internal public error-code mapping failure")
+    return code
 
 
 # --- Snapshot model ---------------------------------------------------------
@@ -253,46 +468,50 @@ class FlagSnapshot:
         snapshot MEANINGFUL is re-checked here; build_snapshot() and
         load_snapshot() both call this.
         """
-        if self.zero_write_mode is False:
+        if self.schema != SNAPSHOT_SCHEMA:
+            raise FlagWorkflowError(
+                f"snapshot schema must be {SNAPSHOT_SCHEMA}, "
+                f"got {self.schema!r}"
+            )
+        _require_bool(self.complete, "complete")
+        _require_bool(self.scope_complete, "scope_complete")
+        _require_bool(self.zero_write_mode, "zero_write_mode")
+        if self.zero_write_mode is not True:
             raise FlagWorkflowError(
                 "snapshot zero_write_mode must be True — snapshots from a "
                 "mutating producer are untrustworthy")
-        # Count sanity: negative counters are semantically impossible.
-        for name in ("inaccessible_count", "timeout_count",
-                     "unknown_index_count", "hidden_by_limit"):
-            if getattr(self, name) < 0:
-                raise FlagWorkflowError(
-                    f"{name} cannot be negative "
-                    f"(got {getattr(self, name)})")
-        # Scalar type sanity (Commit 7 Group A): bools-as-ints admitted
-        # (True==1), but strings where ints belong and vice versa are not.
-        for name in ("limit", "total_matched", "returned_count",
+        if not isinstance(self.errors, list) or not all(
+            isinstance(error, str) for error in self.errors
+        ):
+            raise FlagWorkflowError("errors must be a list of strings")
+        # Scalar type sanity: bools are not integers at an artifact boundary.
+        _require_int(self.limit, "limit", minimum=1)
+        for name in ("total_matched", "returned_count",
                      "inaccessible_count", "timeout_count",
                      "unknown_index_count", "hidden_by_limit"):
-            v = getattr(self, name)
-            if isinstance(v, bool) or not isinstance(v, int):
-                raise FlagWorkflowError(f"{name} must be an int, got "
-                                        f"{type(v).__name__}")
-        if not isinstance(self.ordering, str) or not self.ordering:
-            raise FlagWorkflowError("ordering must be a non-empty string")
-        if not isinstance(self.provider, str) or not self.provider:
-            raise FlagWorkflowError("provider must be a non-empty string")
+            _require_int(getattr(self, name), name)
+        for name in ("total_matched", "returned_count", "inaccessible_count",
+                     "timeout_count", "unknown_index_count",
+                     "hidden_by_limit"):
+            _require_int(getattr(self, name), name, minimum=0)
+        if self.since_days is not None:
+            _require_int(self.since_days, "since_days", minimum=1)
+        _require_optional_string(self.next_cursor, "next_cursor")
+        _require_string(self.ordering, "ordering")
+        _require_string(self.provider, "provider")
+        _require_string(self.account, "account")
+        _require_string(self.mailbox, "mailbox")
+        _require_string(self.status, "status")
         # snapshot_id provenance shape: 'snap-' + 32 hex (producer contract).
         if not (isinstance(self.snapshot_id, str)
                 and self.snapshot_id.startswith("snap-")
-                and len(self.snapshot_id) == 37):
+                and len(self.snapshot_id) == 37
+                and set(self.snapshot_id[5:].lower()) <= _HEX_CHARS):
             raise FlagWorkflowError(
                 f"snapshot_id malformed: {self.snapshot_id!r} "
                 "(expected 'snap-' + 32 hex)")
         # generated_at must be a parseable, timezone-aware ISO timestamp.
-        try:
-            parsed_ts = datetime.fromisoformat(self.generated_at)
-        except (ValueError, TypeError) as e:
-            raise FlagWorkflowError(
-                f"generated_at malformed: {self.generated_at!r}") from e
-        if parsed_ts.tzinfo is None:
-            raise FlagWorkflowError(
-                "generated_at must be timezone-aware")
+        _parse_aware_timestamp(self.generated_at, "generated_at")
 
         # --- Canonical status state machine (bidirectional) ----------------
         # status and completeness form ONE coherent state, validated against
@@ -343,6 +562,35 @@ class FlagSnapshot:
             raise FlagWorkflowError(
                 f"total_matched {self.total_matched} < returned_count "
                 f"{self.returned_count}")
+        accounted_minimum = (
+            self.returned_count
+            + self.hidden_by_limit
+            + self.inaccessible_count
+        )
+        if self.total_matched < accounted_minimum:
+            raise FlagWorkflowError(
+                f"total_matched {self.total_matched} is smaller than "
+                f"returned + hidden + inaccessible ({accounted_minimum})"
+            )
+        if (
+            self.scope_complete
+            and not self.errors
+            and self.timeout_count == 0
+            and self.total_matched != accounted_minimum
+        ):
+            raise FlagWorkflowError(
+                f"scope-complete snapshot counts are incoherent: "
+                f"total_matched={self.total_matched}, returned="
+                f"{self.returned_count}, hidden={self.hidden_by_limit}, "
+                f"inaccessible={self.inaccessible_count}"
+            )
+        if not isinstance(self.messages, list):
+            raise FlagWorkflowError("messages must be a list")
+        if not all(isinstance(message, SnapshotMessage)
+                   for message in self.messages):
+            raise FlagWorkflowError(
+                "messages must contain SnapshotMessage objects"
+            )
         unknown_actual = sum(
             1 for m in self.messages if m.observed_flag == FlagColor.UNKNOWN)
         if unknown_actual != self.unknown_index_count:
@@ -352,6 +600,21 @@ class FlagSnapshot:
         seen_refs = set()
         validator = _native_validator_for(self.provider)
         for m in self.messages:
+            for name in ("provider", "account", "mailbox", "provider_id"):
+                _require_string(getattr(m, name), f"message.{name}")
+            _require_string(m.sender, "message.sender", allow_empty=True)
+            _require_string(m.subject, "message.subject", allow_empty=True)
+            _require_optional_int(m.native_index, "message.native_index")
+            _require_optional_string(m.received_iso, "message.received_iso")
+            if not isinstance(m.observed_flag, FlagColor):
+                raise FlagWorkflowError(
+                    "message.observed_flag must be a FlagColor"
+                )
+            if m.provider != self.provider:
+                raise FlagWorkflowError(
+                    f"message {m.provider_id}: provider {m.provider!r} "
+                    f"disagrees with snapshot provider {self.provider!r}"
+                )
             # EXACT native↔semantic consistency via the provider registry:
             # native=0+BLUE and native=4+RED are as impossible as None+RED.
             try:
@@ -429,7 +692,12 @@ class FlagSnapshot:
         the public content_hash along with every other field (hash computed
         LAST, after all authoritative fields — including 'projection').
         """
+        self.validate()
         private_hash = self.to_dict()["content_hash"]
+        if self.content_hash != private_hash:
+            raise FlagWorkflowError(
+                "snapshot content_hash mismatch (stale or tampered object)"
+            )
         public: Dict[str, Any] = {
             "schema": PUBLIC_RECEIPT_SCHEMA,
             "projection": "public_safe",
@@ -454,7 +722,7 @@ class FlagSnapshot:
             },
             # Error CODES only — never free-form text (may embed locals).
             "error_codes": sorted({
-                e.split(":")[0].split(" ")[0][:40] for e in self.errors if e
+                _public_error_code(error) for error in self.errors
             }),
             "messages": [
                 {"ref": m.ref_digest, "flag": m.observed_flag.value}
@@ -466,9 +734,23 @@ class FlagSnapshot:
 
 
 def validate_public_receipt(raw: Any) -> None:
-    """Fail-closed integrity check for a public-safe receipt."""
+    """Fail-closed exact-schema check for a public-safe receipt."""
     if not isinstance(raw, dict):
         raise FlagWorkflowError("public receipt must be a JSON object")
+    expected_keys = {
+        "schema", "projection", "source_snapshot_sha256", "snapshot_id",
+        "provider", "scope_digest", "generated_at", "status", "complete",
+        "zero_write_mode", "counts", "error_codes", "messages",
+        "content_hash",
+    }
+    if not all(type(key) is str for key in raw):
+        raise FlagWorkflowError("public receipt keys must be strings")
+    unexpected = set(raw) - expected_keys
+    if unexpected:
+        raise FlagWorkflowError(
+            f"public receipt contains forbidden keys: {sorted(unexpected)}"
+        )
+    _require_exact_keys(raw, expected_keys, "public receipt")
     if raw.get("schema") != PUBLIC_RECEIPT_SCHEMA:
         raise FlagWorkflowError(
             f"public receipt schema must be {PUBLIC_RECEIPT_SCHEMA}, "
@@ -476,17 +758,133 @@ def validate_public_receipt(raw: Any) -> None:
         )
     if raw.get("projection") != "public_safe":
         raise FlagWorkflowError("projection must be 'public_safe'")
-    # Structural privacy gate FIRST: a receipt carrying forbidden fields is
-    # invalid no matter what its hash says.
-    forbidden = {"account", "mailbox", "sender", "subject", "messages_raw"}
-    present = forbidden & set(raw.keys())
-    if present:
+    require_hex256(
+        raw["source_snapshot_sha256"], "source_snapshot_sha256"
+    )
+    snapshot_id = _require_string(raw["snapshot_id"], "snapshot_id")
+    if not (
+        snapshot_id.startswith("snap-")
+        and len(snapshot_id) == 37
+        and set(snapshot_id[5:]) <= _HEX_CHARS
+    ):
         raise FlagWorkflowError(
-            f"public receipt contains forbidden keys: {sorted(present)}"
+            "snapshot_id must be 'snap-' followed by 32 lowercase hex "
+            "characters"
         )
-    stored = require_hex256(raw.get("content_hash"), "public content_hash")
-    require_hex256(raw.get("source_snapshot_sha256"),
-                   "source_snapshot_sha256")
+    _require_string(raw["provider"], "provider")
+    require_hex256(raw["scope_digest"], "scope_digest")
+    _parse_aware_timestamp(raw["generated_at"], "generated_at")
+    status = _require_string(raw["status"], "status")
+    if status not in {
+        "complete", "bounded_partial", "partial", "failed", "timed_out",
+    }:
+        raise FlagWorkflowError(f"invalid public receipt status {status!r}")
+    complete = _require_bool(raw["complete"], "complete")
+    if complete != (status == "complete"):
+        raise FlagWorkflowError(
+            "public receipt complete flag disagrees with status"
+        )
+    if _require_bool(raw["zero_write_mode"], "zero_write_mode") is not True:
+        raise FlagWorkflowError("public receipt zero_write_mode must be True")
+
+    counts = raw["counts"]
+    if not isinstance(counts, dict):
+        raise FlagWorkflowError("public receipt counts must be an object")
+    count_keys = {
+        "total_matched", "returned", "hidden_by_limit", "unknown_index",
+        "inaccessible", "timeouts", "errors",
+    }
+    _require_exact_keys(counts, count_keys, "public receipt counts")
+    parsed_counts = {
+        key: _require_int(value, f"counts.{key}", minimum=0)
+        for key, value in counts.items()
+    }
+
+    error_codes = raw.get("error_codes")
+    if (
+        not isinstance(error_codes, list)
+        or not all(type(code) is str for code in error_codes)
+        or not set(error_codes) <= _PUBLIC_ERROR_CODES
+    ):
+        raise FlagWorkflowError(
+            "public receipt error_codes must use the fixed public allowlist"
+        )
+    if error_codes != sorted(set(error_codes)):
+        raise FlagWorkflowError(
+            "public receipt error_codes must be sorted and unique"
+        )
+    if len(error_codes) > parsed_counts["errors"]:
+        raise FlagWorkflowError(
+            "public receipt error_codes exceed the reported error count"
+        )
+    if bool(error_codes) != bool(parsed_counts["errors"]):
+        raise FlagWorkflowError(
+            "public receipt error_codes disagree with the reported error "
+            "count"
+        )
+
+    messages = raw["messages"]
+    if not isinstance(messages, list):
+        raise FlagWorkflowError("public receipt messages must be a list")
+    allowed_flags = {color.value for color in FlagColor}
+    seen_refs = set()
+    unknown_count = 0
+    for index, message in enumerate(messages):
+        prefix = f"public receipt messages[{index}]"
+        if not isinstance(message, dict):
+            raise FlagWorkflowError(f"{prefix} must be an object")
+        _require_exact_keys(message, {"ref", "flag"}, prefix)
+        ref_digest = require_hex256(message["ref"], f"{prefix}.ref")
+        if ref_digest in seen_refs:
+            raise FlagWorkflowError(
+                f"{prefix}.ref duplicates an earlier message"
+            )
+        seen_refs.add(ref_digest)
+        flag = _require_string(message["flag"], f"{prefix}.flag")
+        if flag not in allowed_flags:
+            raise FlagWorkflowError(f"{prefix}.flag is not canonical")
+        unknown_count += int(flag == FlagColor.UNKNOWN.value)
+
+    if parsed_counts["returned"] != len(messages):
+        raise FlagWorkflowError(
+            "public receipt returned count does not match messages"
+        )
+    if parsed_counts["unknown_index"] != unknown_count:
+        raise FlagWorkflowError(
+            "public receipt unknown_index count does not match messages"
+        )
+    accounted_minimum = (
+        parsed_counts["returned"]
+        + parsed_counts["hidden_by_limit"]
+        + parsed_counts["inaccessible"]
+    )
+    if parsed_counts["total_matched"] < accounted_minimum:
+        raise FlagWorkflowError("public receipt counts are incoherent")
+    if complete and any(
+        parsed_counts[key]
+        for key in ("hidden_by_limit", "inaccessible", "timeouts", "errors")
+    ):
+        raise FlagWorkflowError(
+            "complete public receipt cannot report omitted or failed rows"
+        )
+    if complete and parsed_counts["total_matched"] != len(messages):
+        raise FlagWorkflowError(
+            "complete public receipt total does not match returned messages"
+        )
+    if status == "bounded_partial" and not parsed_counts["hidden_by_limit"]:
+        raise FlagWorkflowError(
+            "bounded_partial public receipt requires hidden rows"
+        )
+    if status == "timed_out" and not parsed_counts["timeouts"]:
+        raise FlagWorkflowError(
+            "timed_out public receipt requires a timeout"
+        )
+    if status == "partial" and not parsed_counts["inaccessible"]:
+        raise FlagWorkflowError(
+            "partial public receipt requires inaccessible rows"
+        )
+
+    stored = require_hex256(raw["content_hash"], "public content_hash")
     body = {k: v for k, v in raw.items() if k != "content_hash"}
     if sha256_hex(body) != stored:
         raise FlagWorkflowError(
@@ -523,7 +921,8 @@ def build_snapshot(
     row evidence — two audits of the same scope with identical counts can
     never collide, so write_private_snapshot can never overwrite one.
     """
-    generated_at = generated_at or datetime.now(timezone.utc).isoformat()
+    if generated_at is None:
+        generated_at = datetime.now(timezone.utc).isoformat()
 
     messages = [
         SnapshotMessage(
@@ -565,7 +964,7 @@ def build_snapshot(
         inaccessible_count=inaccessible_count,
         timeout_count=timeout_count,
         unknown_index_count=unknown_index_count,
-        limit=int(limit),
+        limit=limit,
         since_days=since_days,
         ordering=ordering,
         total_matched=total_matched,
@@ -599,8 +998,8 @@ def _harden_private_dir(path: Path) -> None:
     DIRECTLY INSIDE that uma chain. A directory elsewhere that merely happens
     to be named "flags" is never touched.
     """
-    resolved = path.resolve()
-    parts = resolved.parts
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    parts = absolute.parts
     for i, name in enumerate(parts):
         if name != "uma":
             continue
@@ -611,7 +1010,65 @@ def _harden_private_dir(path: Path) -> None:
             _chmod_0700_best_effort(cand2)
             if i + 2 < len(parts) and parts[i + 2] == "snapshots":
                 _chmod_0700_best_effort(Path(*parts[: i + 3]))
-    _chmod_0700_best_effort(resolved)
+
+
+def _open_private_parent(path: Path, *, create: bool, label: str) -> int:
+    """Hold a private artifact parent via dirfd without following symlinks."""
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    parent = absolute.parent
+    anchor = parent.parent
+    child_name = parent.name
+    if not child_name:
+        raise FlagWorkflowError(
+            f"{label} cannot live directly under filesystem root"
+        )
+    if create:
+        try:
+            anchor.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise FlagWorkflowError(
+                f"{label} state root unavailable ({anchor}): {exc}"
+            ) from exc
+    anchor_fd: Optional[int] = None
+    parent_fd: Optional[int] = None
+    try:
+        anchor_fd = os.open(
+            anchor,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        try:
+            parent_fd = os.open(
+                child_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=anchor_fd,
+            )
+        except FileNotFoundError:
+            if not create:
+                raise
+            try:
+                os.mkdir(child_name, mode=0o700, dir_fd=anchor_fd)
+            except FileExistsError:
+                pass
+            parent_fd = os.open(
+                child_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=anchor_fd,
+            )
+        os.fchmod(parent_fd, 0o700)
+        return parent_fd
+    except FileNotFoundError:
+        if parent_fd is not None:
+            os.close(parent_fd)
+        raise
+    except OSError as exc:
+        if parent_fd is not None:
+            os.close(parent_fd)
+        raise FlagWorkflowError(
+            f"{label} parent unusable ({parent}): {exc}"
+        ) from exc
+    finally:
+        if anchor_fd is not None:
+            os.close(anchor_fd)
 
 
 def write_private_snapshot(snapshot: FlagSnapshot, directory: Path) -> Path:
@@ -623,71 +1080,261 @@ def write_private_snapshot(snapshot: FlagSnapshot, directory: Path) -> Path:
     component are re-chmodded to 0700 before writing. Atomicity via temp
     file + os.replace in the same directory.
     """
+    snapshot.validate()
+    payload = snapshot.to_dict()
+    if snapshot.content_hash != payload["content_hash"]:
+        raise FlagWorkflowError(
+            "snapshot content_hash mismatch (stale or tampered object)"
+        )
     directory = Path(directory).expanduser()
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _harden_private_dir(directory)
-    payload = json.dumps(snapshot.to_dict(), indent=2, default=str)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=directory, prefix=".tmp-snap-", suffix=".json"
-    )
-    tmp_path = Path(tmp_name)
+    final = directory / f"{snapshot.snapshot_id}.json"
+    return _atomic_write_private_json(final, payload, prefix=".tmp-snap-")
+
+
+def _atomic_write_private_json(
+    path: Path,
+    payload: Dict[str, Any],
+    *,
+    prefix: str,
+) -> Path:
+    """Atomically replace *path* via a unique same-directory 0600 file."""
+    final = Path(path).expanduser()
+    parent_fd: Optional[int] = None
+    fd: Optional[int] = None
+    tmp_name: Optional[str] = None
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp_path, 0o600)
-        final = directory / f"{snapshot.snapshot_id}.json"
-        os.replace(tmp_path, final)
-        os.chmod(final, 0o600)
+        encoded = (
+            json.dumps(
+                payload,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+        parent_fd = _open_private_parent(
+            final, create=True, label="private artifact"
+        )
+        _harden_private_dir(final.parent)
+        for _ in range(100):
+            candidate = f"{prefix}{secrets.token_hex(16)}.tmp"
+            try:
+                fd = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                    os.O_NOFOLLOW | os.O_NONBLOCK,
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+                tmp_name = candidate
+                break
+            except FileExistsError:
+                continue
+        if fd is None or tmp_name is None:
+            raise OSError("could not allocate a unique private temp file")
+    except (OSError, TypeError, UnicodeEncodeError, ValueError) as exc:
+        if parent_fd is not None:
+            os.close(parent_fd)
+        raise FlagWorkflowError(
+            f"private artifact preparation failed ({final}): {exc}"
+        ) from exc
+    try:
+        os.fchmod(fd, 0o600)
+        written = 0
+        while written < len(encoded):
+            count = os.write(fd, encoded[written:])
+            if count <= 0:
+                raise OSError("private artifact write made no progress")
+            written += count
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        os.replace(
+            tmp_name,
+            final.name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        tmp_name = None
+        final_fd = os.open(
+            final.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=parent_fd,
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(final_fd).st_mode):
+                raise OSError("private artifact is not a regular file")
+            os.fchmod(final_fd, 0o600)
+        finally:
+            os.close(final_fd)
+        os.fsync(parent_fd)
         return final
+    except OSError as exc:
+        raise FlagWorkflowError(
+            f"private artifact write failed ({final}): {exc}"
+        ) from exc
     finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
+        if fd is not None:
+            os.close(fd)
+        if tmp_name is not None and parent_fd is not None:
+            try:
+                os.unlink(tmp_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
+def write_private_plan(plan: Dict[str, Any], path: Path) -> Path:
+    """Validate and atomically write a private migration plan as mode 0600."""
+    validate_plan_schema(plan)
+    return _atomic_write_private_json(
+        Path(path), plan, prefix=".tmp-flags-plan-"
+    )
 
 
 def load_snapshot(path: Path) -> FlagSnapshot:
     """Load + verify a snapshot file's content_hash."""
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw = _json_object_from_path(Path(path), "snapshot")
+    required = {
+        "schema", "snapshot_id", "generated_at", "provider", "account",
+        "mailbox", "complete", "scope_complete", "status",
+        "zero_write_mode", "errors", "inaccessible_count",
+        "timeout_count", "unknown_index_count", "limit", "since_days",
+        "ordering", "total_matched", "returned_count", "hidden_by_limit",
+        "next_cursor", "messages", "content_hash",
+    }
+    missing = required.difference(raw)
+    if missing:
+        raise FlagWorkflowError(
+            f"snapshot missing required keys: {sorted(missing)}"
+        )
     if raw.get("schema") != SNAPSHOT_SCHEMA:
         raise FlagWorkflowError(f"not a {SNAPSHOT_SCHEMA} snapshot")
     stored = require_hex256(raw.get("content_hash"), "snapshot content_hash")
     body = {k: v for k, v in raw.items() if k != "content_hash"}
     if sha256_hex(body) != stored:
         raise FlagWorkflowError("snapshot content_hash mismatch (tampered)")
-    messages = [
-        SnapshotMessage(
-            provider=m["provider"], account=m["account"],
-            mailbox=m["mailbox"], provider_id=m["provider_id"],
-            sender=m.get("sender", ""), subject=m.get("subject", ""),
-            native_index=m.get("native_index"),
-            observed_flag=FlagColor.from_string(m["observed_flag"]),
-            received_iso=m.get("received_iso"),
+    messages_raw = raw["messages"]
+    if not isinstance(messages_raw, list):
+        raise FlagWorkflowError("snapshot.messages must be a list")
+    messages: List[SnapshotMessage] = []
+    message_required = {
+        "provider", "account", "mailbox", "provider_id", "sender",
+        "subject", "native_index", "observed_flag", "received_iso",
+        "evidence_digest",
+    }
+    for index, message_raw in enumerate(messages_raw):
+        prefix = f"snapshot.messages[{index}]"
+        if not isinstance(message_raw, dict):
+            raise FlagWorkflowError(f"{prefix} must be a JSON object")
+        missing_message = message_required.difference(message_raw)
+        if missing_message:
+            raise FlagWorkflowError(
+                f"{prefix} missing required keys: {sorted(missing_message)}"
+            )
+        provider = _require_string(message_raw["provider"], f"{prefix}.provider")
+        account = _require_string(message_raw["account"], f"{prefix}.account")
+        mailbox = _require_string(message_raw["mailbox"], f"{prefix}.mailbox")
+        provider_id = _require_string(
+            message_raw["provider_id"], f"{prefix}.provider_id"
         )
-        for m in raw.get("messages", [])
-    ]
+        sender = _require_string(
+            message_raw["sender"], f"{prefix}.sender", allow_empty=True
+        )
+        subject = _require_string(
+            message_raw["subject"], f"{prefix}.subject", allow_empty=True
+        )
+        native_index = _require_optional_int(
+            message_raw["native_index"], f"{prefix}.native_index"
+        )
+        received_iso = _require_optional_string(
+            message_raw["received_iso"], f"{prefix}.received_iso"
+        )
+        observed_raw = _require_string(
+            message_raw["observed_flag"], f"{prefix}.observed_flag"
+        )
+        try:
+            observed_flag = FlagColor.from_string(observed_raw)
+        except ValueError as exc:
+            raise FlagWorkflowError(f"{prefix}: {exc}") from exc
+        expected_evidence = (
+            MessageReference.compute_evidence_digest(
+                received_iso, sender, subject
+            )
+            if (received_iso or sender or subject)
+            else None
+        )
+        evidence_raw = message_raw["evidence_digest"]
+        evidence_digest = (
+            None
+            if evidence_raw is None
+            else require_hex256(evidence_raw, f"{prefix}.evidence_digest")
+        )
+        if evidence_digest != expected_evidence:
+            raise FlagWorkflowError(
+                f"{prefix}.evidence_digest does not match message evidence"
+            )
+        messages.append(SnapshotMessage(
+            provider=provider,
+            account=account,
+            mailbox=mailbox,
+            provider_id=provider_id,
+            sender=sender,
+            subject=subject,
+            native_index=native_index,
+            observed_flag=observed_flag,
+            received_iso=received_iso,
+        ))
+
+    errors = raw["errors"]
+    if not isinstance(errors, list) or not all(
+        isinstance(error, str) for error in errors
+    ):
+        raise FlagWorkflowError("snapshot.errors must be a list of strings")
     snapshot = FlagSnapshot(
-        schema=raw["schema"], snapshot_id=raw["snapshot_id"],
-        generated_at=raw["generated_at"], provider=raw["provider"],
-        account=raw["account"], mailbox=raw["mailbox"],
-        complete=bool(raw["complete"]),
-        scope_complete=bool(raw.get("scope_complete", raw["complete"])),
-        status=raw["status"],
-        zero_write_mode=bool(raw.get("zero_write_mode", True)),
-        errors=list(raw.get("errors", [])),
-        inaccessible_count=int(raw.get("inaccessible_count", 0)),
-        timeout_count=int(raw.get("timeout_count", 0)),
-        unknown_index_count=int(raw.get("unknown_index_count", 0)),
-        limit=int(raw.get("limit", 0)),
-        since_days=raw.get("since_days"),
-        # NO str()/int() coercion here (Commit 7): hostile scalar types must
-        # reach FlagSnapshot.validate and fail closed, not be absorbed.
-        ordering=raw.get("ordering", "received_desc"),
-        total_matched=int(raw.get("total_matched",
-                                  raw.get("total_flagged_seen", 0))),
-        returned_count=int(raw.get("returned_count", len(messages))),
-        hidden_by_limit=int(raw.get("hidden_by_limit", 0)),
-        next_cursor=raw.get("next_cursor"),
+        schema=_require_string(raw["schema"], "snapshot.schema"),
+        snapshot_id=_require_string(raw["snapshot_id"], "snapshot.snapshot_id"),
+        generated_at=_require_string(raw["generated_at"], "snapshot.generated_at"),
+        provider=_require_string(raw["provider"], "snapshot.provider"),
+        account=_require_string(raw["account"], "snapshot.account"),
+        mailbox=_require_string(raw["mailbox"], "snapshot.mailbox"),
+        complete=_require_bool(raw["complete"], "snapshot.complete"),
+        scope_complete=_require_bool(
+            raw["scope_complete"], "snapshot.scope_complete"
+        ),
+        status=_require_string(raw["status"], "snapshot.status"),
+        zero_write_mode=_require_bool(
+            raw["zero_write_mode"], "snapshot.zero_write_mode"
+        ),
+        errors=errors,
+        inaccessible_count=_require_int(
+            raw["inaccessible_count"], "snapshot.inaccessible_count"
+        ),
+        timeout_count=_require_int(
+            raw["timeout_count"], "snapshot.timeout_count"
+        ),
+        unknown_index_count=_require_int(
+            raw["unknown_index_count"], "snapshot.unknown_index_count"
+        ),
+        limit=_require_int(raw["limit"], "snapshot.limit"),
+        since_days=_require_optional_int(raw["since_days"], "snapshot.since_days"),
+        ordering=_require_string(raw["ordering"], "snapshot.ordering"),
+        total_matched=_require_int(
+            raw["total_matched"], "snapshot.total_matched"
+        ),
+        returned_count=_require_int(
+            raw["returned_count"], "snapshot.returned_count"
+        ),
+        hidden_by_limit=_require_int(
+            raw["hidden_by_limit"], "snapshot.hidden_by_limit"
+        ),
+        next_cursor=_require_optional_string(
+            raw["next_cursor"], "snapshot.next_cursor"
+        ),
         messages=messages, content_hash=stored,
     )
     # Hash verified above; now verify SEMANTICS — a valid hash over
@@ -716,6 +1363,10 @@ def enumerate_estate(
     Returns a typed aggregate — never raises for surface-level OR discovery
     failure.
     """
+    _require_int(per_surface_limit, "per_surface_limit", minimum=1)
+    if since_days is not None:
+        _require_int(since_days, "since_days", minimum=1)
+    _require_int(timeout_seconds, "timeout_seconds", minimum=1)
     if surfaces is None:
         try:
             surfaces = provider.discover_surfaces()
@@ -724,6 +1375,7 @@ def enumerate_estate(
                 "rows": [],
                 "deduplicated_removed": 0,
                 "estate_complete": False,
+                "scope_complete": False,
                 "status": "failed",
                 "errors": [f"discovery_failed: {e}"],
                 "inaccessible_count": 0,
@@ -732,6 +1384,8 @@ def enumerate_estate(
                 "hidden_by_limit_total": 0,
                 "total_matched_all_surfaces": 0,
                 "surfaces": [],
+                "per_surface_limit": per_surface_limit,
+                "since_days": since_days,
             }
     surface_reports: List[Dict[str, Any]] = []
     all_rows: List[Any] = []           # transport rows from provider
@@ -740,9 +1394,9 @@ def enumerate_estate(
     errors: List[str] = []
     inaccessible_total = 0
     timeout_total = 0
-    unknown_total = 0
     hidden_total = 0
     total_matched_all = 0
+    estate_scope_complete = True
 
     if not surfaces:
         # Discovery succeeded but found NOTHING: nothing was scanned, so this
@@ -752,6 +1406,7 @@ def enumerate_estate(
             "rows": [],
             "deduplicated_removed": 0,
             "estate_complete": False,
+            "scope_complete": False,
             "status": "failed",
             "errors": ["discovery returned zero surfaces"],
             "inaccessible_count": 0,
@@ -760,28 +1415,37 @@ def enumerate_estate(
             "hidden_by_limit_total": 0,
             "total_matched_all_surfaces": 0,
             "surfaces": [],
+            "per_surface_limit": per_surface_limit,
+            "since_days": since_days,
         }
 
     for surface in surfaces:
         try:
-            result = provider.enumerate_flagged(
-                mailbox=surface.mailbox,
-                limit=per_surface_limit,
-                since_days=since_days,
-                timeout_seconds=timeout_seconds,
-                account=surface.account,
-            )
-        except RuntimeError as e:
+            enumerate_kwargs = {
+                "mailbox": surface.mailbox,
+                "limit": per_surface_limit,
+                "since_days": since_days,
+                "timeout_seconds": timeout_seconds,
+                "account": surface.account,
+            }
+            path_components = getattr(surface, "path_components", None)
+            if path_components:
+                enumerate_kwargs["mailbox_path"] = path_components
+            result = provider.enumerate_flagged(**enumerate_kwargs)
+        except Exception as e:
             # A raised surface error is a failed surface, not a silent skip.
+            estate_scope_complete = False
             surface_reports.append({
                 "account": surface.account, "mailbox": surface.mailbox,
-                "status": "failed", "error": str(e),
+                "status": "failed", "scope_complete": False,
+                "error": str(e),
             })
             errors.append(f"{surface.account}/{surface.mailbox}: {e}")
             continue
         surface_reports.append({
             "account": surface.account, "mailbox": surface.mailbox,
             "status": result.status,
+            "scope_complete": result.scope_complete,
             "total_matched": result.scanned_boundary.get(
                 "total_flagged_seen", len(result.rows)),
             "returned": len(result.rows),
@@ -791,12 +1455,12 @@ def enumerate_estate(
                       for e in result.errors)
         inaccessible_total += result.inaccessible_count
         timeout_total += result.timeout_count
-        unknown_total += result.unknown_index_count
         hidden_total += max(0, result.scanned_boundary.get(
             "hidden_by_limit", 0))
         total_matched_all += result.scanned_boundary.get(
             "total_flagged_seen", 0)
         if not result.scope_complete:
+            estate_scope_complete = False
             errors.append(
                 f"{surface.account}/{surface.mailbox}: scope incomplete")
         for row in result.rows:
@@ -811,19 +1475,23 @@ def enumerate_estate(
             seen_refs.add(key)
             deduped_rows.append(row)
 
-    estate_complete = (
-        not errors and inaccessible_total == 0 and timeout_total == 0
-        and hidden_total == 0 and bool(surfaces)
+    unknown_total = sum(
+        1 for row in deduped_rows
+        if row.flag_color == FlagColor.UNKNOWN
     )
-    status = (
-        "complete" if estate_complete
-        else ("timed_out" if timeout_total else
-              ("failed" if errors else "bounded_partial"))
+    status = canonical_scan_status(
+        scope_complete=estate_scope_complete,
+        errors=errors,
+        inaccessible_count=inaccessible_total,
+        timeout_count=timeout_total,
+        hidden_by_limit=hidden_total,
     )
+    estate_complete = status == "complete"
     return {
         "rows": deduped_rows,
         "deduplicated_removed": len(all_rows) - len(deduped_rows),
         "estate_complete": estate_complete,
+        "scope_complete": estate_scope_complete,
         "status": status,
         "errors": errors,
         "inaccessible_count": inaccessible_total,
@@ -832,6 +1500,8 @@ def enumerate_estate(
         "hidden_by_limit_total": hidden_total,
         "total_matched_all_surfaces": total_matched_all,
         "surfaces": surface_reports,
+        "per_surface_limit": per_surface_limit,
+        "since_days": since_days,
     }
 
 
@@ -845,16 +1515,28 @@ def build_estate_snapshot(estate: Dict[str, Any], *, provider_name: str,
         mailbox=f"{len(estate['surfaces'])} surfaces",
         rows=estate["rows"],
         complete=estate["estate_complete"],
-        scope_complete=not any(
-            s.get("status") == "failed" for s in estate["surfaces"]),
+        scope_complete=estate["scope_complete"],
         status=estate["status"],
         errors=estate["errors"],
         inaccessible_count=estate["inaccessible_count"],
         timeout_count=estate["timeout_count"],
         unknown_index_count=estate["unknown_index_count"],
-        limit=-1,                    # multi-surface; per-surface limits recorded
-        since_days=None,
-        total_matched=estate["total_matched_all_surfaces"],
+        limit=_require_int(
+            estate.get("per_surface_limit"),
+            "estate.per_surface_limit",
+            minimum=1,
+        ),
+        since_days=(
+            None
+            if estate.get("since_days") is None
+            else _require_int(
+                estate.get("since_days"), "estate.since_days", minimum=1
+            )
+        ),
+        total_matched=(
+            estate["total_matched_all_surfaces"]
+            - estate["deduplicated_removed"]
+        ),
         returned_count=len(estate["rows"]),
         hidden_by_limit=estate["hidden_by_limit_total"],
         next_cursor=None,
@@ -917,9 +1599,12 @@ class PlannedMutation:
 
 def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
     prefix = f"mutations[{idx}]"
+    if not isinstance(d, dict):
+        raise FlagWorkflowError(f"{prefix} must be a JSON object")
     for key in (
         "mutation_id", "ref_digest", "observed_flag",
-        "proposed_flag", "reason_code", "review_required",
+        "proposed_flag", "reason_code", "reason", "confidence",
+        "review_required",
         # v4 durable bindings + structural eligibility — required keys.
         "auto_eligible",
         "provider", "account", "mailbox", "provider_id", "snapshot_id",
@@ -927,53 +1612,73 @@ def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
     ):
         if key not in d:
             raise FlagWorkflowError(f"{prefix}: missing required key {key!r}")
-    confidence = d.get("confidence")
+    confidence = d["confidence"]
     if confidence is not None and not (
-        isinstance(confidence, (int, float)) and 0.0 <= float(confidence) <= 1.0
+        not isinstance(confidence, bool)
+        and isinstance(confidence, (int, float))
+        and math.isfinite(confidence)
+        and 0.0 <= confidence <= 1.0
     ):
         raise FlagWorkflowError(f"{prefix}: confidence must be null or in [0,1]")
-    native = d["observed_native_flag"]
-    review_required = bool(d["review_required"])
-    auto_eligible = bool(d["auto_eligible"])
+    native = _require_optional_int(
+        d["observed_native_flag"], f"{prefix}.observed_native_flag"
+    )
+    review_required = _require_bool(
+        d["review_required"], f"{prefix}.review_required"
+    )
+    auto_eligible = _require_bool(
+        d["auto_eligible"], f"{prefix}.auto_eligible"
+    )
     # Structural eligibility invariants — hash-valid but impossible plans
     # must fail closed at parse time, exactly like snapshots do.
     if review_required and auto_eligible:
         raise FlagWorkflowError(
             f"{prefix}: auto_eligible=True is incompatible with "
             "review_required=True")
-    proposed = FlagColor.from_string(str(d["proposed_flag"]))
+    proposed_raw = _require_string(
+        d["proposed_flag"], f"{prefix}.proposed_flag"
+    )
+    observed_raw = _require_string(
+        d["observed_flag"], f"{prefix}.observed_flag"
+    )
+    try:
+        proposed = FlagColor.from_string(proposed_raw)
+        observed = FlagColor.from_string(observed_raw)
+    except ValueError as exc:
+        raise FlagWorkflowError(f"{prefix}: {exc}") from exc
     if proposed == FlagColor.UNKNOWN:
         raise FlagWorkflowError(
             f"{prefix}: UNKNOWN is not a writable proposed flag")
-    observed = FlagColor.from_string(str(d["observed_flag"]))
     if observed == FlagColor.UNKNOWN and auto_eligible:
         raise FlagWorkflowError(
             f"{prefix}: UNKNOWN observations can never be auto_eligible")
     return PlannedMutation(
-        mutation_id=str(d["mutation_id"]),
+        mutation_id=_require_string(d["mutation_id"], f"{prefix}.mutation_id"),
         ref_digest=require_hex256(d["ref_digest"], f"{prefix}.ref_digest"),
         observed_flag=observed,
         proposed_flag=proposed,
-        reason_code=str(d["reason_code"]),
-        reason=str(d.get("reason", "")),
+        reason_code=_require_string(d["reason_code"], f"{prefix}.reason_code"),
+        reason=_require_string(
+            d["reason"], f"{prefix}.reason", allow_empty=True
+        ),
         confidence=None if confidence is None else float(confidence),
         review_required=review_required,
         auto_eligible=auto_eligible,
-        provider=str(d["provider"]),
-        account=str(d["account"]),
-        mailbox=str(d["mailbox"]),
-        provider_id=str(d["provider_id"]),
-        snapshot_id=str(d["snapshot_id"]),
-        observed_native_flag=None if native is None else int(native),
+        provider=_require_string(d["provider"], f"{prefix}.provider"),
+        account=_require_string(d["account"], f"{prefix}.account"),
+        mailbox=_require_string(d["mailbox"], f"{prefix}.mailbox"),
+        provider_id=_require_string(d["provider_id"], f"{prefix}.provider_id"),
+        snapshot_id=_require_string(d["snapshot_id"], f"{prefix}.snapshot_id"),
+        observed_native_flag=native,
         evidence_digest=(
             None if d["evidence_digest"] is None
-            else str(require_hex256(
-                d["evidence_digest"], f"{prefix}.evidence_digest"))
+            else require_hex256(
+                d["evidence_digest"], f"{prefix}.evidence_digest")
         ),
         message_id_digest=(
             None if d["message_id_digest"] is None
-            else str(require_hex256(
-                d["message_id_digest"], f"{prefix}.message_id_digest"))
+            else require_hex256(
+                d["message_id_digest"], f"{prefix}.message_id_digest")
         ),
     )
 
@@ -991,6 +1696,12 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
     no longer matches and validation fails — approval cannot cross a
     policy change silently.
     """
+    snapshot.validate()
+    current_snapshot_hash = snapshot.to_dict()["content_hash"]
+    if snapshot.content_hash != current_snapshot_hash:
+        raise FlagWorkflowError(
+            "snapshot content_hash mismatch (stale or tampered object)"
+        )
     if not snapshot.complete or snapshot.status != "complete":
         raise FlagWorkflowError(
             f"refusing to build apply-capable plan from "
@@ -1066,7 +1777,7 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "snapshot_id": snapshot.snapshot_id,
         # Derive from to_dict(), never the possibly-stale dataclass field.
-        "snapshot_sha256": snapshot.to_dict()["content_hash"],
+        "snapshot_sha256": current_snapshot_hash,
         "snapshot_complete": snapshot.complete,
         "zero_write_declaration": True,
         "total_scanned": snapshot.total_matched,
@@ -1075,10 +1786,7 @@ def build_plan(snapshot: FlagSnapshot) -> Dict[str, Any]:
         # Plan-level visibility into the threshold split. Writes stay
         # impossible regardless of this count until Commit 6 gates exist.
         "auto_eligible_count": sum(
-            1 for m in mutations
-            if m.confidence is not None
-            and m.confidence >= AUTO_ELIGIBLE_THRESHOLD
-            and not m.review_required
+            1 for mutation in mutations if mutation.auto_eligible
         ),
     }
     plan["plan_hash"] = compute_plan_hash(plan)
@@ -1096,7 +1804,7 @@ def to_public_safe_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     subject never appear. Cryptographically linked to the source plan via
     source_plan_sha256; plan_public_hash computed LAST over all fields.
     """
-    require_hex256(plan.get("plan_hash"), "plan_hash")
+    parsed = validate_plan_schema(plan)
     public: Dict[str, Any] = {
         "schema": PUBLIC_PLAN_SCHEMA,
         "projection": "public_safe",
@@ -1111,16 +1819,16 @@ def to_public_safe_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
         "unchanged_count": plan["unchanged_count"],
         "mutations": [
             {
-                "mutation_id": m["mutation_id"],
-                "ref_digest": m["ref_digest"],
-                "observed_flag": m["observed_flag"],
-                "proposed_flag": m["proposed_flag"],
-                "reason_code": m["reason_code"],
-                "confidence": m["confidence"],
-                "review_required": m["review_required"],
-                "auto_eligible": m.get("auto_eligible", False),
+                "mutation_id": mutation.mutation_id,
+                "ref_digest": mutation.ref_digest,
+                "observed_flag": mutation.observed_flag.value,
+                "proposed_flag": mutation.proposed_flag.value,
+                "reason_code": mutation.reason_code,
+                "confidence": mutation.confidence,
+                "review_required": mutation.review_required,
+                "auto_eligible": mutation.auto_eligible,
             }
-            for m in plan["mutations"]
+            for mutation in parsed
         ],
     }
     public["plan_public_hash"] = sha256_hex(public)   # LAST
@@ -1128,30 +1836,151 @@ def to_public_safe_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def validate_public_plan(raw: Any) -> None:
-    """Fail-closed check: forbidden keys absent, then hash integrity."""
+    """Fail-closed exact recursive schema and integrity check."""
     if not isinstance(raw, dict):
         raise FlagWorkflowError("public plan must be a JSON object")
-    if raw.get("schema") != PUBLIC_PLAN_SCHEMA:
+    expected_keys = {
+        "schema", "projection", "source_plan_sha256", "policy_version",
+        "policy_sha256", "generated_at", "snapshot_id", "snapshot_sha256",
+        "zero_write_declaration", "total_scanned", "unchanged_count",
+        "mutations", "plan_public_hash",
+    }
+    if not all(type(key) is str for key in raw):
+        raise FlagWorkflowError("public plan keys must be strings")
+    unexpected = set(raw) - expected_keys
+    if unexpected:
+        raise FlagWorkflowError(
+            f"forbidden keys present: {sorted(unexpected)}"
+        )
+    _require_exact_keys(raw, expected_keys, "public plan")
+    if raw["schema"] != PUBLIC_PLAN_SCHEMA:
         raise FlagWorkflowError(
             f"public plan schema must be {PUBLIC_PLAN_SCHEMA}")
-    forbidden = {
-        "account", "mailbox", "provider_id", "native_index",
-        "observed_native_flag", "evidence_digest", "message_id_digest",
-        "sender", "subject", "errors",
+    if raw["projection"] != "public_safe":
+        raise FlagWorkflowError("public plan projection must be 'public_safe'")
+
+    # Privacy structure precedes hash verification: an unhashed injection is
+    # still reported as an invalid projection, without inspecting its value.
+    mutation_keys = {
+        "mutation_id", "ref_digest", "observed_flag", "proposed_flag",
+        "reason_code", "confidence", "review_required", "auto_eligible",
     }
-    present = forbidden.intersection(raw.keys())
-    if present:
-        raise FlagWorkflowError(f"forbidden keys present: {sorted(present)}")
-    for m in raw.get("mutations", []):
-        leak = forbidden.intersection(m.keys())
-        if leak:
-            raise FlagWorkflowError(
-                f"forbidden keys in mutation projection: {sorted(leak)}")
+    mutations = raw["mutations"]
+    if not isinstance(mutations, list):
+        raise FlagWorkflowError("public plan mutations must be a list")
+    for index, mutation in enumerate(mutations):
+        prefix = f"public plan mutations[{index}]"
+        if not isinstance(mutation, dict):
+            raise FlagWorkflowError(f"{prefix} must be an object")
+        _require_exact_keys(mutation, mutation_keys, prefix)
+
+    # With the privacy allowlist established, reject ordinary field tampering
+    # before interpreting semantic relationships. A maliciously re-hashed
+    # artifact continues into the strict type and invariant checks below.
     stored = require_hex256(
-        raw.get("plan_public_hash"), "plan_public_hash")
+        raw["plan_public_hash"], "plan_public_hash")
     body = {k: v for k, v in raw.items() if k != "plan_public_hash"}
     if sha256_hex(body) != stored:
         raise FlagWorkflowError("public plan hash mismatch (tampered)")
+
+    require_hex256(raw["source_plan_sha256"], "source_plan_sha256")
+    if raw["policy_version"] != MIGRATION_POLICY_VERSION:
+        raise FlagWorkflowError(
+            f"public plan policy_version must be {MIGRATION_POLICY_VERSION}"
+        )
+    require_hex256(raw["policy_sha256"], "policy_sha256")
+    if raw["policy_sha256"] != POLICY_SHA256:
+        raise FlagWorkflowError("public plan policy_sha256 is not current")
+    _parse_aware_timestamp(raw["generated_at"], "public plan generated_at")
+    snapshot_id = _require_string(raw["snapshot_id"], "snapshot_id")
+    if not (
+        snapshot_id.startswith("snap-")
+        and len(snapshot_id) == 37
+        and set(snapshot_id[5:]) <= _HEX_CHARS
+    ):
+        raise FlagWorkflowError(
+            "public plan snapshot_id must be 'snap-' followed by 32 "
+            "lowercase hex characters"
+        )
+    require_hex256(raw["snapshot_sha256"], "snapshot_sha256")
+    if _require_bool(
+        raw["zero_write_declaration"], "zero_write_declaration"
+    ) is not True:
+        raise FlagWorkflowError(
+            "public plan zero_write_declaration must be True"
+        )
+    total_scanned = _require_int(
+        raw["total_scanned"], "total_scanned", minimum=0
+    )
+    unchanged_count = _require_int(
+        raw["unchanged_count"], "unchanged_count", minimum=0
+    )
+    allowed_flags = {color.value for color in FlagColor}
+    seen_ids = set()
+    seen_refs = set()
+    for index, mutation in enumerate(mutations):
+        prefix = f"public plan mutations[{index}]"
+        mutation_id = _require_string(
+            mutation["mutation_id"], f"{prefix}.mutation_id"
+        )
+        if not (
+            mutation_id.startswith("mut-")
+            and len(mutation_id) == 28
+            and set(mutation_id[4:]) <= _HEX_CHARS
+        ):
+            raise FlagWorkflowError(
+                f"{prefix}.mutation_id must be 'mut-' followed by 24 "
+                "lowercase hex characters"
+            )
+        if mutation_id in seen_ids:
+            raise FlagWorkflowError(f"{prefix}.mutation_id is duplicated")
+        seen_ids.add(mutation_id)
+        ref_digest = require_hex256(
+            mutation["ref_digest"], f"{prefix}.ref_digest"
+        )
+        if ref_digest in seen_refs:
+            raise FlagWorkflowError(f"{prefix}.ref_digest is duplicated")
+        seen_refs.add(ref_digest)
+        observed = _require_string(
+            mutation["observed_flag"], f"{prefix}.observed_flag"
+        )
+        proposed = _require_string(
+            mutation["proposed_flag"], f"{prefix}.proposed_flag"
+        )
+        if observed not in allowed_flags or proposed not in allowed_flags:
+            raise FlagWorkflowError(f"{prefix} contains a non-canonical flag")
+        if proposed == FlagColor.UNKNOWN.value:
+            raise FlagWorkflowError(f"{prefix} proposes UNKNOWN")
+        _require_string(mutation["reason_code"], f"{prefix}.reason_code")
+        confidence = mutation["confidence"]
+        if confidence is not None and not (
+            not isinstance(confidence, bool)
+            and isinstance(confidence, (int, float))
+            and math.isfinite(confidence)
+            and 0.0 <= confidence <= 1.0
+        ):
+            raise FlagWorkflowError(
+                f"{prefix}.confidence must be null or in [0,1]"
+            )
+        review_required = _require_bool(
+            mutation["review_required"], f"{prefix}.review_required"
+        )
+        auto_eligible = _require_bool(
+            mutation["auto_eligible"], f"{prefix}.auto_eligible"
+        )
+        if review_required and auto_eligible:
+            raise FlagWorkflowError(
+                f"{prefix} cannot require review and be auto-eligible"
+            )
+        if observed == FlagColor.UNKNOWN.value and auto_eligible:
+            raise FlagWorkflowError(
+                f"{prefix} cannot auto-apply an UNKNOWN observation"
+            )
+    if len(mutations) + unchanged_count != total_scanned:
+        raise FlagWorkflowError(
+            "public plan counts are incoherent: mutations + unchanged_count "
+            "must equal total_scanned"
+        )
 
 
 def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
@@ -1162,6 +1991,17 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
     """
     if not isinstance(plan, dict):
         raise FlagWorkflowError("plan must be a JSON object")
+    required = {
+        "schema", "policy_version", "policy_sha256", "generated_at",
+        "snapshot_id", "snapshot_sha256", "snapshot_complete",
+        "zero_write_declaration", "total_scanned", "mutations",
+        "unchanged_count", "auto_eligible_count", "plan_hash",
+    }
+    missing = required.difference(plan)
+    if missing:
+        raise FlagWorkflowError(
+            f"plan missing required keys: {sorted(missing)}"
+        )
     if plan.get("schema") != PLAN_SCHEMA:
         raise FlagWorkflowError(
             f"plan schema must be {PLAN_SCHEMA}, got {plan.get('schema')!r}"
@@ -1171,6 +2011,33 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
     stored_hash = plan["plan_hash"]
     if compute_plan_hash(plan) != stored_hash:
         raise FlagWorkflowError("plan_hash mismatch — plan was tampered with")
+    if _require_bool(
+        plan["snapshot_complete"], "snapshot_complete"
+    ) is not True:
+        raise FlagWorkflowError("snapshot_complete must be True")
+    if _require_bool(
+        plan["zero_write_declaration"], "zero_write_declaration"
+    ) is not True:
+        raise FlagWorkflowError("zero_write_declaration must be True")
+    _parse_aware_timestamp(plan["generated_at"], "plan.generated_at")
+    snapshot_id = _require_string(plan["snapshot_id"], "plan.snapshot_id")
+    if not (
+        snapshot_id.startswith("snap-")
+        and len(snapshot_id) == 37
+        and set(snapshot_id[5:].lower()) <= _HEX_CHARS
+    ):
+        raise FlagWorkflowError(
+            "plan.snapshot_id must be 'snap-' followed by 32 hex characters"
+        )
+    total_scanned = _require_int(
+        plan["total_scanned"], "total_scanned", minimum=0
+    )
+    unchanged_count = _require_int(
+        plan["unchanged_count"], "unchanged_count", minimum=0
+    )
+    auto_eligible_count = _require_int(
+        plan["auto_eligible_count"], "auto_eligible_count", minimum=0
+    )
     if plan.get("policy_version") != MIGRATION_POLICY_VERSION:
         raise FlagWorkflowError(
             f"policy_version must be {MIGRATION_POLICY_VERSION}, "
@@ -1179,6 +2046,7 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
     # The digest is the tamper-evident half of policy identity: a plan
     # stamped with the right version string but generated under DIFFERENT
     # rules cannot pass.
+    require_hex256(plan.get("policy_sha256"), "policy_sha256")
     if plan.get("policy_sha256") != POLICY_SHA256:
         raise FlagWorkflowError(
             "policy_sha256 mismatch — plan was generated under different "
@@ -1188,6 +2056,16 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
     if not isinstance(mutations_raw, list):
         raise FlagWorkflowError("mutations must be a list")
     parsed = [_mutation_from_dict(d, i) for i, d in enumerate(mutations_raw)]
+    if len(parsed) + unchanged_count != total_scanned:
+        raise FlagWorkflowError(
+            "plan counts are incoherent: mutations + unchanged_count must "
+            "equal total_scanned"
+        )
+    if sum(1 for mutation in parsed if mutation.auto_eligible) != \
+            auto_eligible_count:
+        raise FlagWorkflowError(
+            "auto_eligible_count does not match parsed mutations"
+        )
     # Cross-mutation integrity (Commit 7 hardening): snapshots are
     # deduplicated by construction, so duplicates or scope drift inside a
     # plan indicate forgery.
@@ -1213,6 +2091,41 @@ def validate_plan_schema(plan: Dict[str, Any]) -> List[PlannedMutation]:
             raise FlagWorkflowError(
                 f"mutation {m.mutation_id}: unsupported provider "
                 f"{m.provider!r}")
+        reference = MessageReference(
+            provider=m.provider,
+            account=m.account,
+            mailbox=m.mailbox,
+            provider_id=m.provider_id,
+        )
+        try:
+            reference.validate_scoped()
+        except ValueError as exc:
+            raise FlagWorkflowError(
+                f"mutation {m.mutation_id}: invalid scoped reference: {exc}"
+            ) from exc
+        if m.ref_digest != reference.ref_digest:
+            raise FlagWorkflowError(
+                f"mutation {m.mutation_id}: ref_digest does not match "
+                "provider/account/mailbox/provider_id"
+            )
+        try:
+            expected_observed = _native_validator_for(m.provider)(
+                m.observed_native_flag
+            )
+        except Exception as exc:
+            raise FlagWorkflowError(
+                f"mutation {m.mutation_id}: observed_native_flag rejected"
+            ) from exc
+        if expected_observed != m.observed_flag:
+            raise FlagWorkflowError(
+                f"mutation {m.mutation_id}: observed native and semantic "
+                "flags disagree"
+            )
+        if m.auto_eligible and m.evidence_digest is None:
+            raise FlagWorkflowError(
+                f"mutation {m.mutation_id}: auto-eligible mutation lacks "
+                "an evidence digest"
+            )
     return parsed
 
 
@@ -1269,22 +2182,46 @@ class ApprovalReceipt:
                issued_at: Optional[str] = None,
                ttl_seconds: int = 3600) -> "ApprovalReceipt":
         """Single construction path computing approval_id + content_hash."""
+        require_hex256(plan_hash, "approval.plan_hash")
+        require_hex256(snapshot_sha256, "approval.snapshot_sha256")
+        require_hex256(policy_sha256, "approval.policy_sha256")
+        _require_int(canary_limit, "approval.canary_limit")
+        _require_int(ttl_seconds, "approval.ttl_seconds", minimum=1)
+        _require_string(approving_operator, "approval.approving_operator")
+        if not isinstance(approved_mutation_ids, list) or not all(
+            isinstance(mutation_id, str) and mutation_id
+            for mutation_id in approved_mutation_ids
+        ):
+            raise FlagWorkflowError(
+                "approval.approved_mutation_ids must be a list of "
+                "non-empty strings"
+            )
         now = datetime.now(timezone.utc)
+        issued_text = issued_at if issued_at is not None else now.isoformat()
+        issued = _parse_aware_timestamp(issued_text, "approval.issued_at")
+        try:
+            expires_text = (
+                issued + timedelta(seconds=ttl_seconds)
+            ).isoformat()
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise FlagWorkflowError(
+                "approval expiry cannot be represented"
+            ) from exc
         receipt = cls(
             schema=APPROVAL_SCHEMA,
             approval_id="appr-" + sha256_hex({
                 "plan_hash": plan_hash,
                 "approved": sorted(approved_mutation_ids),
-                "issued_hint": issued_at or now.isoformat(),
+                "issued_hint": issued_text,
             })[:32],
             snapshot_sha256=snapshot_sha256,
             plan_hash=plan_hash,
             policy_sha256=policy_sha256,
             approved_mutation_ids=list(approved_mutation_ids),
-            issued_at=issued_at or now.isoformat(),
-            expires_at=(now + timedelta(seconds=ttl_seconds)).isoformat(),
+            issued_at=issued_text,
+            expires_at=expires_text,
             approving_operator=approving_operator,
-            canary_limit=int(canary_limit),
+            canary_limit=canary_limit,
         )
         receipt.content_hash = receipt.to_dict()["content_hash"]
         return receipt
@@ -1306,14 +2243,32 @@ class ApprovalReceipt:
         if sha256_hex(body) != stored:
             raise FlagWorkflowError(
                 "approval content_hash mismatch (tampered)")
-        if not self.approving_operator.strip():
-            raise FlagWorkflowError("approving_operator must be named")
-        issued = datetime.fromisoformat(self.issued_at)
-        expires = datetime.fromisoformat(self.expires_at)
+        _require_string(
+            self.approving_operator, "approval.approving_operator"
+        )
+        issued = _parse_aware_timestamp(self.issued_at, "approval.issued_at")
+        expires = _parse_aware_timestamp(
+            self.expires_at, "approval.expires_at"
+        )
         if expires <= issued:
             raise FlagWorkflowError("approval expires_at must be after issued_at")
-        now = now or datetime.now(timezone.utc)
-        if expires <= now:
+        validation_now = _normalize_aware_datetime(
+            datetime.now(timezone.utc) if now is None else now,
+            "approval validation clock",
+        )
+        try:
+            if issued > validation_now:
+                raise FlagWorkflowError(
+                    "approval issued_at is in the future"
+                )
+            expired = expires <= validation_now
+        except FlagWorkflowError:
+            raise
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise FlagWorkflowError(
+                "approval timestamps cannot be compared to validation clock"
+            ) from exc
+        if expired:
             raise FlagWorkflowError("approval has expired")
 
         # Cross-bindings against the ACTUAL plan artifact:
@@ -1329,12 +2284,21 @@ class ApprovalReceipt:
                 "approval.policy_sha256 != plan.policy_sha256 — policy "
                 "changed between planning and approval")
 
-        if not (CANARY_MIN <= self.canary_limit <= CANARY_MAX):
+        canary_limit = _require_int(
+            self.canary_limit, "approval.canary_limit"
+        )
+        if not (CANARY_MIN <= canary_limit <= CANARY_MAX):
             raise FlagWorkflowError(
                 f"canary_limit must be within [{CANARY_MIN},{CANARY_MAX}], "
                 f"got {self.canary_limit}"
             )
         ids = self.approved_mutation_ids
+        if not isinstance(ids, list) or not all(
+            isinstance(mutation_id, str) and mutation_id for mutation_id in ids
+        ):
+            raise FlagWorkflowError(
+                "approved_mutation_ids must be a list of non-empty strings"
+            )
         if not ids:
             raise FlagWorkflowError(
                 "approved_mutation_ids must be NONEMPTY — silent full-batch "
@@ -1342,10 +2306,10 @@ class ApprovalReceipt:
         if len(ids) != len(set(ids)):
             raise FlagWorkflowError(
                 "approved_mutation_ids contains duplicates")
-        if len(ids) > self.canary_limit:
+        if len(ids) > canary_limit:
             raise FlagWorkflowError(
                 f"{len(ids)} approved mutations exceed canary_limit "
-                f"{self.canary_limit}")
+                f"{canary_limit}")
         by_id = {m.mutation_id: m for m in plan_mutations}
         unknown = [i for i in ids if i not in by_id]
         if unknown:
@@ -1381,7 +2345,7 @@ class AppliedPlanLedger:
     """
 
     def __init__(self, path: Path):
-        self.path = Path(path)
+        self.path = Path(path).expanduser()
 
     def _ensure_dir(self) -> None:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1389,12 +2353,19 @@ class AppliedPlanLedger:
     def record(self, plan_hash: str, mutation_id: str,
                verified: bool, applied_at: Optional[str] = None) -> None:
         require_hex256(plan_hash, "plan_hash")
+        _require_string(mutation_id, "mutation_id")
+        _require_bool(verified, "verified")
+        applied_text = (
+            applied_at
+            if applied_at is not None
+            else datetime.now(timezone.utc).isoformat()
+        )
+        _parse_aware_timestamp(applied_text, "applied_at")
         entry = {
             "plan_hash": plan_hash,
             "mutation_id": mutation_id,
-            "applied_at": applied_at
-            or datetime.now(timezone.utc).isoformat(),
-            "verified": bool(verified),
+            "applied_at": applied_text,
+            "verified": verified,
         }
         self._ensure_dir()
         line = canonical_json_bytes(entry).decode("utf-8") + "\n"
@@ -1404,30 +2375,65 @@ class AppliedPlanLedger:
             os.fsync(f.fileno())
 
     def has(self, plan_hash: str, mutation_id: str) -> bool:
-        if not self.path.exists():
-            return False
-        for raw in self.path.read_text(encoding="utf-8").splitlines():
-            if not raw.strip():
-                continue
-            try:
-                entry = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
+        require_hex256(plan_hash, "plan_hash")
+        _require_string(mutation_id, "mutation_id")
+        for entry in self._read_entries():
             if (entry.get("plan_hash") == plan_hash
                     and entry.get("mutation_id") == mutation_id):
                 return True
         return False
 
     def all_entries(self) -> List[Dict[str, Any]]:
+        return self._read_entries()
+
+    def _read_entries(self) -> List[Dict[str, Any]]:
+        """Parse every authoritative row; one malformed row blocks all use."""
         if not self.path.exists():
             return []
-        out = []
-        for raw in self.path.read_text(encoding="utf-8").splitlines():
-            if raw.strip():
-                try:
-                    out.append(json.loads(raw))
-                except json.JSONDecodeError:
-                    continue
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise FlagWorkflowError(
+                f"applied-plan ledger unreadable: {self.path}"
+            ) from exc
+        out: List[Dict[str, Any]] = []
+        for line_number, raw in enumerate(lines, start=1):
+            if not raw.strip():
+                continue
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise FlagWorkflowError(
+                    f"applied-plan ledger corrupt at line {line_number}"
+                ) from exc
+            if not isinstance(entry, dict):
+                raise FlagWorkflowError(
+                    f"applied-plan ledger line {line_number} must be an object"
+                )
+            required = {"plan_hash", "mutation_id", "applied_at", "verified"}
+            missing = required.difference(entry)
+            if missing:
+                raise FlagWorkflowError(
+                    f"applied-plan ledger line {line_number} missing "
+                    f"{sorted(missing)}"
+                )
+            require_hex256(
+                entry["plan_hash"],
+                f"applied-plan ledger line {line_number}.plan_hash",
+            )
+            _require_string(
+                entry["mutation_id"],
+                f"applied-plan ledger line {line_number}.mutation_id",
+            )
+            _parse_aware_timestamp(
+                entry["applied_at"],
+                f"applied-plan ledger line {line_number}.applied_at",
+            )
+            _require_bool(
+                entry["verified"],
+                f"applied-plan ledger line {line_number}.verified",
+            )
+            out.append(entry)
         return out
 
 
@@ -1444,55 +2450,249 @@ class OverrideStore:
     """
 
     def __init__(self, path: Path):
-        self.path = Path(path)
+        # Resolve ``~`` at the trust boundary once.  Every later lock/read/
+        # replace operation must address this same concrete store path.
+        self.path = Path(path).expanduser()
 
-    def _load(self) -> Dict[str, Any]:
-        if not self.path.exists():
-            return {"overrides": {}, "suppressed": {}}
-        try:
-            # O_NOFOLLOW: never read through an attacker-controlled symlink.
-            fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Serialize every read and full read-modify-write by store path."""
+        key = os.path.abspath(os.fspath(self.path))
+        with _OVERRIDE_LOCKS_GUARD:
+            thread_lock = _OVERRIDE_LOCKS.setdefault(key, threading.RLock())
+        with thread_lock:
+            parent_fd: Optional[int] = None
+            lock_fd: Optional[int] = None
             try:
-                raw = os.read(fd, 10 * 1024 * 1024).decode("utf-8")
+                parent_fd = _open_private_parent(
+                    self.path, create=True, label="override store"
+                )
+                lock_name = f".{self.path.name}.lock"
+                lock_fd = os.open(
+                    lock_name,
+                    os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+                if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+                    raise OSError("override lock is not a regular file")
+                os.fchmod(lock_fd, 0o600)
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            except (FlagWorkflowError, OSError) as exc:
+                if lock_fd is not None:
+                    os.close(lock_fd)
+                if parent_fd is not None:
+                    os.close(parent_fd)
+                raise FlagWorkflowError(
+                    f"override store lock unavailable ({self.path}): {exc}"
+                ) from exc
+            if parent_fd is not None:
+                os.close(parent_fd)
+            try:
+                yield
             finally:
-                os.close(fd)
-        except OSError as e:
+                if lock_fd is not None:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    finally:
+                        os.close(lock_fd)
+
+    @staticmethod
+    def _validate_mapping(data: Any, path: Path) -> Dict[str, Any]:
+        """Validate top-level and nested store mappings without coercion."""
+        if not isinstance(data, dict):
             raise FlagWorkflowError(
-                f"override store unreadable ({self.path}): {e}") from e
-        except UnicodeDecodeError as e:
-            raise FlagWorkflowError(
-                f"override store corrupt (invalid encoding): {self.path}"
-            ) from e
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            raise FlagWorkflowError(
-                f"override store corrupt (invalid JSON): {self.path}"
+                f"override store corrupt (top level is not an object): {path}"
             )
-        data.setdefault("overrides", {})
-        data.setdefault("suppressed", {})
+        required_sections = {"overrides", "suppressed", "last_automation"}
+        if set(data) != required_sections:
+            missing = sorted(required_sections.difference(data))
+            unexpected = sorted(set(data).difference(required_sections))
+            raise FlagWorkflowError(
+                "override store corrupt (top-level sections must be exactly "
+                f"{sorted(required_sections)}; missing={missing}, "
+                f"unexpected={unexpected}): {path}"
+            )
+        for section in required_sections:
+            if not isinstance(data[section], dict):
+                raise FlagWorkflowError(
+                    f"override store corrupt ({section} is not a mapping): "
+                    f"{path}"
+                )
+
+        for ref_digest, record in data["overrides"].items():
+            key = require_hex256(ref_digest, "override key")
+            if not isinstance(record, dict):
+                raise FlagWorkflowError(
+                    f"override store corrupt (override {key} is not a mapping)"
+                )
+            record_ref = require_hex256(
+                record.get("ref_digest"), f"override {key}.ref_digest"
+            )
+            if record_ref != key:
+                raise FlagWorkflowError(
+                    f"override store corrupt (override {key} ref mismatch)"
+                )
+            _parse_aware_timestamp(
+                record.get("detected_at"), f"override {key}.detected_at"
+            )
+            _require_string(
+                record.get("automation_expected_state"),
+                f"override {key}.automation_expected_state",
+                allow_empty=True,
+            )
+            _require_string(
+                record.get("human_observed_state"),
+                f"override {key}.human_observed_state",
+                allow_empty=True,
+            )
+            is_active = _require_bool(
+                record.get("suppressed"), f"override {key}.suppressed"
+            )
+            unlocked_at = record.get("unlocked_at")
+            unlock_actor = record.get("unlock_actor")
+            if is_active:
+                if unlocked_at is not None or unlock_actor is not None:
+                    raise FlagWorkflowError(
+                        "override store corrupt "
+                        f"(active override {key} has unlock audit fields)"
+                    )
+                if data["suppressed"].get(key) is not True:
+                    raise FlagWorkflowError(
+                        "override store corrupt "
+                        f"(active override {key} is not suppressed)"
+                    )
+            else:
+                if unlocked_at is None:
+                    raise FlagWorkflowError(
+                        "override store corrupt "
+                        f"(unlocked override {key} has no unlocked_at)"
+                    )
+                _parse_aware_timestamp(
+                    unlocked_at, f"override {key}.unlocked_at"
+                )
+                _require_string(
+                    unlock_actor,
+                    f"override {key}.unlock_actor",
+                )
+                if key in data["suppressed"]:
+                    raise FlagWorkflowError(
+                        "override store corrupt "
+                        f"(unlocked override {key} remains suppressed)"
+                    )
+
+        for ref_digest, suppressed in data["suppressed"].items():
+            key = require_hex256(ref_digest, "suppressed key")
+            if _require_bool(suppressed, f"suppressed {key}") is not True:
+                raise FlagWorkflowError(
+                    f"override store corrupt (suppressed {key} is not true)"
+                )
+            record = data["overrides"].get(key)
+            if not isinstance(record, dict) or record.get("suppressed") is not True:
+                raise FlagWorkflowError(
+                    "override store corrupt "
+                    f"(suppressed {key} has no matching active override)"
+                )
+
+        for ref_digest, record in data["last_automation"].items():
+            key = require_hex256(ref_digest, "last_automation key")
+            if not isinstance(record, dict):
+                raise FlagWorkflowError(
+                    "override store corrupt "
+                    f"(last_automation {key} is not a mapping)"
+                )
+            _require_string(
+                record.get("flag"), f"last_automation {key}.flag"
+            )
+            _require_bool(
+                record.get("verified"), f"last_automation {key}.verified"
+            )
+            _parse_aware_timestamp(
+                record.get("recorded_at"),
+                f"last_automation {key}.recorded_at",
+            )
         return data
 
-    def _save(self, data: Dict[str, Any]) -> None:
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self.path.parent, 0o700)   # re-harden pre-existing dirs
-        payload = json.dumps(data, indent=2, sort_keys=True)
-        tmp = self.path.with_suffix(".tmp")
+    def _load_unlocked(self) -> Dict[str, Any]:
+        empty: Dict[str, Any] = {
+            "overrides": {},
+            "suppressed": {},
+            "last_automation": {},
+        }
+        parent_fd: Optional[int] = None
+        fd: Optional[int] = None
         try:
-            # O_EXCL|O_NOFOLLOW: the temp file must be OURS and real.
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
-                         os.O_NOFOLLOW, 0o600)
-        except OSError as e:
+            # O_NONBLOCK ensures a hostile FIFO/device cannot hang a state
+            # read before fstat rejects it; O_NOFOLLOW rejects symlinks,
+            # including dangling ones that Path.exists() misclassifies.
+            parent_fd = _open_private_parent(
+                self.path, create=False, label="override store"
+            )
+            fd = os.open(
+                self.path.name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError:
+            if parent_fd is not None:
+                os.close(parent_fd)
+            return empty
+        except (FlagWorkflowError, OSError) as exc:
+            if parent_fd is not None:
+                os.close(parent_fd)
             raise FlagWorkflowError(
-                f"override store tmp unusable ({tmp}): {e}") from e
+                f"override store unreadable ({self.path}): {exc}"
+            ) from exc
         try:
-            os.write(fd, payload.encode("utf-8"))
-            os.fsync(fd)
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise FlagWorkflowError(
+                    "override store unusable (not a regular file): "
+                    f"{self.path}"
+                )
+            if metadata.st_size > 10 * 1024 * 1024:
+                raise FlagWorkflowError(
+                    f"override store corrupt (too large): {self.path}"
+                )
+            with os.fdopen(fd, "rb") as handle:
+                fd = None
+                raw_bytes = handle.read(10 * 1024 * 1024 + 1)
+        except OSError as exc:
+            raise FlagWorkflowError(
+                f"override store unreadable ({self.path}): {exc}"
+            ) from exc
         finally:
-            os.close(fd)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, self.path)          # atomic; replaces links, not targets
-        os.chmod(self.path, 0o600)
+            if fd is not None:
+                os.close(fd)
+            if parent_fd is not None:
+                os.close(parent_fd)
+        if len(raw_bytes) > 10 * 1024 * 1024:
+            raise FlagWorkflowError(
+                f"override store corrupt (too large): {self.path}"
+            )
+        try:
+            raw = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise FlagWorkflowError(
+                f"override store corrupt (invalid encoding): {self.path}"
+            ) from exc
+        try:
+            data = json.loads(
+                raw,
+                parse_constant=_reject_nonfinite_json,
+                object_pairs_hook=_reject_duplicate_json_keys,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise FlagWorkflowError(
+                f"override store corrupt (invalid JSON): {self.path}"
+            ) from exc
+        return self._validate_mapping(data, self.path)
+
+    def _save_unlocked(self, data: Dict[str, Any]) -> None:
+        validated = self._validate_mapping(data, self.path)
+        _atomic_write_private_json(
+            self.path, validated, prefix=f".tmp-{self.path.name}-"
+        )
 
     @staticmethod
     def _key(ref_digest: str) -> str:
@@ -1508,14 +2708,18 @@ class OverrideStore:
         its own write cannot silently resurrect its authority over a
         message a human has touched.
         """
-        data = self._load()
-        k = self._key(ref_digest)
-        data.setdefault("last_automation", {})[k] = {
-            "flag": flag_value, "verified": bool(verified),
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
-        }
-        # NOTE: no pop of overrides/suppressed here — unlock-only.
-        self._save(data)
+        _require_string(flag_value, "flag_value")
+        _require_bool(verified, "verified")
+        with self._locked():
+            data = self._load_unlocked()
+            k = self._key(ref_digest)
+            data["last_automation"][k] = {
+                "flag": flag_value,
+                "verified": verified,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            }
+            # NOTE: no pop of overrides/suppressed here — unlock-only.
+            self._save_unlocked(data)
 
     def detect_override(self, ref_digest: str,
                         automation_expected_state: str,
@@ -1526,29 +2730,43 @@ class OverrideStore:
         approved transaction explains the change => override recorded,
         automation suppressed until an explicit operator unlock.
         """
-        data = self._load()
-        k = self._key(ref_digest)
-        data["overrides"][k] = {
-            "ref_digest": k,
-            "detected_at": datetime.now(timezone.utc).isoformat(),
-            "automation_expected_state": automation_expected_state,
-            "human_observed_state": human_observed_state,
-            "suppressed": True,
-            "unlocked_at": None,
-            "unlock_actor": None,
-        }
-        data["suppressed"][k] = True
-        self._save(data)
+        _require_string(
+            automation_expected_state,
+            "automation_expected_state",
+            allow_empty=True,
+        )
+        _require_string(
+            human_observed_state, "human_observed_state", allow_empty=True
+        )
+        with self._locked():
+            data = self._load_unlocked()
+            k = self._key(ref_digest)
+            data["overrides"][k] = {
+                "ref_digest": k,
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+                "automation_expected_state": automation_expected_state,
+                "human_observed_state": human_observed_state,
+                "suppressed": True,
+                "unlocked_at": None,
+                "unlock_actor": None,
+            }
+            data["suppressed"][k] = True
+            self._save_unlocked(data)
 
     def record_override(self, ref_digest: str, detail: str) -> None:
         """Legacy detail-shaped detection (kept for existing callers)."""
+        _require_string(detail, "detail", allow_empty=True)
         self.detect_override(ref_digest, "unknown", f"detail:{detail}")
 
     def is_overridden(self, ref_digest: str) -> bool:
-        return self._key(ref_digest) in self._load()["overrides"]
+        key = self._key(ref_digest)
+        with self._locked():
+            return key in self._load_unlocked()["overrides"]
 
     def is_suppressed(self, ref_digest: str) -> bool:
-        return self._key(ref_digest) in self._load()["suppressed"]
+        key = self._key(ref_digest)
+        with self._locked():
+            return key in self._load_unlocked()["suppressed"]
 
     def unlock(self, ref_digest: str, actor: str = "") -> None:
         """EXPLICIT operator action — the ONLY path that clears suppression.
@@ -1556,17 +2774,24 @@ class OverrideStore:
         Records who unlocked and when (audit trail persists in overrides
         history), then clears the active suppression.
         """
-        data = self._load()
-        k = self._key(ref_digest)
-        if k in data["overrides"]:
-            data["overrides"][k]["unlocked_at"] = (
-                datetime.now(timezone.utc).isoformat())
-            data["overrides"][k]["unlock_actor"] = actor or "unnamed-operator"
-        data["suppressed"].pop(k, None)
-        self._save(data)
+        _require_string(actor, "actor", allow_empty=True)
+        with self._locked():
+            data = self._load_unlocked()
+            k = self._key(ref_digest)
+            if k in data["overrides"]:
+                data["overrides"][k]["suppressed"] = False
+                data["overrides"][k]["unlocked_at"] = (
+                    datetime.now(timezone.utc).isoformat()
+                )
+                data["overrides"][k]["unlock_actor"] = (
+                    actor or "unnamed-operator"
+                )
+            data["suppressed"].pop(k, None)
+            self._save_unlocked(data)
 
     def list_overrides(self) -> Dict[str, Any]:
-        return dict(self._load()["overrides"])
+        with self._locked():
+            return dict(self._load_unlocked()["overrides"])
 
 
 # --- Rollback receipt model ----------------------------------------------------
@@ -1615,7 +2840,24 @@ class RollbackReceipt:
                 f"rollback schema must be {ROLLBACK_RECEIPT_SCHEMA}, "
                 f"got {self.schema!r}"
             )
+        receipt_id = _require_string(self.receipt_id, "rollback.receipt_id")
+        if not (
+            receipt_id.startswith("rb-")
+            and len(receipt_id) == 35
+            and set(receipt_id[3:]) <= _HEX_CHARS
+        ):
+            raise FlagWorkflowError(
+                "rollback.receipt_id must be 'rb-' followed by 32 "
+                "lowercase hex characters"
+            )
         require_hex256(self.plan_hash, "rollback.plan_hash")
+        _parse_aware_timestamp(self.created_at, "rollback.created_at")
+        if not isinstance(self.entries, list):
+            raise FlagWorkflowError("rollback.entries must be a list")
+        if not all(isinstance(entry, RollbackEntry) for entry in self.entries):
+            raise FlagWorkflowError(
+                "rollback.entries must contain RollbackEntry objects"
+            )
         stored = require_hex256(self.content_hash, "rollback.content_hash")
         body = self.to_dict()
         body.pop("content_hash")
@@ -1624,41 +2866,130 @@ class RollbackReceipt:
                 "rollback receipt content_hash mismatch (tampered)"
             )
 
+        seen_refs = set()
+        validator = _native_validator_for("mailapp")
+        for index, entry in enumerate(self.entries):
+            prefix = f"rollback.entries[{index}]"
+            ref_digest = require_hex256(
+                entry.ref_digest, f"{prefix}.ref_digest"
+            )
+            if ref_digest in seen_refs:
+                raise FlagWorkflowError(f"{prefix}.ref_digest is duplicated")
+            seen_refs.add(ref_digest)
+            native_index = _require_optional_int(
+                entry.pre_apply_native_index,
+                f"{prefix}.pre_apply_native_index",
+            )
+            if not isinstance(entry.pre_apply_flag, FlagColor):
+                raise FlagWorkflowError(
+                    f"{prefix}.pre_apply_flag must be a FlagColor"
+                )
+            if not isinstance(entry.automation_applied_flag, FlagColor):
+                raise FlagWorkflowError(
+                    f"{prefix}.automation_applied_flag must be a FlagColor"
+                )
+            expected_pre_flag = validator(native_index)
+            if expected_pre_flag == FlagColor.UNKNOWN:
+                raise FlagWorkflowError(
+                    f"{prefix}.pre_apply_native_index is not rollbackable"
+                )
+            if expected_pre_flag != entry.pre_apply_flag:
+                raise FlagWorkflowError(
+                    f"{prefix} native index and pre-apply flag disagree"
+                )
+            if entry.automation_applied_flag == FlagColor.UNKNOWN:
+                raise FlagWorkflowError(
+                    f"{prefix}.automation_applied_flag cannot be UNKNOWN"
+                )
+            if entry.pre_apply_flag == entry.automation_applied_flag:
+                raise FlagWorkflowError(
+                    f"{prefix} does not describe a state change"
+                )
+
     @classmethod
-    def create(cls, plan_hash: str, entries: List[RollbackEntry]) -> "RollbackReceipt":
+    def create(cls, plan_hash: str,
+               entries: List[RollbackEntry]) -> "RollbackReceipt":
+        require_hex256(plan_hash, "rollback.plan_hash")
+        if not isinstance(entries, list):
+            raise FlagWorkflowError("rollback.entries must be a list")
+        if not all(isinstance(entry, RollbackEntry) for entry in entries):
+            raise FlagWorkflowError(
+                "rollback.entries must contain RollbackEntry objects"
+            )
+        created_at = datetime.now(timezone.utc).isoformat()
         receipt = cls(
             schema=ROLLBACK_RECEIPT_SCHEMA,
             receipt_id="rb-" + sha256_hex({
                 "plan_hash": plan_hash,
-                "entries": [e.to_dict() for e in entries],
-                "created_hint": datetime.now(timezone.utc).isoformat(),
+                "entries": [entry.to_dict() for entry in entries],
+                "created_hint": created_at,
             })[:32],
             plan_hash=plan_hash,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=created_at,
             entries=list(entries),
         )
         receipt.content_hash = receipt.to_dict()["content_hash"]
+        receipt.validate()
         return receipt
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "RollbackReceipt":
-        entries = [
-            RollbackEntry(
-                ref_digest=require_hex256(e.get("ref_digest"), "entry.ref_digest"),
-                pre_apply_native_index=e.get("pre_apply_native_index"),
-                pre_apply_flag=FlagColor.from_string(e["pre_apply_flag"]),
-                automation_applied_flag=FlagColor.from_string(
-                    e["automation_applied_flag"]),
+        if not isinstance(raw, dict):
+            raise FlagWorkflowError("rollback receipt must be a JSON object")
+        _require_exact_keys(raw, {
+            "schema", "receipt_id", "plan_hash", "created_at", "entries",
+            "content_hash",
+        }, "rollback receipt")
+        entries_raw = raw["entries"]
+        if not isinstance(entries_raw, list):
+            raise FlagWorkflowError("rollback.entries must be a list")
+        entries = []
+        for index, entry_raw in enumerate(entries_raw):
+            prefix = f"rollback.entries[{index}]"
+            if not isinstance(entry_raw, dict):
+                raise FlagWorkflowError(f"{prefix} must be an object")
+            _require_exact_keys(entry_raw, {
+                "ref_digest", "pre_apply_native_index", "pre_apply_flag",
+                "automation_applied_flag",
+            }, prefix)
+            pre_flag_raw = _require_string(
+                entry_raw["pre_apply_flag"], f"{prefix}.pre_apply_flag"
             )
-            for e in raw.get("entries", [])
-        ]
+            applied_flag_raw = _require_string(
+                entry_raw["automation_applied_flag"],
+                f"{prefix}.automation_applied_flag",
+            )
+            try:
+                pre_flag = FlagColor(pre_flag_raw)
+                applied_flag = FlagColor(applied_flag_raw)
+            except ValueError as exc:
+                raise FlagWorkflowError(
+                    f"{prefix} contains a non-canonical flag"
+                ) from exc
+            entries.append(RollbackEntry(
+                ref_digest=require_hex256(
+                    entry_raw["ref_digest"], f"{prefix}.ref_digest"
+                ),
+                pre_apply_native_index=_require_optional_int(
+                    entry_raw["pre_apply_native_index"],
+                    f"{prefix}.pre_apply_native_index",
+                ),
+                pre_apply_flag=pre_flag,
+                automation_applied_flag=applied_flag,
+            ))
         receipt = cls(
-            schema=raw.get("schema", ""),
-            receipt_id=raw.get("receipt_id", ""),
-            plan_hash=raw.get("plan_hash", ""),
-            created_at=raw.get("created_at", ""),
+            schema=_require_string(raw["schema"], "rollback.schema"),
+            receipt_id=_require_string(
+                raw["receipt_id"], "rollback.receipt_id"
+            ),
+            plan_hash=require_hex256(raw["plan_hash"], "rollback.plan_hash"),
+            created_at=_require_string(
+                raw["created_at"], "rollback.created_at"
+            ),
             entries=entries,
-            content_hash=raw.get("content_hash", ""),
+            content_hash=require_hex256(
+                raw["content_hash"], "rollback.content_hash"
+            ),
         )
         receipt.validate()
         return receipt

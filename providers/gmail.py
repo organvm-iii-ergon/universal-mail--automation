@@ -16,7 +16,12 @@ from providers.base import (
     ProviderCapabilities,
     ListMessagesResult,
 )
-from core.models import EmailMessage, LabelAction, ProcessingResult
+from core.models import (
+    EmailMessage,
+    LabelAction,
+    LabelActionValidationError,
+    ProcessingResult,
+)
 
 if TYPE_CHECKING:  # AuditLog is duck-typed at runtime; no import-time coupling
     from core.audit import AuditLog
@@ -94,6 +99,12 @@ class GmailProvider(EmailProvider):
         self._connected = False
         logger.debug("Gmail provider disconnected")
 
+    def _require_service(self) -> Any:
+        """Return the connected Gmail service or fail before API dispatch."""
+        if self._service is None:
+            raise RuntimeError("Gmail provider is not connected")
+        return self._service
+
     def _execute_with_backoff(
         self,
         func: Callable[[], Any],
@@ -129,7 +140,8 @@ class GmailProvider(EmailProvider):
     def _init_label_cache(self) -> None:
         """Pre-fetch all label IDs to avoid API calls during processing."""
         logger.info("Initializing Gmail label cache...")
-        results = self._service.users().labels().list(userId="me").execute()
+        service = self._require_service()
+        results = service.users().labels().list(userId="me").execute()
         for label in results.get("labels", []):
             self._label_cache[label["name"]] = label["id"]
         logger.debug(f"Cached {len(self._label_cache)} labels")
@@ -142,8 +154,9 @@ class GmailProvider(EmailProvider):
     ) -> ListMessagesResult:
         """List messages matching Gmail search query."""
         page_size = min(limit, LIST_PAGE_SIZE)
+        service = self._require_service()
         results = self._execute_with_backoff(
-            lambda: self._service.users().messages().list(
+            lambda: service.users().messages().list(
                 userId="me",
                 q=query,
                 maxResults=page_size,
@@ -168,9 +181,10 @@ class GmailProvider(EmailProvider):
 
     def get_message_details(self, message_id: str) -> Optional[EmailMessage]:
         """Fetch message headers."""
+        service = self._require_service()
         try:
             data = self._execute_with_backoff(
-                lambda: self._service.users().messages().get(
+                lambda: service.users().messages().get(
                     userId="me",
                     id=message_id,
                     format="metadata",
@@ -223,6 +237,7 @@ class GmailProvider(EmailProvider):
 
         for chunk in chunks:
             failed_ids: List[str] = []
+            service = self._require_service()
 
             def callback(request_id: str, response: dict, exception: Exception):
                 if exception:
@@ -233,10 +248,10 @@ class GmailProvider(EmailProvider):
                     if msg:
                         results[request_id] = msg
 
-            batch = self._service.new_batch_http_request(callback=callback)
+            batch = service.new_batch_http_request(callback=callback)
             for msg_id in chunk:
                 batch.add(
-                    self._service.users().messages().get(
+                    service.users().messages().get(
                         userId="me",
                         id=msg_id,
                         format="metadata",
@@ -298,9 +313,10 @@ class GmailProvider(EmailProvider):
         if not label_id:
             label_id = self.ensure_label_exists(label)
 
+        service = self._require_service()
         try:
             self._execute_with_backoff(
-                lambda: self._service.users().messages().modify(
+                lambda: service.users().messages().modify(
                     userId="me",
                     id=message_id,
                     body={"addLabelIds": [label_id]},
@@ -315,9 +331,10 @@ class GmailProvider(EmailProvider):
     def remove_label(self, message_id: str, label: str) -> bool:
         """Remove a label from a message."""
         label_id = self._label_cache.get(label) or label
+        service = self._require_service()
         try:
             self._execute_with_backoff(
-                lambda: self._service.users().messages().modify(
+                lambda: service.users().messages().modify(
                     userId="me",
                     id=message_id,
                     body={"removeLabelIds": [label_id]},
@@ -353,6 +370,7 @@ class GmailProvider(EmailProvider):
             return label
 
         logger.info(f"Creating missing label: {label}")
+        service = self._require_service()
         label_object = {
             "name": label,
             "labelListVisibility": "labelShow",
@@ -360,7 +378,7 @@ class GmailProvider(EmailProvider):
         }
         try:
             created = self._execute_with_backoff(
-                lambda: self._service.users().labels().create(
+                lambda: service.users().labels().create(
                     userId="me",
                     body=label_object,
                 ).execute(),
@@ -394,6 +412,37 @@ class GmailProvider(EmailProvider):
         pending: Dict[str, dict] = {}
 
         for action in actions:
+            # Validate the caller's request before the protected-sender gate
+            # normalizes it.  Gmail overrides the base dispatcher, so it must
+            # enforce the same validation and capability boundaries here.
+            # Rejected actions never reach label creation or batchModify.
+            try:
+                action.validate()
+                if action.clear_flag or action.flag_color is not None:
+                    if not (
+                        self.capabilities & ProviderCapabilities.COLORED_FLAGS
+                    ):
+                        raise LabelActionValidationError(
+                            "provider does not support COLORED_FLAGS capability"
+                        )
+                if action.star and not (
+                    self.capabilities & ProviderCapabilities.STAR
+                ):
+                    raise LabelActionValidationError(
+                        "provider does not support STAR capability"
+                    )
+                if action.category and not (
+                    self.capabilities & ProviderCapabilities.CATEGORIES
+                ):
+                    raise LabelActionValidationError(
+                        "provider does not support CATEGORIES capability"
+                    )
+            except (LabelActionValidationError, ValueError) as exc:
+                result.error_count += 1
+                result.processed_count += 1
+                result.errors.append(f"{action.message_id}: {exc}")
+                continue
+
             # PROTECTED-SENDER GATE (Gmail overrides apply_actions, so it does NOT
             # inherit base.apply_actions' gate — enforce the same chokepoint here).
             # _drop_if_protected clears archive + strips INBOX from remove_labels in
@@ -451,6 +500,7 @@ class GmailProvider(EmailProvider):
             # Chunk by batch modify limit
             for i in range(0, len(msg_ids), BATCH_MODIFY_SIZE):
                 chunk = msg_ids[i:i + BATCH_MODIFY_SIZE]
+                service = self._require_service()
                 body = {
                     "ids": chunk,
                     "addLabelIds": list(add_ids),
@@ -458,7 +508,7 @@ class GmailProvider(EmailProvider):
                 }
                 try:
                     self._execute_with_backoff(
-                        lambda: self._service.users().messages().batchModify(
+                        lambda: service.users().messages().batchModify(
                             userId="me",
                             body=body,
                         ).execute(),

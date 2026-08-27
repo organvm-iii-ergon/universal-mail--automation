@@ -1,10 +1,12 @@
 """Mail.app provider regressions."""
 
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
 from core.models import FlagColor, LabelAction, MessageReference
+from providers.base import ProviderWriteAmbiguous
 from providers.mailapp import (
     MailAppProvider,
     MAILAPP_INDEX_TO_FLAG,
@@ -12,6 +14,7 @@ from providers.mailapp import (
     flag_from_mailapp_index,
     mailapp_index_from_flag,
     ProviderScriptError,
+    ProviderDispatchUnavailable,
     ProviderTimeoutError,
     MessageNotFoundError,
     FlagStateDriftError,
@@ -270,6 +273,19 @@ def test_list_messages_parses_flag_index_to_flag_color():
     assert by_id["3"].flag_color == FlagColor.UNKNOWN
 
 
+def test_list_messages_invalid_flag_index_is_unknown():
+    provider = MailAppProvider()
+    provider._run_applescript = lambda script: _canned_list_output([
+        ("1", "a@b.com", "Missing", "false", "true", "missing value", []),
+        ("2", "c@d.com", "Empty", "false", "true", "", []),
+    ])
+    result = provider.list_messages(limit=10)
+    assert [message.flag_color for message in result.messages] == [
+        FlagColor.UNKNOWN,
+        FlagColor.UNKNOWN,
+    ]
+
+
 class TestMailAppFlagReadFailure:
     """Ref-based flag reads propagate typed provider failures."""
 
@@ -356,12 +372,63 @@ class TestScopedLookup:
         with pytest.raises(ProviderScriptError, match="non-numeric"):
             p._build_scoped_lookup_script("INBOX", "a", "abc; tell app")
 
+    @pytest.mark.parametrize("provider,provider_id", [
+        ("gmail", "42"),
+        ("mailapp", "1) or true"),
+        ("mailapp", "-1"),
+        ("mailapp", "0"),
+        ("mailapp", "１２"),
+    ])
+    def test_invalid_scoped_refs_never_reach_applescript(
+            self, provider, provider_id):
+        ref = MessageReference(
+            provider=provider,
+            account="acct",
+            mailbox="INBOX",
+            provider_id=provider_id,
+            evidence_digest="a" * 64,
+        )
+        p = _ScopedHarness.prov([])
+
+        with pytest.raises(ProviderScriptError):
+            p.resolve_scoped(ref)
+        with pytest.raises(ProviderScriptError):
+            p.get_message_details_ref(ref)
+        with pytest.raises(ProviderScriptError):
+            p.get_flag_color_ref(ref)
+        with pytest.raises(ProviderScriptError):
+            p.set_flag_color_ref(ref, FlagColor.ORANGE)
+        with pytest.raises(ProviderScriptError):
+            p.clear_flag_ref(ref)
+        assert p.calls == []
+
     def test_resolve_scoped_enriches_reference(self):
         ref = _ScopedHarness.make_ref()
         p = _ScopedHarness.prov([_ScopedHarness.RESOLVED])
         enriched = p.resolve_scoped(ref)
         assert enriched.observed_native_flag == 0
         assert enriched.message_id_digest is not None
+        assert enriched.evidence_digest == ref.evidence_digest
+
+    def test_resolve_scoped_preserves_missing_received_date(self):
+        sender = "vip@bank.example"
+        subject = "Statement July"
+        ref = MessageReference(
+            provider="mailapp",
+            account="acct",
+            mailbox="INBOX",
+            provider_id="42",
+            evidence_digest=MessageReference.compute_evidence_digest(
+                None,
+                sender,
+                subject,
+            ),
+        )
+        output = "\x1f".join([
+            "0", "", sender, subject, "Message-ID: <abc@x>",
+        ])
+        enriched = _ScopedHarness.prov([output]).resolve_scoped(ref)
+        assert enriched.received_iso is None
         assert enriched.evidence_digest == ref.evidence_digest
 
     def test_resolve_not_found_typed_error(self):
@@ -387,7 +454,10 @@ class TestScopedWrites:
     def test_post_write_mismatch_raises(self):
         h = _ScopedHarness
         p = h.prov([h.RESOLVED, "ok", h.RESOLVED])  # re-read still RED
-        with pytest.raises(ProviderScriptError, match="post-write verification"):
+        with pytest.raises(
+            ProviderWriteAmbiguous,
+            match="post-write verification",
+        ):
             p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE)
 
     def test_post_write_match_returns_true(self):
@@ -412,7 +482,34 @@ class TestScopedWrites:
             .replace("Statement July", "EDITED")     # ...but subject changed
         )
         p = h.prov([h.RESOLVED, "ok", recolored_and_edited])
-        with pytest.raises(FlagStateDriftError, match="during write"):
+        with pytest.raises(ProviderWriteAmbiguous, match="during write"):
+            p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE)
+
+    def test_dispatch_failure_is_ambiguous(self):
+        h = _ScopedHarness
+        p = h.prov([h.RESOLVED, RuntimeError("transport closed")])
+        with pytest.raises(ProviderWriteAmbiguous, match="may have occurred"):
+            p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE)
+
+    def test_pre_dispatch_transport_failure_is_not_ambiguous(self):
+        h = _ScopedHarness
+        p = h.prov([
+            h.RESOLVED,
+            ProviderDispatchUnavailable("osascript unavailable"),
+        ])
+        with pytest.raises(
+            ProviderDispatchUnavailable,
+            match="osascript unavailable",
+        ):
+            p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE)
+
+    def test_post_write_read_failure_is_ambiguous(self):
+        h = _ScopedHarness
+        p = h.prov([h.RESOLVED, "ok", RuntimeError("read failed")])
+        with pytest.raises(
+            ProviderWriteAmbiguous,
+            match="post-write verification",
+        ):
             p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE)
 
     def test_post_write_evidence_intact_and_exact_native_succeeds(self):
@@ -444,6 +541,36 @@ class TestSurfaceDiscovery:
             ("acct@x.com", "INBOX")
         assert len(surfaces) == 3
 
+    def test_parses_nested_path_components_without_scope_collisions(self):
+        p = MailAppProvider()
+        out = "\x1d".join([
+            "\x1f".join(["acct", "Parent", "Child"]),
+            "\x1f".join(["acct", "Parent/Child"]),
+        ])
+        scripts = []
+        p._run_applescript = lambda s, *a, **k: scripts.append(s) or out
+        nested, literal = p.discover_surfaces()
+
+        assert nested.path_components == ("Parent", "Child")
+        assert nested.mailbox == "Parent/Child"
+        assert literal.path_components == ("Parent/Child",)
+        assert literal.mailbox == "Parent~1Child"
+        assert nested.mailbox != literal.mailbox
+        assert "collectMailboxRows" in scripts[0]
+
+    def test_nested_scope_builds_exact_applescript_reference(self):
+        p = MailAppProvider(account="acct")
+        script = p._build_flagged_script(
+            "Parent/Child",
+            "acct",
+            None,
+            ("Parent", "Child"),
+        )
+        assert (
+            'mailbox "Child" of mailbox "Parent" of account "acct"'
+            in script
+        )
+
     def test_discovery_failure_typed_never_silent(self):
         p = MailAppProvider()
         p._run_applescript = lambda s, *a, **k: (
@@ -461,7 +588,7 @@ class TestFlagsExplainWithSemanticEnum:
         provider._run_applescript = lambda script: "\t".join([
             "sender@example.com", "Test Subject", "true", "true", "0", "INBOX"
         ])
-        msg = provider.get_message_details("msg1")
+        msg = provider.get_message_details("1")
         assert msg is not None
         assert msg.flag_color == FlagColor.RED
         # The flag_color is a semantic FlagColor, not a native index
@@ -469,6 +596,39 @@ class TestFlagsExplainWithSemanticEnum:
         assert msg.flag_color == FlagColor.RED
         # No int() conversion needed or possible
         assert msg.flag_color.value == "red"
+
+    def test_invalid_native_index_is_unknown(self):
+        provider = MailAppProvider()
+        provider._run_applescript = lambda script: "\t".join([
+            "sender@example.com", "Test Subject", "true", "true", "?", "INBOX",
+        ])
+        msg = provider.get_message_details("1")
+        assert msg is not None
+        assert msg.flag_color is FlagColor.UNKNOWN
+
+    def test_scoped_details_use_qualified_reference(self):
+        provider = MailAppProvider(account="acct")
+        provider._run_applescript = lambda script: "\x1f".join([
+            "0",
+            "2026-08-01T12:00:00",
+            "sender@example.com",
+            "Test Subject",
+            "",
+            "true",
+            "true",
+        ])
+        ref = MessageReference(
+            provider="mailapp",
+            account="acct",
+            mailbox="Parent/Child",
+            provider_id="7",
+        )
+        msg = provider.get_message_details_ref(ref)
+        assert msg is not None
+        assert msg.id == "7"
+        assert msg.labels == {"Parent/Child"}
+        assert msg.flag_color is FlagColor.RED
+        assert msg.date is not None and msg.date.tzinfo is not None
 
 
 # --- Bounded flagged enumeration (provider-owned AppleScript) --------------
@@ -527,13 +687,29 @@ class TestEnumerateFlagged:
 
     def test_since_days_omitted_keeps_simple_predicate(self):
         scripts = []
-        p = MailAppProvider()
+        p = MailAppProvider(account="acct")
         p._run_applescript = lambda script, *a, **k: (
             scripts.append(script) or _canned_flagged_output([])
         )
         p.enumerate_flagged()
         assert "whose flagged status is true)" in scripts[0]
         assert "cutoffDate" not in scripts[0]
+
+    @pytest.mark.parametrize("kwargs,error", [
+        ({"limit": 0}, "limit"),
+        ({"limit": True}, "limit"),
+        ({"since_days": -1}, "since_days"),
+        ({"since_days": False}, "since_days"),
+        ({"timeout_seconds": 0}, "timeout_seconds"),
+    ])
+    def test_invalid_enumeration_bounds_refuse_before_applescript(
+            self, kwargs, error):
+        p = MailAppProvider(account="acct")
+        p._run_applescript = lambda *args, **kw: pytest.fail(
+            "AppleScript must not run"
+        )
+        with pytest.raises(ProviderScriptError, match=error):
+            p.enumerate_flagged(**kwargs)
 
     def test_account_and_mailbox_escaped_in_script(self):
         scripts = []
@@ -550,7 +726,7 @@ class TestEnumerateFlagged:
     def test_timeout_error_becomes_incomplete_not_empty_success(self):
         """4b #4: timeouts are classified STRUCTURALLY from
         ProviderTimeoutError — never from message substrings."""
-        p = MailAppProvider()
+        p = MailAppProvider(account="acct")
         # Message deliberately contains NO 'timed out' text.
         p._run_applescript = lambda s, *a, **k: (_ for _ in ()).throw(
             ProviderTimeoutError("deadline exceeded"))
@@ -565,7 +741,7 @@ class TestEnumerateFlagged:
     def test_error_text_containing_timed_out_is_NOT_a_timeout(self):
         """A plain script error whose TEXT mentions 'timed out' must stay a
         failure with timeout_count == 0 (substring matching deleted)."""
-        p = MailAppProvider()
+        p = MailAppProvider(account="acct")
         p._run_applescript = lambda s, *a, **k: (_ for _ in ()).throw(
             ProviderScriptError("cache log said 'AppleScript timed out' "
                                 "but this is an exit-1 error"))
@@ -579,7 +755,7 @@ class TestEnumerateFlagged:
         assert issubclass(ProviderTimeoutError, RuntimeError)
 
     def test_non_timeout_error_counts_as_error_only(self):
-        p = MailAppProvider()
+        p = MailAppProvider(account="acct")
         p._run_applescript = lambda s, *a, **k: (_ for _ in ()).throw(
             RuntimeError("Mail got an error: connection invalid"))
         result = p.enumerate_flagged()
@@ -599,7 +775,7 @@ class TestEnumerateFlagged:
                 bad_id,
             ])
         )
-        p = MailAppProvider()
+        p = MailAppProvider(account="acct")
         p._run_applescript = lambda s, *a, **k: output
         result = p.enumerate_flagged()
         assert len(result.rows) == 1                       # only the good one
@@ -618,9 +794,69 @@ class TestEnumerateFlagged:
         assert len(unknown) == 2
         assert result.unknown_index_count == 2
 
-    def test_garbage_output_is_failure_never_empty_success(self):
+    def test_unknown_count_is_recomputed_after_limit(self):
+        newest_known = [
+            "1", "k@x.com", "Known", "0", "2026-08-01T00:00:00+00:00",
+        ]
+        older_unknown = [
+            "2", "u@x.com", "Unknown", "?", "2025-08-01T00:00:00+00:00",
+        ]
+        result = self._prov([older_unknown, newest_known]).enumerate_flagged(
+            limit=1,
+        )
+        assert result.rows[0].flag_color is FlagColor.RED
+        assert result.unknown_index_count == 0
+
+    def test_mixed_naive_aware_and_missing_dates_sort_safely(self):
+        rows = [
+            ["1", "a@x.com", "Naive", "0", "2026-08-01T00:00:00"],
+            ["2", "b@x.com", "Aware", "0", "2026-08-02T00:00:00+02:00"],
+            ["3", "c@x.com", "Missing", "0", ""],
+        ]
+        result = self._prov(rows).enumerate_flagged()
+        assert [row.provider_id for row in result.rows] == ["2", "1", "3"]
+
+    def test_explicit_account_is_required_before_script_construction(self):
         p = MailAppProvider()
+        calls = []
+        p._run_applescript = lambda *a, **k: calls.append((a, k)) or ""
+        result = p.enumerate_flagged()
+        assert result.complete is False
+        assert result.status == "failed"
+        assert result.errors[0].startswith("account_required:")
+        assert calls == []
+
+    def test_valid_empty_result_is_complete(self):
+        result = self._prov([]).enumerate_flagged()
+        assert result.complete is True
+        assert result.rows == []
+        assert result.errors == []
+
+    def test_garbage_output_is_failure_never_empty_success(self):
+        p = MailAppProvider(account="acct")
         p._run_applescript = lambda s, *a, **k: ""
         result = p.enumerate_flagged()
         assert result.complete is False
         assert result.errors
+
+
+def test_run_applescript_preserves_control_delimiters(monkeypatch):
+    provider = MailAppProvider(account="acct")
+    completed = SimpleNamespace(
+        returncode=0,
+        stdout="0\x1f\n",
+        stderr="",
+    )
+    monkeypatch.setattr("providers.mailapp.subprocess.run", lambda *a, **k: completed)
+    assert provider._run_applescript("return 0") == "0\x1f"
+
+
+def test_run_applescript_missing_executable_is_pre_dispatch(monkeypatch):
+    provider = MailAppProvider(account="acct")
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("osascript")
+
+    monkeypatch.setattr("providers.mailapp.subprocess.run", missing)
+    with pytest.raises(ProviderDispatchUnavailable):
+        provider._run_applescript("return 0")

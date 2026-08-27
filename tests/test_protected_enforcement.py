@@ -9,11 +9,82 @@ Gmail apply_actions override, with the From carried on LabelAction.sender.
 Fixtures are synthetic: example-lawfirm.com is shipped in EXAMPLE_PROTECTED_SENDERS.
 """
 
-from core.models import LabelAction
+import importlib
+import sys
+from types import ModuleType
+
+import pytest
+
+from core.models import FlagColor, LabelAction, MessageReference
 from providers.base import EmailProvider, ProviderCapabilities
 
 PROTECTED = "Lawyer <a@example-lawfirm.com>"
 NORMAL = "Sale <promo@some-shop.example>"
+
+
+@pytest.fixture
+def gmail_provider(monkeypatch):
+    missing = object()
+    prior_gmail_module = sys.modules.get("providers.gmail", missing)
+    try:
+        gmod = importlib.import_module("providers.gmail")
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"googleapiclient", "googleapiclient.errors"}:
+            raise
+        google_module = ModuleType("googleapiclient")
+        errors_module = ModuleType("googleapiclient.errors")
+
+        class _HttpError(Exception):
+            pass
+
+        errors_module.HttpError = _HttpError
+        google_module.errors = errors_module
+        monkeypatch.setitem(sys.modules, "googleapiclient", google_module)
+        monkeypatch.setitem(
+            sys.modules, "googleapiclient.errors", errors_module
+        )
+        gmod = importlib.import_module("providers.gmail")
+
+    monkeypatch.setattr(gmod.time, "sleep", lambda *_a, **_k: None)
+    bodies = []
+
+    class _Exec:
+        def execute(self):
+            return {}
+
+    class _Messages:
+        def batchModify(self, userId, body):
+            bodies.append(body)
+            return _Exec()
+
+    class _Users:
+        def messages(self):
+            return _Messages()
+
+    class _Service:
+        def users(self):
+            return _Users()
+
+    provider = gmod.GmailProvider(service=_Service())
+    provider.ensure_label_exists = lambda label: label
+    provider._execute_with_backoff = lambda fn, _desc: fn()
+    yield provider, bodies
+
+    if prior_gmail_module is missing:
+        sys.modules.pop("providers.gmail", None)
+
+
+def _scoped_ref(provider_id):
+    return MessageReference(
+        provider="gmail",
+        account="acct",
+        mailbox="INBOX",
+        provider_id=provider_id,
+    ).with_resolved_evidence(
+        "2026-01-01T00:00:00+00:00",
+        "sender@example.com",
+        "Synthetic subject",
+    )
 
 
 class RecordingProvider(EmailProvider):
@@ -129,34 +200,8 @@ class TestBaseApplyActionsChokepoint:
 
 
 class TestGmailOverrideChokepoint:
-    def test_protected_id_never_gets_inbox_removed(self, monkeypatch):
-        import pytest
-        pytest.importorskip("googleapiclient")  # Gmail provider needs the Google client
-        import providers.gmail as gmod
-        monkeypatch.setattr(gmod.time, "sleep", lambda *_a, **_k: None)
-
-        bodies = []
-
-        class _Exec:
-            def execute(self):
-                return {}
-
-        class _Messages:
-            def batchModify(self, userId, body):
-                bodies.append(body)
-                return _Exec()
-
-        class _Users:
-            def messages(self):
-                return _Messages()
-
-        class _Service:
-            def users(self):
-                return _Users()
-
-        gp = gmod.GmailProvider(service=_Service())
-        gp.ensure_label_exists = lambda label: label          # label name == id
-        gp._execute_with_backoff = lambda fn, _desc: fn()      # run inline, no retry/sleep
+    def test_protected_id_never_gets_inbox_removed(self, gmail_provider):
+        gp, bodies = gmail_provider
 
         gp.apply_actions([
             LabelAction(message_id="prot", sender=PROTECTED, archive=True),
@@ -170,3 +215,66 @@ class TestGmailOverrideChokepoint:
 
         assert "prot" not in inbox_removed_ids   # protected lawyer never archived
         assert "noise" in inbox_removed_ids       # noise archived as normal
+
+    def test_colored_action_is_rejected_without_any_gmail_api_call(
+            self, gmail_provider):
+        gp, bodies = gmail_provider
+
+        result = gp.apply_actions([
+            LabelAction(
+                message_id="colored",
+                sender=NORMAL,
+                flag_color=FlagColor.RED,
+                message_ref=_scoped_ref("colored"),
+            )
+        ])
+
+        assert result.processed_count == 1
+        assert result.error_count == 1
+        assert result.success_count == 0
+        assert any("does not support COLORED_FLAGS" in e
+                   for e in result.errors)
+        assert bodies == []
+
+    def test_invalid_mixed_flag_action_is_rejected_before_protection_gate(
+            self, gmail_provider):
+        gp, bodies = gmail_provider
+        action = LabelAction(
+            message_id="mixed",
+            sender=PROTECTED,
+            archive=True,
+            flag_color=FlagColor.RED,
+            message_ref=_scoped_ref("mixed"),
+        )
+
+        result = gp.apply_actions([action])
+
+        assert result.error_count == 1
+        assert result.success_count == 0
+        assert "flag mutation cannot be combined" in result.errors[0]
+        assert action.archive is True
+        assert bodies == []
+
+    def test_rejected_colored_action_does_not_block_valid_sibling(
+            self, gmail_provider):
+        gp, bodies = gmail_provider
+
+        result = gp.apply_actions([
+            LabelAction(
+                message_id="colored",
+                sender=NORMAL,
+                flag_color=FlagColor.RED,
+                message_ref=_scoped_ref("colored"),
+            ),
+            LabelAction(
+                message_id="valid",
+                sender=NORMAL,
+                add_labels=["Reference"],
+            ),
+        ])
+
+        assert result.processed_count == 2
+        assert result.error_count == 1
+        assert result.success_count == 1
+        assert len(bodies) == 1
+        assert bodies[0]["ids"] == ["valid"]

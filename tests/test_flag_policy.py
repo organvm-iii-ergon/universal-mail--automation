@@ -14,6 +14,8 @@ from core.flag_policy import (
     RC_DEADLINE_RED,
     RC_OPERATOR_ACTION_ORANGE,
     RC_AWAITING_OTHER_YELLOW,
+    RC_ACTIVE_REFERENCE_BLUE,
+    RC_AMBIGUOUS_PURPLE,
     RC_EVENT_CONFIRMED_GREEN,
     RC_CLOSED_NO_FLAG,
     RC_LOW_CONFIDENCE_PURPLE,
@@ -95,6 +97,43 @@ class TestPrecedenceCases:
         p = _prop("Appointment confirmed for September 2")
         assert p.proposed_flag is FlagColor.GREEN
 
+    @pytest.mark.parametrize("subject", [
+        "Please confirm your appointment is scheduled Tuesday",
+        "RSVP: meeting confirmed Thursday",
+    ])
+    def test_explicit_operator_action_precedes_scheduled_event(self, subject):
+        p = _prop(subject)
+        assert p.proposed_flag is FlagColor.ORANGE
+        assert p.reason_code == RC_OPERATOR_ACTION_ORANGE
+        assert p.classification.next_action_owner == "operator"
+
+    @pytest.mark.parametrize("subject", [
+        "Tracking number 12345",
+        "Booking reference ABC123",
+        "Warranty information — keep this",
+    ])
+    def test_standalone_active_reference_is_blue(self, subject):
+        p = _prop(subject)
+        assert p.proposed_flag is FlagColor.BLUE
+        assert p.reason_code == RC_ACTIVE_REFERENCE_BLUE
+        assert p.classification.operator_state == "reference_only"
+
+    def test_conflicting_signals_use_ambiguous_reason_code(self):
+        p = _prop("Payment receipt: please pay overdue invoice tomorrow")
+        assert p.proposed_flag is FlagColor.PURPLE
+        assert p.reason_code == RC_AMBIGUOUS_PURPLE
+        assert p.classification.semantic_type == "conflicting_signals"
+        assert "below review threshold" not in p.reason.lower()
+
+    def test_active_reference_does_not_mask_conflicting_signals(self):
+        p = _prop(
+            "Payment receipt: please pay overdue invoice tomorrow; "
+            "tracking number 123"
+        )
+        assert p.proposed_flag is FlagColor.PURPLE
+        assert p.reason_code == RC_AMBIGUOUS_PURPLE
+        assert p.classification.semantic_type == "conflicting_signals"
+
 
 # --- Legacy color independence ---------------------------------------------------
 
@@ -144,6 +183,16 @@ class TestConfidenceContract:
         c = classify("s@x.com", "Appointment confirmed for September 2")
         assert any(e.startswith("structured_date:")
                    for e in c.evidence_basis)
+
+    def test_independent_axis_bonus_counts_each_signal(self):
+        one_axis = classify("s@x.com", "Please send the report")
+        two_axes = classify(
+            "s@x.com",
+            "Please send the report; our team will respond",
+        )
+        assert two_axes.confidence == pytest.approx(
+            one_axis.confidence + 0.3,
+        )
 
     def test_thresholds_ordering_sane(self):
         assert 0.0 < REVIEW_THRESHOLD < AUTO_ELIGIBLE_THRESHOLD <= 1.0

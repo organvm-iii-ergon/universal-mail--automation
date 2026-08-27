@@ -37,7 +37,7 @@ from typing import Any, Dict, Optional, Tuple, cast
 
 from core.models import FlagColor
 
-MIGRATION_POLICY_VERSION = "1.evidence-classifier.1"
+MIGRATION_POLICY_VERSION = "1.evidence-classifier.2"
 
 AUTO_ELIGIBLE_THRESHOLD = 0.80
 REVIEW_THRESHOLD = 0.55
@@ -345,12 +345,10 @@ def classify(sender: str, subject: str) -> Classification:
         or (confirmed_event is not None and closed is not None)
     )
 
-    if confirmed_event and not conflicting:
-        semantic_type = "event_confirmed"
-        owner = "none"
-        state = "open_loop"          # future commitment still needs attending
-        urgency = "near_term" if date_phrase else "none"
-    elif operator_action and not conflicting:
+    # An explicit request to the operator takes precedence over evidence that
+    # an event is already scheduled.  "Please confirm your appointment is
+    # scheduled Tuesday" remains an owed action, not a completed commitment.
+    if operator_action and not conflicting:
         semantic_type = "action_request"
         owner = "operator"
         state = "open_loop"
@@ -360,6 +358,11 @@ def classify(sender: str, subject: str) -> Classification:
             urgency = "near_term"
         else:
             urgency = "none"
+    elif confirmed_event and not conflicting:
+        semantic_type = "event_confirmed"
+        owner = "none"
+        state = "open_loop"          # future commitment still needs attending
+        urgency = "near_term" if date_phrase else "none"
     elif other_party_action and not conflicting:
         semantic_type = "awaiting_other_party"
         owner = "other_party"
@@ -376,13 +379,18 @@ def classify(sender: str, subject: str) -> Classification:
         owner = "none"
         state = "reference_only" if active_reference else "closed"
         urgency = "none"
-    elif ambiguous_actor:
-        semantic_type = "unidentifiable_action"
+    elif conflicting:
+        semantic_type = "conflicting_signals"
         owner = "unknown"
         state = "open_loop"
         urgency = "none"
-    elif conflicting:
-        semantic_type = "conflicting_signals"
+    elif active_reference:
+        semantic_type = "active_reference"
+        owner = "none"
+        state = "reference_only"
+        urgency = "none"
+    elif ambiguous_actor:
+        semantic_type = "unidentifiable_action"
         owner = "unknown"
         state = "open_loop"
         urgency = "none"
@@ -402,8 +410,12 @@ def classify(sender: str, subject: str) -> Classification:
         active_reference, deferral, consequence,
     ) if s)
     conf += weights["strong_signal"] * min(strong, weights["strong_signal_cap_count"])
-    axes_confirmed = len({bool(confirmed_event), bool(operator_action),
-                          bool(other_party_action)} - {False})
+    axes_confirmed = sum(
+        1 for signal in (
+            confirmed_event, operator_action, other_party_action,
+        )
+        if signal
+    )
     conf += min(axes_confirmed * weights["independent_axis_bonus"],
                 weights["independent_axis_cap"])
     if date_phrase and semantic_type in (
@@ -480,14 +492,16 @@ def map_to_flag(c: Classification) -> Tuple[FlagColor, str, str]:
             "Explicit deliberate-deferral evidence present; conservative "
             f"proposal at confidence {c.confidence:.2f}.",
         )
+    if c.semantic_type == "active_reference" or (
+            c.semantic_type == "closed_or_receipt"
+            and c.operator_state == "reference_only"):
+        return (
+            FlagColor.BLUE, RC_ACTIVE_REFERENCE_BLUE,
+            "Active-reference value established "
+            f"({c.follow_up_evidence or 'records marker'}); confidence "
+            f"{c.confidence:.2f}.",
+        )
     if c.semantic_type == "closed_or_receipt":
-        if c.operator_state == "reference_only":
-            return (
-                FlagColor.BLUE, RC_ACTIVE_REFERENCE_BLUE,
-                "Active-reference value established "
-                f"({c.follow_up_evidence or 'records marker'}); confidence "
-                f"{c.confidence:.2f}.",
-            )
         return (
             FlagColor.NO_FLAG, RC_CLOSED_NO_FLAG,
             "Confidently closed/receipt correspondence with no open loop; "
@@ -498,6 +512,12 @@ def map_to_flag(c: Classification) -> Tuple[FlagColor, str, str]:
             FlagColor.PURPLE, RC_UNIDENTIFIABLE_ACTION_PURPLE,
             "Action asserted but NOT identifiable; purple pending human "
             f"judgment (confidence {c.confidence:.2f}).",
+        )
+    if c.semantic_type == "conflicting_signals":
+        return (
+            FlagColor.PURPLE, RC_AMBIGUOUS_PURPLE,
+            "Conflicting evidence requires human judgment; "
+            f"confidence {c.confidence:.2f}.",
         )
     return (
         FlagColor.PURPLE, RC_LOW_CONFIDENCE_PURPLE,

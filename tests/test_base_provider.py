@@ -15,6 +15,7 @@ from core.models import EmailMessage, LabelAction, FlagColor, MessageReference
 from providers.base import (
     EmailProvider,
     ProviderCapabilities,
+    ProviderWriteAmbiguous,
     ListMessagesResult,
 )
 
@@ -109,6 +110,9 @@ class TestContextManager:
 
 
 class TestStarGating:
+    def test_ambiguous_write_exception_is_typed_provider_contract(self):
+        assert issubclass(ProviderWriteAmbiguous, RuntimeError)
+
     def test_star_applies_when_capable(self):
         p = FakeProvider(capabilities=ProviderCapabilities.STAR)
         assert p.star("m1") is True
@@ -248,6 +252,33 @@ class TestApplyActionsDispatch:
         assert result.success_count == 0
         assert ("m1", "STARRED") not in p.applied
 
+    def test_apply_actions_gates_star_before_subclass_override(self):
+        calls = []
+
+        class UngatedStarProvider(FakeProvider):
+            def star(self, message_id, due_date=None):
+                calls.append((message_id, due_date))
+                return True
+
+        p = UngatedStarProvider(
+            capabilities=ProviderCapabilities.TRUE_LABELS
+        )
+        result = p.apply_actions([
+            LabelAction(
+                message_id="m1",
+                sender="a@b.com",
+                add_labels=["Work"],
+                star=True,
+            ),
+        ])
+
+        assert result.error_count == 1
+        assert result.success_count == 0
+        assert calls == []
+        assert p.ensured == []
+        assert p.applied == []
+        assert any("does not support STAR" in e for e in result.errors)
+
 
 class TestFlagOperationsOnUnsupportedProvider:
     """Providers without COLORED_FLAGS must reject ref-based flag operations."""
@@ -296,16 +327,15 @@ class TestColoredOpRequiresQualifiedReference:
 
     def test_evidence_less_reference_rejected_at_validate(self):
         from core.models import LabelActionValidationError
-        action = LabelAction(message_id="1", flag_color=FlagColor.RED,
+        action = LabelAction(message_id="m1", flag_color=FlagColor.RED,
                              message_ref=_ref(evidence=False))
         with pytest.raises(LabelActionValidationError,
                            match="lacks durable evidence"):
             action.validate()
 
     def test_malformed_scope_rejected_at_validate(self):
-        from core.models import LabelActionValidationError
         bad = MessageReference(provider="", account="", mailbox="",
-                               provider_id="")
+                               provider_id="1")
         bad = bad.with_resolved_evidence("t", "s@x", "S")
         action = LabelAction(message_id="1", flag_color=FlagColor.RED,
                              message_ref=bad)

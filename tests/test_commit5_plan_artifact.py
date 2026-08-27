@@ -325,7 +325,7 @@ class TestCanonicalStatusStateMachine:
         d = _complete_snapshot().to_dict()
         d.pop("content_hash")
         d.update(complete=False, status="partial", inaccessible_count=2,
-                 total_matched=9, hidden_by_limit=0)
+                 total_matched=4, hidden_by_limit=0)
         d["content_hash"] = fw.sha256_hex(d)
         p = tmp_path / "partial-ok.json"
         p.write_text(json.dumps(d))
@@ -526,7 +526,7 @@ class TestUnknownNeverEligible:
             rows=rows, complete=False, scope_complete=True,
             status="partial", errors=[], inaccessible_count=1,
             timeout_count=0, unknown_index_count=1, limit=500,
-            since_days=None, total_matched=1, returned_count=1,
+            since_days=None, total_matched=2, returned_count=1,
             hidden_by_limit=0,
         )
         with pytest.raises(fw.FlagWorkflowError):
