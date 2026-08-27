@@ -558,7 +558,7 @@ class TestHostileProviderClassification:
     def test_set_returns_false_counts_as_failed_not_written_verified(
             self, tmp_path):
         h, r = self._single(tmp_path, {"set": "false"})
-        assert r.status == "partially_failed"
+        assert r.status == "blocked"
         assert r.writes_performed == 0          # provider said nothing happened
         assert r.failed[0]["error_code"].startswith("provider_refused")
 

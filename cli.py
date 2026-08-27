@@ -60,6 +60,16 @@ def _positive_int_arg(value: str) -> int:
     return parsed
 
 
+def _first_canary_limit_arg(value: str) -> int:
+    """Argparse type for the permanently bounded first activation path."""
+    parsed = _positive_int_arg(value)
+    if parsed > 3:
+        raise argparse.ArgumentTypeError(
+            f"first activation canary limit must be within [1,3], got {value!r}"
+        )
+    return parsed
+
+
 def _nonempty_arg(value: str) -> str:
     """Argparse type for scope components that must identify a real value."""
     if not value.strip():
@@ -2186,8 +2196,9 @@ def cmd_flags_doctor(args: argparse.Namespace) -> int:
                 "flags audit --flagged-only"
             )
             print(
-                "  To test write capability, use: flags apply "
-                "(NOT_READY until Phase 9)"
+                "  To prepare the bounded write canary, use: flags apply "
+                "--canary --dry-run with exact plan, snapshot, and approval "
+                "artifacts (unrestricted apply remains disabled)"
             )
             return 0
     except (OSError, RuntimeError) as exc:
@@ -2502,9 +2513,9 @@ def cmd_flags_plan(args: argparse.Namespace) -> int:
     print(f"  Review-only (apply-ineligible): {review_only}/{len(mutations)}")
     print(f"  Auto-classified (Commit 6 approval+preflight gate applies): "
           f"{auto_eligible}/{len(mutations)}")
-    print("  NOTE: no mutation can execute yet — apply remains hard-disabled "
-          "(exit 89) pending admitted CI, an independent exact-head audit, "
-          "and explicit operational authorization.")
+    print("  NOTE: planning performs zero writes. Only the explicit "
+          "1..3-message --canary path can consume an exact current approval; "
+          "unrestricted apply remains disabled (exit 89).")
     return 0
 
 
@@ -2615,35 +2626,286 @@ def cmd_flags_queue(args: argparse.Namespace) -> int:
 
 
 def cmd_flags_apply(args: argparse.Namespace) -> int:
-    """Apply a flag mutation plan from a receipt.
+    """Prepare or execute one explicitly approved Mail.app canary."""
+    if getattr(args, "canary", False) is not True:
+        print(
+            "NOT_READY: unrestricted flags apply is disabled; explicit "
+            "--canary is required and no provider was constructed.",
+            file=sys.stderr,
+        )
+        return 89
+    if getattr(args, "provider", None) != "mailapp":
+        print(
+            "flags apply: canary activation supports only mailapp",
+            file=sys.stderr,
+        )
+        return 20
 
-    SAFETY GATE: the transaction engine is exercised only through isolated
-    tests. This operator command remains deliberately unwired pending admitted
-    CI, an independent exact-head audit, and explicit operational authority.
-    """
+    from core.flag_activation import (
+        CanaryRollbackBundle,
+        default_flags_state_dir,
+        load_canary_activation,
+        make_transaction_engine,
+        persist_canary_material,
+        redacted_canary_proposal,
+        validate_canary_output_paths,
+        write_public_canary_proposal,
+    )
+    from core.flag_workflow import FlagWorkflowError
+
+    required = ("plan", "snapshot", "approval")
+    missing = [
+        f"--{name}" for name in required
+        if not getattr(args, name, None)
+    ]
+    if missing:
+        print(
+            f"flags apply: missing required artifact(s): {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 20
+
+    try:
+        activation = load_canary_activation(
+            plan_path=Path(args.plan).expanduser(),
+            snapshot_path=Path(args.snapshot).expanduser(),
+            approval_path=Path(args.approval).expanduser(),
+            cli_limit=getattr(args, "limit", 3),
+        )
+        requested_account = getattr(args, "account", None)
+        if requested_account is not None \
+                and requested_account != activation.scope[1]:
+            raise FlagWorkflowError(
+                "CLI account does not match the approved plan scope"
+            )
+        bundle = CanaryRollbackBundle.create(activation)
+        state_dir = default_flags_state_dir()
+        receipt_output = (
+            Path(args.receipt_output).expanduser()
+            if getattr(args, "receipt_output", None)
+            else None
+        )
+        proposal_output = (
+            Path(args.proposal_output).expanduser()
+            if getattr(args, "proposal_output", None)
+            else None
+        )
+        validate_canary_output_paths(
+            activation=activation,
+            bundle=bundle,
+            state_dir=state_dir,
+            plan_input=Path(args.plan).expanduser(),
+            snapshot_input=Path(args.snapshot).expanduser(),
+            approval_input=Path(args.approval).expanduser(),
+            receipt_output=receipt_output,
+            proposal_output=proposal_output,
+        )
+        material = persist_canary_material(
+            activation,
+            bundle,
+            state_dir,
+            receipt_output,
+        )
+        engine, _ledger = make_transaction_engine(state_dir)
+    except (FlagWorkflowError, OSError, TypeError, ValueError) as exc:
+        print(f"flags apply: activation refused: {exc}", file=sys.stderr)
+        return 20
+
     print(
-        "NOT_READY: flags apply remains deliberately unwired; no provider "
-        "will be constructed. Admitted CI, an independent exact-head audit, "
-        "and explicit operational authorization are still required.",
+        f"Private rollback bundle: {material['rollback']}",
         file=sys.stderr,
     )
-    return 89
+
+    try:
+        provider = get_provider("mailapp", account=activation.scope[1])
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"flags apply: provider unavailable: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        with provider:
+            preflight = engine.preflight_transaction(
+                plan=activation.plan,
+                approval=activation.approval,
+                provider=provider,
+            )
+            proposal = redacted_canary_proposal(activation, bundle)
+            proposal["preflight_status"] = preflight.status
+            proposal["preflight_target_count"] = len(preflight.verified)
+            proposal["writes_performed"] = 0
+            if preflight.status != "preflight_passed":
+                proposal["error_code"] = "canary_preflight_refused"
+                print(json.dumps(proposal, indent=2, sort_keys=True))
+                return 20
+
+            if proposal_output is not None:
+                write_public_canary_proposal(
+                    proposal, proposal_output
+                )
+
+            if getattr(args, "dry_run", False):
+                proposal["status"] = "canary_ready_for_approval"
+                proposal["rollback_receipt_ready"] = True
+                print(json.dumps(proposal, indent=2, sort_keys=True))
+                return 0
+
+            result = engine.apply_canary_transaction(
+                plan=activation.plan,
+                approval=activation.approval,
+                provider=provider,
+                max_count=activation.cli_limit,
+            )
+    except FlagWorkflowError as exc:
+        print(f"flags apply: activation refused: {exc}", file=sys.stderr)
+        return 20
+    except (OSError, RuntimeError) as exc:
+        print(f"flags apply: provider failure: {exc}", file=sys.stderr)
+        return 1
+
+    output = redacted_canary_proposal(activation, bundle)
+    output["status"] = result.status
+    output["writes_performed"] = result.writes_performed
+    output["verified_count"] = len(result.verified)
+    output["error_code"] = (
+        None if result.status == "applied"
+        else "canary_apply_not_verified"
+    )
+    output["rollback_receipt_ready"] = True
+    print(json.dumps(output, indent=2, sort_keys=True))
+    if (
+        result.status != "applied"
+        or result.writes_performed != len(activation.selected)
+        or len(result.verified) != len(activation.selected)
+    ):
+        return 20
+    return 0
 
 
 def cmd_flags_rollback(args: argparse.Namespace) -> int:
-    """Rollback a previously applied flag mutation plan.
+    """Prepare or execute rollback for one exact canary bundle."""
+    if getattr(args, "canary", False) is not True:
+        print(
+            "NOT_READY: unrestricted flags rollback is disabled; explicit "
+            "--canary is required and no provider was constructed.",
+            file=sys.stderr,
+        )
+        return 89
+    if getattr(args, "provider", None) != "mailapp":
+        print(
+            "flags rollback: canary rollback supports only mailapp",
+            file=sys.stderr,
+        )
+        return 20
 
-    SAFETY GATE: the rollback engine is exercised only through isolated tests.
-    This operator command remains deliberately unwired pending admitted CI, an
-    independent exact-head audit, and explicit operational authority.
-    """
-    print(
-        "NOT_READY: flags rollback remains deliberately unwired; no provider "
-        "will be constructed. Admitted CI, an independent exact-head audit, "
-        "and explicit operational authorization are still required.",
-        file=sys.stderr,
+    from core.flag_activation import (
+        default_flags_state_dir,
+        load_canary_rollback,
+        make_rollback_engine,
     )
-    return 89
+    from core.flag_workflow import FlagWorkflowError, validate_plan_schema
+
+    required = ("plan", "snapshot", "approval", "receipt")
+    missing = [
+        f"--{name}" for name in required
+        if not getattr(args, name, None)
+    ]
+    if missing:
+        print(
+            "flags rollback: missing required artifact(s): "
+            f"{', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 20
+    try:
+        plan, _snapshot, bundle = load_canary_rollback(
+            plan_path=Path(args.plan).expanduser(),
+            snapshot_path=Path(args.snapshot).expanduser(),
+            approval_path=Path(args.approval).expanduser(),
+            receipt_path=Path(args.receipt).expanduser(),
+        )
+        mutations = {
+            mutation.mutation_id: mutation
+            for mutation in validate_plan_schema(plan)
+        }
+        first = mutations[bundle.receipts[0].mutation_id]
+        requested_account = getattr(args, "account", None)
+        if requested_account is not None \
+                and requested_account != first.account:
+            raise FlagWorkflowError(
+                "CLI account does not match the rollback plan scope"
+            )
+        engine = make_rollback_engine(default_flags_state_dir(), plan)
+    except (FlagWorkflowError, OSError, TypeError, ValueError) as exc:
+        print(f"flags rollback: refused: {exc}", file=sys.stderr)
+        return 20
+
+    try:
+        provider = get_provider("mailapp", account=first.account)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"flags rollback: provider unavailable: {exc}", file=sys.stderr)
+        return 1
+    try:
+        with provider:
+            result = engine.rollback_transactions(
+                receipts=bundle.receipts,
+                provider=provider,
+                max_count=3,
+                preflight_only=getattr(args, "dry_run", False),
+            )
+    except FlagWorkflowError as exc:
+        print(f"flags rollback: refused: {exc}", file=sys.stderr)
+        return 20
+    except (OSError, RuntimeError) as exc:
+        print(f"flags rollback: provider failure: {exc}", file=sys.stderr)
+        return 1
+
+    output = {
+        "schema": "uma.flags.canary.rollback_result.public.v1",
+        "canary_id": bundle.canary_id,
+        "message_count": len(bundle.receipts),
+        "plan_sha256": bundle.plan_sha256,
+        "snapshot_sha256": bundle.snapshot_sha256,
+        "policy_sha256": bundle.policy_sha256,
+        "approval_sha256": bundle.approval_sha256,
+        "rollback_bundle_sha256": bundle.content_hash,
+        "status": result.status,
+        "writes_performed": result.writes_performed,
+        "verified_restored_count": sum(
+            row.get("status") == "rolled_back"
+            for row in result.results
+        ),
+        "already_rolled_back_count": sum(
+            row.get("status") == "already_rolled_back"
+            for row in result.results
+        ),
+        "not_applied_count": sum(
+            row.get("status") == "not_applied"
+            for row in result.results
+        ),
+        "failed_count": len(result.failed),
+        "unattempted_count": len(result.unattempted),
+        "error_code": (
+            None
+            if result.status in {
+                "preflight_passed", "rolled_back", "already_rolled_back",
+                "rollback_not_required",
+            }
+            else "canary_rollback_not_verified"
+        ),
+    }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    accepted = (
+        {
+            "preflight_passed", "already_rolled_back",
+            "rollback_not_required",
+        }
+        if getattr(args, "dry_run", False)
+        else {
+            "rolled_back", "already_rolled_back",
+            "rollback_not_required",
+        }
+    )
+    return 0 if result.status in accepted else 20
 
 
 def cmd_flags_overrides(args: argparse.Namespace) -> int:
@@ -3184,6 +3446,7 @@ Examples:
         parents=[provider_group],
         help="Seven-color flag workflow state operations (Mail.app only)",
     )
+    flags_parser.set_defaults(provider="mailapp")
     flags_subparsers = flags_parser.add_subparsers(
         dest="flags_command",
         help="Flags subcommands",
@@ -3312,19 +3575,39 @@ Examples:
     )
     flags_apply_parser.add_argument(
         "--plan",
-        required=True,
-        help="Path to plan receipt JSON",
+        help="Path to the complete private plan JSON",
+    )
+    flags_apply_parser.add_argument(
+        "--snapshot",
+        help="Path to the complete private source snapshot JSON",
+    )
+    flags_apply_parser.add_argument(
+        "--approval",
+        help="Path to the exact private approval JSON",
+    )
+    flags_apply_parser.add_argument(
+        "--canary",
+        action="store_true",
+        help="Enable only the bounded first-activation canary path",
     )
     flags_apply_parser.add_argument(
         "--limit", "-l",
-        type=_positive_int_arg,
-        default=10,
-        help="Maximum mutations to apply (default: 10 for canary)",
+        type=_first_canary_limit_arg,
+        default=3,
+        help="Maximum approved mutations; hard bounded to 1..3 (default: 3)",
     )
     flags_apply_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Dry run - show what would be applied",
+        help="Run full locked preflight and persist rollback material; write no flags",
+    )
+    flags_apply_parser.add_argument(
+        "--receipt-output",
+        help="Optional private output path for the rollback bundle",
+    )
+    flags_apply_parser.add_argument(
+        "--proposal-output",
+        help="Optional output path for the redacted canary proposal",
     )
     flags_apply_parser.set_defaults(func=cmd_flags_apply)
 
@@ -3336,13 +3619,29 @@ Examples:
     )
     flags_rollback_parser.add_argument(
         "--receipt",
-        required=True,
-        help="Path to rollback receipt JSON",
+        help="Path to the exact private canary rollback bundle JSON",
+    )
+    flags_rollback_parser.add_argument(
+        "--plan",
+        help="Path to the complete private plan JSON",
+    )
+    flags_rollback_parser.add_argument(
+        "--snapshot",
+        help="Path to the complete private source snapshot JSON",
+    )
+    flags_rollback_parser.add_argument(
+        "--approval",
+        help="Path to the exact private approval JSON used for apply",
+    )
+    flags_rollback_parser.add_argument(
+        "--canary",
+        action="store_true",
+        help="Enable only the bounded canary rollback path",
     )
     flags_rollback_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Dry run - show what would be rolled back",
+        help="Run whole-canary rollback preflight with zero writes",
     )
     flags_rollback_parser.set_defaults(func=cmd_flags_rollback)
 

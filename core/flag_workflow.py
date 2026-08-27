@@ -1200,6 +1200,51 @@ def write_private_plan(plan: Dict[str, Any], path: Path) -> Path:
     )
 
 
+def load_plan(path: Path) -> Dict[str, Any]:
+    """Load and strictly validate one private migration plan artifact."""
+    plan = _json_object_from_path(Path(path), "plan")
+    validate_plan_schema(plan)
+    return plan
+
+
+def validate_plan_snapshot_lineage(
+        plan: Dict[str, Any], snapshot: FlagSnapshot) -> List[PlannedMutation]:
+    """Prove that *plan* is the complete plan derived from *snapshot*.
+
+    A plan hash proves only the integrity of the plan object itself.  It does
+    not prove that a caller retained every mutation from the source snapshot:
+    an omitted mutation plus adjusted counts can be re-hashed into another
+    internally coherent object.  The activation boundary therefore rebuilds
+    the plan from the validated private snapshot, preserves the plan's
+    original generation timestamp, and requires byte-semantic equality.
+    """
+    parsed = validate_plan_schema(plan)
+    snapshot.validate()
+    snapshot_hash = snapshot.to_dict()["content_hash"]
+    if snapshot.content_hash != snapshot_hash:
+        raise FlagWorkflowError(
+            "snapshot content_hash mismatch (stale or tampered object)"
+        )
+    if plan.get("snapshot_id") != snapshot.snapshot_id:
+        raise FlagWorkflowError(
+            "plan.snapshot_id does not match the supplied snapshot"
+        )
+    if plan.get("snapshot_sha256") != snapshot_hash:
+        raise FlagWorkflowError(
+            "plan.snapshot_sha256 does not match the supplied snapshot"
+        )
+
+    rebuilt = build_plan(snapshot)
+    rebuilt["generated_at"] = plan["generated_at"]
+    rebuilt["plan_hash"] = compute_plan_hash(rebuilt)
+    if rebuilt != plan:
+        raise FlagWorkflowError(
+            "plan is not the complete canonical derivation of the supplied "
+            "snapshot"
+        )
+    return parsed
+
+
 def load_snapshot(path: Path) -> FlagSnapshot:
     """Load + verify a snapshot file's content_hash."""
     raw = _json_object_from_path(Path(path), "snapshot")
@@ -2697,14 +2742,88 @@ class ApprovalReceipt:
         receipt.content_hash = receipt.to_dict()["content_hash"]
         return receipt
 
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any]) -> "ApprovalReceipt":
+        """Parse a strict approval artifact without scalar coercion."""
+        if not isinstance(raw, dict):
+            raise FlagWorkflowError("approval must be a JSON object")
+        _require_exact_keys(raw, {
+            "schema", "approval_id", "snapshot_sha256", "plan_hash",
+            "policy_sha256", "approved_mutation_ids", "issued_at",
+            "expires_at", "approving_operator", "canary_limit",
+            "content_hash",
+        }, "approval")
+        ids = raw["approved_mutation_ids"]
+        if not isinstance(ids, list) or not all(
+            isinstance(mutation_id, str) and mutation_id
+            for mutation_id in ids
+        ):
+            raise FlagWorkflowError(
+                "approval.approved_mutation_ids must be a list of "
+                "non-empty strings"
+            )
+        receipt = cls(
+            schema=_require_string(raw["schema"], "approval.schema"),
+            approval_id=_require_string(
+                raw["approval_id"], "approval.approval_id"
+            ),
+            snapshot_sha256=require_hex256(
+                raw["snapshot_sha256"], "approval.snapshot_sha256"
+            ),
+            plan_hash=require_hex256(
+                raw["plan_hash"], "approval.plan_hash"
+            ),
+            policy_sha256=require_hex256(
+                raw["policy_sha256"], "approval.policy_sha256"
+            ),
+            approved_mutation_ids=list(ids),
+            issued_at=_require_string(
+                raw["issued_at"], "approval.issued_at"
+            ),
+            expires_at=_require_string(
+                raw["expires_at"], "approval.expires_at"
+            ),
+            approving_operator=_require_string(
+                raw["approving_operator"],
+                "approval.approving_operator",
+            ),
+            canary_limit=_require_int(
+                raw["canary_limit"], "approval.canary_limit"
+            ),
+            content_hash=require_hex256(
+                raw["content_hash"], "approval.content_hash"
+            ),
+        )
+        if receipt.to_dict()["content_hash"] != receipt.content_hash:
+            raise FlagWorkflowError(
+                "approval content_hash mismatch (tampered)"
+            )
+        return receipt
+
     def validate(self, *, plan: Dict[str, Any],
                  plan_mutations: List[PlannedMutation],
-                 now: Optional[datetime] = None) -> None:
+                 now: Optional[datetime] = None,
+                 require_current_window: bool = True) -> None:
         """Fail-closed checks against the ACTUAL loaded plan."""
+        _require_bool(
+            require_current_window, "approval.require_current_window"
+        )
         if self.schema != APPROVAL_SCHEMA:
             raise FlagWorkflowError(
                 f"approval schema must be {APPROVAL_SCHEMA}, "
                 f"got {self.schema!r}"
+            )
+        approval_id = _require_string(
+            self.approval_id, "approval.approval_id"
+        )
+        if not (
+            approval_id.startswith("appr-")
+            and len(approval_id) == 37
+            and set(approval_id[5:]) <= _HEX_CHARS
+        ):
+            raise FlagWorkflowError(
+                "approval.approval_id must be 'appr-' followed by 32 "
+                "lowercase hex characters"
             )
         # Own-integrity FIRST: a tampered approval is rejected before any
         # cross-binding comparison can be gamed.
@@ -2723,24 +2842,26 @@ class ApprovalReceipt:
         )
         if expires <= issued:
             raise FlagWorkflowError("approval expires_at must be after issued_at")
-        validation_now = _normalize_aware_datetime(
-            datetime.now(timezone.utc) if now is None else now,
-            "approval validation clock",
-        )
-        try:
-            if issued > validation_now:
+        if require_current_window:
+            validation_now = _normalize_aware_datetime(
+                datetime.now(timezone.utc) if now is None else now,
+                "approval validation clock",
+            )
+            try:
+                if issued > validation_now:
+                    raise FlagWorkflowError(
+                        "approval issued_at is in the future"
+                    )
+                expired = expires <= validation_now
+            except FlagWorkflowError:
+                raise
+            except (OverflowError, TypeError, ValueError) as exc:
                 raise FlagWorkflowError(
-                    "approval issued_at is in the future"
-                )
-            expired = expires <= validation_now
-        except FlagWorkflowError:
-            raise
-        except (OverflowError, TypeError, ValueError) as exc:
-            raise FlagWorkflowError(
-                "approval timestamps cannot be compared to validation clock"
-            ) from exc
-        if expired:
-            raise FlagWorkflowError("approval has expired")
+                    "approval timestamps cannot be compared to validation "
+                    "clock"
+                ) from exc
+            if expired:
+                raise FlagWorkflowError("approval has expired")
 
         # Cross-bindings against the ACTUAL plan artifact:
         if self.plan_hash != plan.get("plan_hash"):
@@ -2812,6 +2933,24 @@ class ApprovalReceipt:
                     plan.get("snapshot_sha256"), "plan.snapshot_sha256"
                 ),
             )
+
+
+def load_approval(path: Path) -> ApprovalReceipt:
+    """Load a strict private approval artifact."""
+    return ApprovalReceipt.from_dict(
+        _json_object_from_path(Path(path), "approval")
+    )
+
+
+def write_private_approval(
+        approval: ApprovalReceipt, path: Path,
+        *, plan: Dict[str, Any]) -> Path:
+    """Validate and atomically persist an approval as mode 0600."""
+    mutations = validate_plan_schema(plan)
+    approval.validate(plan=dict(plan), plan_mutations=mutations)
+    return _atomic_write_private_json(
+        Path(path), approval.to_dict(), prefix=".tmp-flags-approval-"
+    )
 
 
 # --- Transaction ledger (append-only idempotency guard) ----------------------

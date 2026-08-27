@@ -18,6 +18,7 @@ from providers.mailapp import (
     ProviderTimeoutError,
     MessageNotFoundError,
     FlagStateDriftError,
+    SurfaceRef,
     _FIELD_SEP,
     _HDR_SEP,
 )
@@ -365,7 +366,10 @@ class TestScopedLookup:
         p = MailAppProvider(account="a")
         script = p._build_scoped_lookup_script("In\"box", 'we"ird', "77")
         assert "first message whose id is" not in script
-        assert 'mailbox "In\\"box" of account "we\\"ird"' in script
+        assert (
+            'first mailbox of account "we\\"ird" whose name is '
+            '("In\\"box")'
+        ) in script
         assert "whose id is 77" in script
 
     def test_non_numeric_id_refused_before_interpolation(self):
@@ -587,7 +591,21 @@ class TestSurfaceDiscovery:
         assert nested.mailbox != literal.mailbox
         assert "collectMailboxRows" in scripts[0]
 
-    def test_nested_scope_builds_exact_applescript_reference(self):
+    def test_top_level_scope_uses_name_qualified_container_query(self):
+        p = MailAppProvider(account="acct")
+        reference = p._mailbox_reference(
+            "Provider Support Closed 2026-06-15",
+            "acct",
+            ("Provider Support Closed 2026-06-15",),
+        )
+
+        assert reference == (
+            '(first mailbox of account "acct" whose name is '
+            '("Provider Support Closed 2026-06-15"))'
+        )
+        assert 'mailbox "Provider Support Closed 2026-06-15" of' not in reference
+
+    def test_nested_scope_builds_exact_name_qualified_reference(self):
         p = MailAppProvider(account="acct")
         script = p._build_flagged_script(
             "Parent/Child",
@@ -596,9 +614,43 @@ class TestSurfaceDiscovery:
             ("Parent", "Child"),
         )
         assert (
-            'mailbox "Child" of mailbox "Parent" of account "acct"'
+            '(first mailbox of '
+            '(first mailbox of account "acct" whose name is ("Parent")) '
+            'whose name is ("Child"))'
             in script
         )
+
+    def test_name_qualified_reference_escapes_injection_safe_components(self):
+        p = MailAppProvider(account="acct")
+        account = 'ac"ct\nsecond line'
+        components = ('Par"ent\nline', 'Child/with~markers')
+        surface = SurfaceRef(
+            account=account,
+            mailbox="ignored",
+            path_components=components,
+        )
+
+        reference = p._mailbox_reference(
+            surface.mailbox,
+            surface.account,
+            surface.path_components,
+        )
+
+        assert "\n" not in reference
+        assert 'account "ac\\"ct" & linefeed & "second line"' in reference
+        assert 'whose name is ("Par\\"ent" & linefeed & "line")' in reference
+        assert 'whose name is ("Child/with~markers")' in reference
+        assert reference.count("first mailbox of") == 2
+
+    def test_path_components_must_match_canonical_scope(self):
+        p = MailAppProvider(account="acct")
+
+        with pytest.raises(ProviderScriptError, match="does not match"):
+            p._mailbox_reference(
+                "Parent/LiteralChild",
+                "acct",
+                ("Parent", "Literal/Child"),
+            )
 
     def test_discovery_failure_typed_never_silent(self):
         p = MailAppProvider()

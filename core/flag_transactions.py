@@ -1,8 +1,9 @@
 """Flag migration TRANSACTION ENGINE (Commit 6).
 
 Turns the immutable plan + cryptographically bound approval into
-transaction semantics — while every production entry point stays behind
-the CLI NOT_READY gate.
+transaction semantics.  Production access is narrower than this reusable
+engine: only the explicit 1..3-message Mail.app canary boundary in
+``core.flag_activation`` is wired; unrestricted CLI mutation stays disabled.
 
 DOCTRINE
 --------
@@ -144,6 +145,24 @@ class PrivateStateUnusable(FlagWorkflowError):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def transaction_id_for(
+        plan_hash: str, mutation_id: str, approval_hash: str) -> str:
+    """Return the canonical deterministic transaction id for one mutation."""
+    require_hex256(plan_hash, "transaction.plan_hash")
+    require_hex256(approval_hash, "transaction.approval_hash")
+    _require_prefixed_hex_id(
+        mutation_id,
+        "transaction.mutation_id",
+        prefix="mut-",
+        hex_length=24,
+    )
+    return "tx-" + sha256_hex({
+        "plan": plan_hash,
+        "approval": approval_hash,
+        "mutation": mutation_id,
+    })[:24]
 
 
 def _open_managed_parent(path: Path, *, create: bool, label: str) -> int:
@@ -739,7 +758,9 @@ class TransactionRollbackReceipt:
                approval_sha256: str, mutation_id: str, ref_digest: str,
                pre_native_flag: int, pre_semantic_flag: str,
                applied_native_flag: int,
-               applied_semantic_flag: str) -> "TransactionRollbackReceipt":
+               applied_semantic_flag: str,
+               created_at: Optional[str] = None
+               ) -> "TransactionRollbackReceipt":
         for field_name, value in (
             ("pre_native_flag", pre_native_flag),
             ("applied_native_flag", applied_native_flag),
@@ -748,12 +769,13 @@ class TransactionRollbackReceipt:
                 raise FlagWorkflowError(
                     f"rollback.{field_name} must be an integer"
                 )
+        created_text = created_at if created_at is not None else _now()
         receipt = cls(
             schema=ROLLBACK_TX_SCHEMA,
             rollback_id="rbx-" + sha256_hex({
                 "transaction_id": transaction_id,
                 "mutation_id": mutation_id,
-                "hint": _now(),
+                "created_at": created_text,
             })[:32],
             transaction_id=transaction_id,
             plan_sha256=plan_sha256,
@@ -764,9 +786,65 @@ class TransactionRollbackReceipt:
             pre_semantic_flag=pre_semantic_flag,
             applied_native_flag=applied_native_flag,
             applied_semantic_flag=applied_semantic_flag,
-            created_at=_now(),
+            created_at=created_text,
         )
         receipt.content_hash = receipt.to_dict()["content_hash"]
+        receipt.validate()
+        return receipt
+
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any]) -> "TransactionRollbackReceipt":
+        """Parse one transaction-bound rollback receipt strictly."""
+        if not isinstance(raw, dict):
+            raise FlagWorkflowError(
+                "transaction rollback receipt must be a JSON object"
+            )
+        required = {
+            "schema", "rollback_id", "transaction_id", "plan_sha256",
+            "approval_sha256", "mutation_id", "ref_digest",
+            "pre_native_flag", "pre_semantic_flag",
+            "applied_native_flag", "applied_semantic_flag", "created_at",
+            "content_hash",
+        }
+        missing = required.difference(raw)
+        extra = set(raw).difference(required)
+        if missing or extra:
+            raise FlagWorkflowError(
+                "transaction rollback receipt fields mismatch: "
+                f"missing={sorted(missing)}, extra={sorted(extra)}"
+            )
+        string_fields = {
+            "schema", "rollback_id", "transaction_id", "plan_sha256",
+            "approval_sha256", "mutation_id", "ref_digest",
+            "pre_semantic_flag", "applied_semantic_flag", "created_at",
+            "content_hash",
+        }
+        for field_name in string_fields:
+            if not isinstance(raw[field_name], str):
+                raise FlagWorkflowError(
+                    f"rollback.{field_name} must be a string"
+                )
+        for field_name in ("pre_native_flag", "applied_native_flag"):
+            value = raw[field_name]
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise FlagWorkflowError(
+                    f"rollback.{field_name} must be an integer"
+                )
+        receipt = cls(
+            schema=raw["schema"],
+            rollback_id=raw["rollback_id"],
+            transaction_id=raw["transaction_id"],
+            plan_sha256=raw["plan_sha256"],
+            approval_sha256=raw["approval_sha256"],
+            mutation_id=raw["mutation_id"],
+            ref_digest=raw["ref_digest"],
+            pre_native_flag=raw["pre_native_flag"],
+            pre_semantic_flag=raw["pre_semantic_flag"],
+            applied_native_flag=raw["applied_native_flag"],
+            applied_semantic_flag=raw["applied_semantic_flag"],
+            created_at=raw["created_at"],
+            content_hash=raw["content_hash"],
+        )
         receipt.validate()
         return receipt
 
@@ -776,7 +854,7 @@ class TransactionRollbackReceipt:
 
 @dataclass
 class ApplyResult:
-    status: str                      # applied|partially_failed|ambiguous|blocked|already_applied|already_claimed
+    status: str                      # preflight_passed|applied|partially_failed|ambiguous|blocked|already_applied|already_claimed
     writes_performed: int = 0
     verified: List[Dict[str, Any]] = field(default_factory=list)
     failed: List[Dict[str, Any]] = field(default_factory=list)
@@ -788,9 +866,20 @@ class ApplyResult:
 
 @dataclass
 class RollbackResult:
-    status: str                      # rolled_back|already_rolled_back|rollback_blocked_by_override|ambiguous|blocked
+    status: str                      # preflight_passed|rolled_back|already_rolled_back|rollback_blocked_by_override|ambiguous|blocked
     writes_performed: int = 0
     restored_native_flag: Optional[int] = None
+    error_code: Optional[str] = None
+
+
+@dataclass
+class BatchRollbackResult:
+    """One bounded rollback-canary result."""
+    status: str
+    writes_performed: int = 0
+    results: List[Dict[str, Any]] = field(default_factory=list)
+    failed: List[Dict[str, Any]] = field(default_factory=list)
+    unattempted: List[Dict[str, Any]] = field(default_factory=list)
     error_code: Optional[str] = None
 
 
@@ -850,13 +939,47 @@ class TransactionEngine:
             human_observed_state=observed_state,
         )
 
+    def _rollback_override_result(
+            self, mutation: PlannedMutation,
+            current_native: Optional[int],
+            error_code: str) -> RollbackResult:
+        """Durably suppress rollback after any live-state divergence.
+
+        A later read may once again resemble the automation-applied state.
+        That must not silently restore automation authority: only an explicit
+        :meth:`OverrideStore.unlock` may clear this suppression.
+        """
+        observed_state = "unknown_unknown"
+        if current_native is not None:
+            try:
+                observed_state = self._semantic_for_native(
+                    mutation.provider, int(current_native)
+                ).value
+            except (FlagWorkflowError, KeyError, TypeError, ValueError):
+                observed_state = "unknown_unknown"
+        try:
+            self.overrides.detect_override(
+                mutation.ref_digest,
+                automation_expected_state=mutation.proposed_flag.value,
+                human_observed_state=observed_state,
+            )
+        except Exception as exc:
+            return RollbackResult(
+                status="blocked",
+                writes_performed=0,
+                error_code=f"override_state_failure:{exc}",
+            )
+        return RollbackResult(
+            status="rollback_blocked_by_override",
+            writes_performed=0,
+            error_code=error_code,
+        )
+
     def _txid(self, plan_hash: str, mutation: PlannedMutation,
               approval: ApprovalReceipt) -> str:
-        return "tx-" + sha256_hex({
-            "plan": plan_hash,
-            "approval": approval.content_hash,
-            "mutation": mutation.mutation_id,
-        })[:24]
+        return transaction_id_for(
+            plan_hash, mutation.mutation_id, approval.content_hash
+        )
 
     def _resolve_live(self, provider: Any,
                       ref: MessageReference) -> MessageReference:
@@ -936,6 +1059,117 @@ class TransactionEngine:
 
     # -- apply ------------------------------------------------------------------------
 
+    def preflight_transaction(self, *, plan: Dict[str, Any],
+                              approval: ApprovalReceipt,
+                              provider: Any) -> ApplyResult:
+        """Run the exact full-batch apply preflight with zero writes.
+
+        This is the operator-visible canary preparation path.  It takes the
+        same plan lock as live apply, validates the same plan and approval,
+        refuses any prior transaction claim, and resolves every approved
+        target.  It intentionally records no ledger rows so a successful dry
+        run cannot itself consume the transaction.
+        """
+        plan_hash = plan.get("plan_hash")
+        require_hex256(plan_hash, "plan.plan_hash")
+        if compute_plan_hash(plan) != plan_hash:
+            raise FlagWorkflowError("plan_hash mismatch — plan was tampered")
+        lock_path = (
+            self.state_dir / "locks" / f"apply-{plan_hash[:16]}.lock"
+        )
+        try:
+            with AdvisoryFileLock(lock_path):
+                return self._preflight_locked(
+                    plan, plan_hash, approval, provider
+                )
+        except TransactionLocked:
+            return ApplyResult(
+                status="already_claimed",
+                writes_performed=0,
+                error_code="lock_held_elsewhere",
+            )
+        except (LedgerCorrupted, PrivateStateUnusable) as exc:
+            return ApplyResult(
+                status="blocked",
+                writes_performed=0,
+                blocked_reason="private_state_failure",
+                error_code=f"private_state_failure:{exc}",
+            )
+
+    def _preflight_locked(self, plan: Dict[str, Any], plan_hash: str,
+                          approval: ApprovalReceipt,
+                          provider: Any) -> ApplyResult:
+        from core.flag_workflow import validate_plan_schema
+
+        try:
+            mutations = validate_plan_schema(plan)
+        except FlagWorkflowError as exc:
+            return ApplyResult(
+                status="blocked",
+                writes_performed=0,
+                blocked_reason="plan_validation_failed",
+                error_code=f"plan_invalid:{exc}",
+            )
+        try:
+            approval.validate(plan=dict(plan), plan_mutations=mutations)
+        except FlagWorkflowError as exc:
+            return ApplyResult(
+                status="blocked",
+                writes_performed=0,
+                blocked_reason="approval_validation_failed",
+                error_code=f"approval_invalid:{exc}",
+            )
+
+        by_id = {mutation.mutation_id: mutation for mutation in mutations}
+        approved = [by_id[mid] for mid in approval.approved_mutation_ids]
+
+        consumed = []
+        for mutation in approved:
+            latest = self.ledger.latest_status(
+                plan_hash, mutation.mutation_id
+            )
+            if latest is not None:
+                consumed.append({
+                    "mutation_id": mutation.mutation_id,
+                    "error_code": f"transaction_already_claimed({latest})",
+                })
+        if consumed:
+            return ApplyResult(
+                status="blocked",
+                writes_performed=0,
+                failed=consumed,
+                blocked_reason="transaction_already_claimed",
+                error_code="transaction_already_claimed",
+            )
+
+        failures = []
+        passed = []
+        for mutation in approved:
+            code = self.preflight_one(
+                provider, plan, mutation, approval
+            )
+            if code is None:
+                passed.append({"mutation_id": mutation.mutation_id})
+            else:
+                failures.append({
+                    "mutation_id": mutation.mutation_id,
+                    "error_code": code,
+                })
+        if failures:
+            return ApplyResult(
+                status="blocked",
+                writes_performed=0,
+                failed=failures,
+                unattempted=passed,
+                blocked_reason="batch_preflight_failed",
+                error_code="batch_preflight_failed",
+            )
+        return ApplyResult(
+            status="preflight_passed",
+            writes_performed=0,
+            verified=passed,
+        )
+
     def apply_transaction(self, *, plan: Dict[str, Any],
                           approval: ApprovalReceipt,
                           provider: Any) -> ApplyResult:
@@ -970,9 +1204,52 @@ class TransactionEngine:
             return ApplyResult(status="blocked", writes_performed=0,
                                error_code=f"private_state_failure:{e}")
 
+    def apply_canary_transaction(self, *, plan: Dict[str, Any],
+                                 approval: ApprovalReceipt,
+                                 provider: Any,
+                                 max_count: int = 3) -> ApplyResult:
+        """Apply one fresh 1..3 target canary under the canonical plan lock."""
+        if (
+            isinstance(max_count, bool)
+            or not isinstance(max_count, int)
+            or max_count < 1
+            or max_count > 3
+        ):
+            raise FlagWorkflowError("canary max_count must be within [1,3]")
+        plan_hash = plan.get("plan_hash")
+        require_hex256(plan_hash, "plan.plan_hash")
+        if compute_plan_hash(plan) != plan_hash:
+            raise FlagWorkflowError("plan_hash mismatch — plan was tampered")
+        lock_path = (
+            self.state_dir / "locks" / f"apply-{plan_hash[:16]}.lock"
+        )
+        try:
+            with AdvisoryFileLock(lock_path):
+                return self._apply_locked(
+                    plan,
+                    plan_hash,
+                    approval,
+                    provider,
+                    require_fresh=True,
+                    max_approved=max_count,
+                )
+        except TransactionLocked:
+            return ApplyResult(
+                status="already_claimed",
+                writes_performed=0,
+                error_code="lock_held_elsewhere",
+            )
+        except (LedgerCorrupted, PrivateStateUnusable) as exc:
+            return ApplyResult(
+                status="blocked",
+                writes_performed=0,
+                error_code=f"private_state_failure:{exc}",
+            )
+
     def _apply_locked(self, plan: Dict[str, Any], plan_hash: str,
                       approval: ApprovalReceipt,
-                      provider: Any) -> ApplyResult:
+                      provider: Any, *, require_fresh: bool = False,
+                      max_approved: Optional[int] = None) -> ApplyResult:
         # APPROVAL VALIDATION FIRST — inside the lock, before ledger
         # authority checks, preflight, claims, or ANY provider contact.
         # The canonical validator (ApprovalReceipt.validate) is the single
@@ -1002,6 +1279,40 @@ class TransactionEngine:
         # Validation passed: every approved id provably exists.
         by_id = {m.mutation_id: m for m in mutations}
         approved = [by_id[i] for i in approval.approved_mutation_ids]
+
+        if max_approved is not None and not (
+            1 <= len(approved) <= max_approved
+        ):
+            return ApplyResult(
+                status="blocked",
+                writes_performed=0,
+                blocked_reason="canary_size_invalid",
+                error_code=(
+                    f"canary_size_invalid:{len(approved)} not within "
+                    f"[1,{max_approved}]"
+                ),
+            )
+        if require_fresh:
+            claimed = []
+            for mutation in approved:
+                latest = self.ledger.latest_status(
+                    plan_hash, mutation.mutation_id
+                )
+                if latest is not None:
+                    claimed.append({
+                        "mutation_id": mutation.mutation_id,
+                        "error_code": (
+                            f"transaction_already_claimed({latest})"
+                        ),
+                    })
+            if claimed:
+                return ApplyResult(
+                    status="blocked",
+                    writes_performed=0,
+                    failed=claimed,
+                    blocked_reason="transaction_already_claimed",
+                    error_code="transaction_already_claimed",
+                )
 
         result = ApplyResult(status="applied")
         approval_sha = approval.content_hash
@@ -1328,7 +1639,10 @@ class TransactionEngine:
                     "status": ST_BLOCKED,
                     "error_code": f"provider_refused:{exc}",
                 })
-                result.status = "partially_failed"
+                result.status = (
+                    "partially_failed"
+                    if result.writes_performed else "blocked"
+                )
                 try:
                     self.ledger.record(TransactionRecord(
                         transaction_id=txid, plan_sha256=plan_hash,
@@ -1385,7 +1699,10 @@ class TransactionEngine:
                     "status": ST_BLOCKED,
                     "error_code": f"provider_error:{exc}",
                 })
-                result.status = "partially_failed"
+                result.status = (
+                    "partially_failed"
+                    if result.writes_performed else "blocked"
+                )
                 try:
                     self.ledger.record(TransactionRecord(
                         transaction_id=txid, plan_sha256=plan_hash,
@@ -1622,6 +1939,418 @@ class ScopedRollbackEngine(TransactionEngine):
         except (FlagWorkflowError, TypeError, ValueError):
             return False
         return True
+
+    def _preflight_rollback_receipt_locked(
+            self, receipt: TransactionRollbackReceipt,
+            provider: Any) -> RollbackResult:
+        """Zero-provider-write rollback validation under the plan lock.
+
+        Live divergence is a human-override signal and is persisted locally
+        as durable suppression before this method returns a refusal.
+        """
+        try:
+            receipt.validate()
+        except FlagWorkflowError as exc:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code=f"rollback_receipt_invalid:{exc}",
+            )
+        if receipt.plan_sha256 != self._plan.get("plan_hash"):
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code="receipt_lineage_mismatch:plan_sha256",
+            )
+
+        latest = self.ledger.latest_status(
+            receipt.plan_sha256, receipt.mutation_id
+        )
+        if latest in FROZEN_LATEST_STATUSES:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code=f"transaction_frozen({latest})",
+            )
+        state = self.ledger.authoritative_state(
+            receipt.plan_sha256, receipt.mutation_id
+        )
+        if state == ST_ROLLED_BACK:
+            return RollbackResult(
+                status="already_rolled_back", writes_performed=0,
+                error_code="idempotent_replay",
+            )
+        if state != ST_VERIFIED:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code=f"transaction_not_verified({state})",
+            )
+
+        rec = self.ledger.latest_authoritative_record(
+            receipt.plan_sha256, receipt.mutation_id
+        )
+        try:
+            mutation = self._mutations_by_id().get(receipt.mutation_id)
+        except FlagWorkflowError as exc:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code=f"rollback_plan_invalid:{exc}",
+            )
+        expected_applied_native = self._native_for_semantic(
+            mutation.provider, mutation.proposed_flag
+        ) if mutation else None
+        expectations = {
+            "transaction_id": (
+                receipt.transaction_id,
+                rec.get("transaction_id") if rec else None,
+            ),
+            "approval_sha256": (
+                receipt.approval_sha256,
+                rec.get("approval_sha256") if rec else None,
+            ),
+            "mutation_id": (
+                receipt.mutation_id,
+                rec.get("mutation_id") if rec else None,
+            ),
+            "ref_digest": (
+                receipt.ref_digest,
+                mutation.ref_digest if mutation else None,
+            ),
+            "pre_native_flag": (
+                receipt.pre_native_flag,
+                mutation.observed_native_flag if mutation else None,
+            ),
+            "pre_semantic_flag": (
+                receipt.pre_semantic_flag,
+                mutation.observed_flag.value if mutation else None,
+            ),
+            "applied_native_flag": (
+                receipt.applied_native_flag, expected_applied_native,
+            ),
+            "applied_semantic_flag": (
+                receipt.applied_semantic_flag,
+                mutation.proposed_flag.value if mutation else None,
+            ),
+            "ledger_status": (
+                rec.get("status") if rec else None, ST_VERIFIED,
+            ),
+            "ledger_ref_digest": (
+                rec.get("ref_digest") if rec else None,
+                mutation.ref_digest if mutation else None,
+            ),
+            "ledger_pre_state": (
+                rec.get("pre_state") if rec else None,
+                mutation.observed_flag.value if mutation else None,
+            ),
+            "ledger_intended_state": (
+                rec.get("intended_state") if rec else None,
+                mutation.proposed_flag.value if mutation else None,
+            ),
+            "ledger_verified_post_state": (
+                rec.get("verified_post_state") if rec else None,
+                mutation.proposed_flag.value if mutation else None,
+            ),
+        }
+        for field_name, (got, expected) in expectations.items():
+            if got != expected:
+                return RollbackResult(
+                    status="blocked", writes_performed=0,
+                    error_code=f"receipt_lineage_mismatch:{field_name}",
+                )
+        if mutation is None:  # pragma: no cover - caught by lineage above
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code="receipt_lineage_mismatch:mutation",
+            )
+        if expected_applied_native is None:  # pragma: no cover - same guard
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code="receipt_lineage_mismatch:applied_native_flag",
+            )
+        try:
+            if self.overrides.is_suppressed(mutation.ref_digest):
+                return RollbackResult(
+                    status="rollback_blocked_by_override",
+                    writes_performed=0,
+                    error_code="human_override_suppressed",
+                )
+        except Exception as exc:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code=f"override_state_failure:{exc}",
+            )
+
+        try:
+            live = self._resolve_live(provider, self._ref_for(mutation))
+        except Exception as exc:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code=f"resolve_failed:{exc}",
+            )
+        if live.evidence_digest != mutation.evidence_digest:
+            return self._rollback_override_result(
+                mutation,
+                live.observed_native_flag,
+                "evidence_drift",
+            )
+        current_native = live.observed_native_flag
+        if current_native is None:
+            return self._rollback_override_result(
+                mutation,
+                current_native,
+                "native_flag_unavailable",
+            )
+        if int(current_native) != int(expected_applied_native):
+            return self._rollback_override_result(
+                mutation,
+                current_native,
+                "human_intervention_detected",
+            )
+        current_semantic = self._semantic_for_native(
+            mutation.provider, int(current_native)
+        )
+        if current_semantic != mutation.proposed_flag:
+            return self._rollback_override_result(
+                mutation,
+                current_native,
+                "semantic_flag_drift",
+            )
+        return RollbackResult(
+            status="preflight_passed", writes_performed=0
+        )
+
+    def preflight_rollback_transaction(
+            self, *, receipt: TransactionRollbackReceipt,
+            provider: Any) -> RollbackResult:
+        """Run a locked, read-only rollback preflight for one receipt."""
+        try:
+            receipt.validate()
+        except FlagWorkflowError as exc:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code=f"rollback_receipt_invalid:{exc}",
+            )
+        apply_lock_path = (
+            self.state_dir / "locks" /
+            f"apply-{receipt.plan_sha256[:16]}.lock"
+        )
+        rb_lock_path = (
+            self.state_dir / "locks" /
+            f"rb-{receipt.transaction_id[:16]}.lock"
+        )
+        try:
+            with AdvisoryFileLock(apply_lock_path), \
+                    AdvisoryFileLock(rb_lock_path):
+                return self._preflight_rollback_receipt_locked(
+                    receipt, provider
+                )
+        except TransactionLocked:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code="apply_in_progress_or_locked",
+            )
+        except (LedgerCorrupted, PrivateStateUnusable) as exc:
+            return RollbackResult(
+                status="blocked", writes_performed=0,
+                error_code=f"private_state_failure:{exc}",
+            )
+
+    def rollback_transactions(
+            self, *, receipts: List[TransactionRollbackReceipt],
+            provider: Any, max_count: int = 3,
+            preflight_only: bool = False) -> BatchRollbackResult:
+        """Preflight then restore one bounded canary under one plan lock."""
+        if (
+            isinstance(max_count, bool)
+            or not isinstance(max_count, int)
+            or max_count < 1
+            or max_count > 3
+        ):
+            raise FlagWorkflowError("rollback max_count must be within [1,3]")
+        if not isinstance(receipts, list) or not (
+            1 <= len(receipts) <= max_count
+        ):
+            raise FlagWorkflowError(
+                f"rollback canary must contain 1..{max_count} receipts"
+            )
+        for receipt in receipts:
+            receipt.validate()
+        mutation_ids = [receipt.mutation_id for receipt in receipts]
+        if len(mutation_ids) != len(set(mutation_ids)):
+            raise FlagWorkflowError(
+                "rollback canary contains duplicate mutation ids"
+            )
+        plan_hashes = {receipt.plan_sha256 for receipt in receipts}
+        if len(plan_hashes) != 1:
+            raise FlagWorkflowError(
+                "rollback canary receipts must share one plan hash"
+            )
+        plan_hash = receipts[0].plan_sha256
+        bundle_digest = sha256_hex([
+            receipt.content_hash for receipt in receipts
+        ])
+        apply_lock_path = (
+            self.state_dir / "locks" / f"apply-{plan_hash[:16]}.lock"
+        )
+        batch_lock_path = (
+            self.state_dir / "locks" /
+            f"rb-batch-{bundle_digest[:16]}.lock"
+        )
+        try:
+            with AdvisoryFileLock(apply_lock_path), \
+                    AdvisoryFileLock(batch_lock_path):
+                failures: List[Dict[str, Any]] = []
+                candidates: List[TransactionRollbackReceipt] = []
+                noops: List[Dict[str, Any]] = []
+                hazardous_latest = FROZEN_LATEST_STATUSES.difference({
+                    ST_FROZEN_UNATTEMPTED,
+                })
+                proven_zero_write_latest = {
+                    None,
+                    ST_PREPARED,
+                    ST_PREFLIGHT_PASSED,
+                    ST_BLOCKED,
+                    ST_FROZEN_UNATTEMPTED,
+                }
+                for receipt in receipts:
+                    latest = self.ledger.latest_status(
+                        receipt.plan_sha256, receipt.mutation_id
+                    )
+                    authority = self.ledger.authoritative_state(
+                        receipt.plan_sha256, receipt.mutation_id
+                    )
+                    if latest in hazardous_latest:
+                        failures.append({
+                            "mutation_id": receipt.mutation_id,
+                            "status": "recovery_required",
+                            "error_code": (
+                                f"transaction_frozen({latest})"
+                            ),
+                        })
+                    elif authority == ST_VERIFIED:
+                        candidates.append(receipt)
+                    elif authority == ST_ROLLED_BACK:
+                        noops.append({
+                            "mutation_id": receipt.mutation_id,
+                            "status": "already_rolled_back",
+                        })
+                    elif authority is None \
+                            and latest in proven_zero_write_latest:
+                        noops.append({
+                            "mutation_id": receipt.mutation_id,
+                            "status": "not_applied",
+                        })
+                    else:
+                        failures.append({
+                            "mutation_id": receipt.mutation_id,
+                            "status": "recovery_required",
+                            "error_code": (
+                                "rollback_authority_unresolved"
+                            ),
+                        })
+                if failures:
+                    return BatchRollbackResult(
+                        status="blocked",
+                        writes_performed=0,
+                        failed=failures,
+                        unattempted=[
+                            {
+                                "mutation_id": receipt.mutation_id,
+                                "status": "rollback_candidate",
+                            }
+                            for receipt in candidates
+                        ] + noops,
+                        error_code="batch_recovery_required",
+                    )
+
+                passed: List[Dict[str, Any]] = []
+                for receipt in candidates:
+                    checked = self._preflight_rollback_receipt_locked(
+                        receipt, provider
+                    )
+                    if checked.status == "preflight_passed":
+                        passed.append({
+                            "mutation_id": receipt.mutation_id,
+                            "status": checked.status,
+                        })
+                    else:
+                        failures.append({
+                            "mutation_id": receipt.mutation_id,
+                            "status": checked.status,
+                            "error_code": checked.error_code,
+                        })
+                if failures:
+                    return BatchRollbackResult(
+                        status="blocked",
+                        writes_performed=0,
+                        failed=failures,
+                        unattempted=passed + noops,
+                        error_code="batch_preflight_failed",
+                    )
+                if not candidates:
+                    status = (
+                        "already_rolled_back"
+                        if any(
+                            row["status"] == "already_rolled_back"
+                            for row in noops
+                        )
+                        else "rollback_not_required"
+                    )
+                    return BatchRollbackResult(
+                        status=status,
+                        writes_performed=0,
+                        results=noops,
+                    )
+                if preflight_only:
+                    return BatchRollbackResult(
+                        status="preflight_passed",
+                        writes_performed=0,
+                        results=passed + noops,
+                    )
+
+                batch = BatchRollbackResult(status="rolled_back")
+                verified_rollback_count = 0
+                for index, receipt in enumerate(candidates):
+                    result = self._scoped_rollback_locked(
+                        receipt, provider
+                    )
+                    batch.writes_performed += result.writes_performed
+                    row = {
+                        "mutation_id": receipt.mutation_id,
+                        "status": result.status,
+                        "error_code": result.error_code,
+                    }
+                    if result.status == "rolled_back":
+                        batch.results.append(row)
+                        verified_rollback_count += 1
+                        continue
+                    batch.failed.append(row)
+                    batch.unattempted.extend({
+                        "mutation_id": remaining.mutation_id
+                    } for remaining in candidates[index + 1:])
+                    if result.status == "ambiguous":
+                        batch.status = (
+                            "partially_rolled_back_ambiguous"
+                            if verified_rollback_count else "ambiguous"
+                        )
+                    else:
+                        batch.status = (
+                            "partially_rolled_back"
+                            if verified_rollback_count else "blocked"
+                        )
+                    batch.error_code = (
+                        result.error_code or "rollback_failed"
+                    )
+                    break
+                batch.results.extend(noops)
+                return batch
+        except TransactionLocked:
+            return BatchRollbackResult(
+                status="blocked", writes_performed=0,
+                error_code="apply_in_progress_or_locked",
+            )
+        except (LedgerCorrupted, PrivateStateUnusable) as exc:
+            return BatchRollbackResult(
+                status="blocked", writes_performed=0,
+                error_code=f"private_state_failure:{exc}",
+            )
 
     def rollback_transaction(self, *, receipt: TransactionRollbackReceipt,
                              provider: Any) -> RollbackResult:

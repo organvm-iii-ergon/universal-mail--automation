@@ -712,8 +712,17 @@ class MailAppProvider(EmailProvider):
             )
         reference = f"account {self._as_applescript(account)}"
         for component in components:
+            # Mail.app discovery exposes custom mailboxes through
+            # ``mailboxes of <container>`` but does not reliably resolve the
+            # equivalent direct object specifier ``mailbox \"name\" of ...``
+            # (it can raise -1728 even for a mailbox just returned by
+            # discovery).  Resolve every exact path component through the
+            # container collection instead.  ``first`` still fails closed
+            # when the component is absent, and each nested query is scoped
+            # to the previously resolved parent.
             reference = (
-                f"mailbox {self._as_applescript(component)} of {reference}"
+                f"(first mailbox of {reference} whose name is "
+                f"({self._as_applescript(component)}))"
             )
         return reference
 
