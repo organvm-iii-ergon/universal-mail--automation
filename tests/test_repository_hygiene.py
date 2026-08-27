@@ -55,6 +55,9 @@ from scripts.check_repository_hygiene import (
         ("web/.next/server/app/index.html", "frontend build output"),
         ("web/node_modules/next/package.json", "frontend dependency output"),
         (".claude/settings.local.json", "personal agent permission settings"),
+        ("audit/inbox_sweep-user.json", "private mailbox audit artifact"),
+        ("audit/2026/run.csv", "private mailbox audit artifact"),
+        ("audit/drafts_sent.json", "private mailbox audit artifact"),
     ],
 )
 def test_forbidden_paths_are_classified(path: str, reason: str) -> None:
@@ -70,6 +73,7 @@ def test_forbidden_paths_are_classified(path: str, reason: str) -> None:
         "tests/test_repository_hygiene.py",
         "uv.lock",
         "audit/README.md",
+        "audit/.gitignore",
         ".codex/plans/2026-08-27-repository-lifecycle-closeout.md",
         "prod.env.example",
         ".env.example",

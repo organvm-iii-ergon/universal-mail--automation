@@ -63,7 +63,6 @@ GLOB_RULES = (
     (".claude/sessions/**", "agent session state"),
     (".codex/sessions/**", "agent session state"),
     (".serena/**", "agent session state"),
-    ("audit/*.jsonl", "private mailbox audit receipt"),
     ("data/**", "private application data"),
     ("*.log", "runtime log"),
     ("*.db", "runtime database"),
@@ -115,6 +114,11 @@ def forbidden_reason(path: str) -> str | None:
     normalized = path.replace("\\", "/").removeprefix("./")
     if normalized in EXACT_PATHS:
         return EXACT_PATHS[normalized]
+    if normalized.startswith("audit/") and normalized not in {
+        "audit/.gitignore",
+        "audit/README.md",
+    }:
+        return "private mailbox audit artifact"
     basename = normalized.rsplit("/", 1)[-1]
     if basename in FORBIDDEN_BASENAMES:
         return FORBIDDEN_BASENAMES[basename]

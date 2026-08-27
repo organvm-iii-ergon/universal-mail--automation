@@ -30,9 +30,11 @@ htmlcov/
 .ruff_cache/
 *.egg-info/
 
-# Triage audit receipts (PII: real sender addresses) — never commit.
-# audit/README.md documents the format and is tracked; the receipts are not.
-audit/*.jsonl
+# Triage audit artifacts (PII: addresses, subjects, account ids) — never commit.
+# audit/README.md and audit/.gitignore are source; every generated artifact is not.
+audit/*
+!audit/.gitignore
+!audit/README.md
 
 # Durable app store (Stripe customer ids, api keys, receipt ledger) — never commit.
 data/

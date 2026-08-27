@@ -58,8 +58,8 @@ are reaped automatically in future.
 ## Local validation
 
 - Repository hygiene predicate: PASS.
-- Hygiene regressions: 49 passed.
-- Full Python suite: 838 passed, 5 skipped.
+- Hygiene regressions: 53 passed.
+- Full Python suite: 842 passed, 5 skipped.
 - Ruff and Actionlint: PASS.
 - `uv lock --check`: PASS.
 - Source distribution and wheel build: PASS.
