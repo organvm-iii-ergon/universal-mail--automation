@@ -1,7 +1,6 @@
-# Triage receipts contain real sender addresses (PII). Belt-and-suspenders on top
-# of the repo-root `audit/*.jsonl` rule: ignore EVERYTHING in this directory and
-# any sub-directory (the root rule is single-level and would miss audit/2026/x.jsonl),
-# except the documentation and this rule itself.
+# Triage artifacts contain real sender addresses and other mailbox state (PII).
+# Belt-and-suspenders on top of the repo-root `audit/*` rule: ignore EVERYTHING
+# in this directory and any sub-directory except the documentation and this rule.
 *
 !.gitignore
 !README.md

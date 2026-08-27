@@ -49,9 +49,11 @@ Dispositions: `protected_held`, `archived`, `moved`, `labeled`, `kept`.
 
 ## Privacy
 
-Receipt lines contain **real sender addresses**. Two layers keep them out of git:
-the repo-root rule `audit/*.jsonl`, and this directory's own `.gitignore`
-(`*` except the docs), which also covers any sub-directory the root rule would miss.
+Audit artifacts can contain **real sender addresses, subjects, account identifiers,
+and send state**. Two layers keep them out of git: the repo-root `audit/*` rule and
+this directory's own `.gitignore` (`*` except `README.md` and `.gitignore`). The
+required repository-hygiene predicate independently rejects a forced add at any
+depth under `audit/` except those two source files.
 
 Two caveats the CLI warns about at runtime:
 
