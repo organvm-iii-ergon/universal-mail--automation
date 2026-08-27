@@ -959,6 +959,20 @@ This repository is part of a coordinated multi-org system. Contributions are wel
 
 Please open an issue before submitting large changes to discuss approach and scope.
 
+### Dependency lock policy
+
+`pyproject.toml` is the canonical declaration of package dependencies and
+extras. The tracked `uv.lock` is the reproducibility receipt for that complete
+environment; regenerate it with `uv lock` whenever a dependency constraint or
+supported Python range changes, review the resolver diff, and commit both files
+together. Do not edit the lockfile by hand.
+
+The `requirements*.txt` files remain explicit compatibility and deployment
+inputs. Keep their direct constraints aligned with the corresponding
+`pyproject.toml` extras in the same change. The GitHub Python matrix installs
+those inputs independently, so an up-to-date lockfile does not replace matrix
+execution or package-build validation.
+
 ---
 
 ## Contact

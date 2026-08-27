@@ -17,12 +17,19 @@ from collections.abc import Iterable
 EXACT_PATHS = {
     ".coverage": "coverage database",
     "coverage.xml": "coverage report",
-    "credentials.json": "credential material",
     "labeler_state.json": "mailbox runtime cursor",
     "mail_export.tsv": "mailbox export",
-    "token.pickle": "credential material",
     "config/protected_senders.local.txt": "private sender configuration",
 }
+
+SENSITIVE_BASENAMES = {
+    "credentials.json": "credential material",
+    "token.pickle": "credential material",
+}
+
+SENSITIVE_BASENAME_GLOBS = (
+    ("client_secret_*.json", "credential material"),
+)
 
 GLOB_RULES = (
     (".coverage.*", "coverage database"),
@@ -47,7 +54,6 @@ GLOB_RULES = (
     ("*.db", "runtime database"),
     ("*.db-wal", "runtime database journal"),
     ("*.db-shm", "runtime database shared memory"),
-    ("client_secret_*.json", "credential material"),
 )
 
 
@@ -57,6 +63,12 @@ def forbidden_reason(path: str) -> str | None:
     normalized = path.replace("\\", "/").removeprefix("./")
     if normalized in EXACT_PATHS:
         return EXACT_PATHS[normalized]
+    basename = normalized.rsplit("/", 1)[-1]
+    if basename in SENSITIVE_BASENAMES:
+        return SENSITIVE_BASENAMES[basename]
+    for pattern, reason in SENSITIVE_BASENAME_GLOBS:
+        if fnmatch.fnmatchcase(basename, pattern):
+            return reason
     if normalized.endswith(".main"):
         return "merge-conflict scratch file"
     if re.fullmatch(r"pr\d+\.txt", normalized):
@@ -78,6 +90,18 @@ def find_forbidden(paths: Iterable[str]) -> list[tuple[str, str]]:
     return sorted(found)
 
 
+def repository_root() -> str:
+    """Resolve the checkout root even when invoked from a subdirectory."""
+
+    completed = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
 def tracked_paths() -> list[str]:
     """Read the checkout's tracked paths without parsing human Git output."""
 
@@ -85,6 +109,7 @@ def tracked_paths() -> list[str]:
         ["git", "ls-files", "-z"],
         check=True,
         capture_output=True,
+        cwd=repository_root(),
     )
     return [
         value.decode("utf-8", errors="surrogateescape")

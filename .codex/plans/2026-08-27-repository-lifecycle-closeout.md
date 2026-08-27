@@ -13,10 +13,11 @@ evidence-backed terminal state while preserving the Mail.app zero-write gate.
   worktree.
 - Local branches at intake: main, the #192 head, merged #189 residue, and merged
   #174 residue.
-- Remote refs at intake: 306 total, including 233 automated capture refs.
+- Remote-tracking refs at intake: 306 total: symbolic `origin/HEAD`,
+  `origin/main`, and 304 non-main branch refs; 233 were `capture/*` refs.
 - Required main checks: Python 3.11 and Python 3.12.
-- GitHub admission blocker: jobs start with zero steps and annotate the account
-  as locked because of a billing issue.
+- GitHub admission blocker: required jobs were not started because the account
+  is locked due to a billing issue.
 
 ## Execution
 

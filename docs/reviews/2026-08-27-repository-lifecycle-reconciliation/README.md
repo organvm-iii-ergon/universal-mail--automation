@@ -11,7 +11,9 @@ mutation occurred.
 | Open PRs | 3 |
 | Local worktrees | 2 |
 | Local branches | 4 |
-| Remote refs, including `origin/main` | 306 |
+| Remote-tracking refs, including symbolic `origin/HEAD` | 306 |
+| Live remote branch heads | 305 |
+| Manifested non-main branch heads | 304 |
 | Automated `capture/*` refs | 233 |
 | Remote branches with a terminal PR | 65 |
 | Remote branches with an open PR | 3 |
@@ -28,18 +30,51 @@ content group remains reachable through an annotated `archive/uma-capture-*`
 tag; the 233 working-branch refs themselves can therefore be reaped without
 discarding the three distinct snapshots.
 
+## Executed ref lifecycle
+
+The manifest was committed and pushed at
+`39adcc39eff2b0d2b690763dc1455bd95f45b497` before deletion. A fresh
+`git ls-remote --heads` comparison then found zero SHA mismatches across all
+301 deletion candidates. Git accepted the 301 explicit deletions as one atomic
+push. A post-delete query showed only `main` and the four active PR heads.
+
+The three annotated archive tags resolve to the recorded representative
+commits:
+
+- `archive/uma-capture-snapshot-a-20260702` -> `c3e47625164b0eaf6dba2881032a62d89246db90`
+- `archive/uma-capture-snapshot-b-20260718` -> `418dc90339eb9c85dbf168aa365a687fa1ad6fcb`
+- `archive/uma-capture-main-deferred-20260721` -> `7306a0b9655d16dcba0730e7e71716dd44b3e980`
+
+Repository setting `delete_branch_on_merge` is now enabled so merged PR heads
+are reaped automatically in future.
+
+## Local validation
+
+- Repository hygiene predicate: PASS.
+- Hygiene regressions: 20 passed.
+- Full Python suite: 808 passed, 5 skipped.
+- Ruff and Actionlint: PASS.
+- `uv lock --check`: PASS.
+- Source distribution and wheel build: PASS.
+- Twine validation of both distributions: PASS.
+- Staged-diff whitespace/error check: PASS.
+
 ## Admission truth
 
-Current CI and CodeQL jobs fail before executing any step. GitHub's check-run
-annotation is: `The job was not started because your account is locked due to a
-billing issue.` The required Python 3.11 and Python 3.12 contexts therefore
-cannot become executable receipts until the account owner clears that gate.
-The repository keeps those checks and does not use an administrator bypass.
+Current CI and CodeQL jobs were not started because the account is locked.
+GitHub's check-run annotation is: `The job was not started because your account
+is locked due to a billing issue.` The required Python 3.11 and Python 3.12
+contexts therefore cannot become executable receipts until the account owner
+clears that gate. The repository keeps those checks and does not use an
+administrator bypass.
 
 The package metadata is also migrated from the deprecated license table and
 license classifier to the PEP 639 SPDX expression plus an explicit license-file
 declaration. The build backend floor is Setuptools 77, the first release line
-that supports those fields.
+that supports those fields. The contributing guide now records the tracked
+`uv.lock` policy and its relationship to the independently resolved CI matrix,
+completing the repository-side acceptance criteria from issue `#150` without
+claiming that billing-blocked CI executed.
 
 ## Mail safety truth
 

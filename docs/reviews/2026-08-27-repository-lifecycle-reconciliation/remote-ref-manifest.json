@@ -9,11 +9,20 @@
       "heads of open pull requests"
     ],
     "reap": [
-      "automated capture refs",
+      "capture/* refs",
       "heads owned by merged or closed pull requests",
       "proven patch-equivalent or backup refs"
     ],
     "note": "A deletion candidate is emitted only when its disposition begins with reap_."
+  },
+  "scope": {
+    "remote_tracking_ref_count": 306,
+    "symbolic_remote_tracking_ref": {
+      "ref": "refs/remotes/origin/HEAD",
+      "target": "refs/remotes/origin/main"
+    },
+    "live_remote_branch_head_count": 305,
+    "manifested_non_main_branch_head_count": 304
   },
   "capture_archives": {
     "00aa4f9a0fe1": {
