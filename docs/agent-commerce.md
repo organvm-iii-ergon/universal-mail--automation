@@ -134,6 +134,10 @@ sender, address, subject, snippet, and bounded body text for one evidence id, so
 agents must pass `ack_private=True`. The tool remains read-only and grants no
 send or mailbox-mutation authority.
 
+The server uses the official Python SDK v2 `MCPServer` API. In v2, transport
+configuration belongs on `run()` and the ASGI app builders; see the official
+[v2 migration guide](https://github.com/modelcontextprotocol/python-sdk/blob/v2.0.0/docs/migration.md).
+
 - **stdio** (local, Claude Desktop, any MCP client): `python -m mcp_server`
 - **Streamable HTTP** (hosted): mounted at `/mcp` on the main app; also runnable
   standalone via `uvicorn mcp_server.server:http_app`. Set `MCP_ALLOWED_HOSTS` to

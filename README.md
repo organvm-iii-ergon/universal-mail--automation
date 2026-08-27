@@ -390,7 +390,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt          # core + Gmail + Outlook + YAML config
 pip install -r requirements-api.txt      # FastAPI server (optional)
-pip install -r requirements-mcp.txt      # MCP server (optional, Python 3.10+)
+pip install -r requirements-mcp.txt      # MCP SDK v2 server (optional, Python 3.10+)
 ```
 
 ### First Run

@@ -1,4 +1,4 @@
-"""FastMCP server — the mail-triage engine as safety-gated agent tools.
+"""MCPServer — the mail-triage engine as safety-gated agent tools.
 
 Every tool delegates to :mod:`api.service`, the single chokepoint that enforces
 the fail-closed protected-sender gate and the independent audit receipt. So an
@@ -30,8 +30,8 @@ from typing import Any, Dict, Optional
 import os
 from urllib.parse import urlsplit
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.streamable_http import TransportSecuritySettings
+from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
 from api import metering, service, triage_runtime
 from api.schemas import MAX_TRIAGE_LIMIT, SenderCheckResponse, TriageResponse
@@ -226,16 +226,11 @@ INSTRUCTIONS = (
     "source message for a specific evidence id."
 )
 
-# stateless_http + json_response suit a horizontally-scaled hosted deploy.
-# streamable_http_path="/" serves the endpoint at the app root, so mounting the
-# app at "/mcp" in api.app resolves to "/mcp" (not "/mcp/mcp").
-mcp = FastMCP(
+# Transport-specific settings belong on run()/streamable_http_app() in MCP SDK
+# v2; the server object itself contains only transport-independent state.
+mcp = MCPServer(
     "universal-mail",
     instructions=INSTRUCTIONS,
-    json_response=True,
-    stateless_http=True,
-    streamable_http_path="/",
-    transport_security=_transport_security(),
 )
 
 
@@ -243,7 +238,7 @@ def _clamp_limit(limit: int) -> int:
     return validate_triage_limit(limit, max_limit=MAX_TRIAGE_LIMIT)
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def check_protected_sender(sender: str, subject: str = "") -> SenderCheckResponse:
     """Is this sender PROTECTED (never archived/moved) and how is it categorized?
 
@@ -258,7 +253,7 @@ def check_protected_sender(sender: str, subject: str = "") -> SenderCheckRespons
     return SenderCheckResponse(**service.check_sender(sender, subject))
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def triage_preview(
     provider: str = "gmail",
     query: str = "has:nouserlabels",
@@ -272,7 +267,7 @@ def triage_preview(
                    tier_routing=False, vip_only=False)
 
 
-@mcp.tool(annotations={"destructiveHint": True, "idempotentHint": False})
+@mcp.tool(annotations={"destructive_hint": True, "idempotent_hint": False})
 def triage(
     provider: str = "gmail",
     query: str = "has:nouserlabels",
@@ -299,7 +294,7 @@ def triage(
                    account_api_key=account_api_key)
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_intelligence(
     history_path: str,
     ops_report_path: Optional[str] = None,
@@ -321,7 +316,7 @@ def mail_intelligence(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": True})
+@mcp.tool(annotations={"destructive_hint": False, "idempotent_hint": True})
 def mail_history_export(
     source_path: str,
     output_path: str,
@@ -363,7 +358,7 @@ def mail_history_export(
         raise RuntimeError(f"could not write historical export: {e}") from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_action_plan(
     intelligence_path: str,
     max_items: int = 40,
@@ -380,7 +375,7 @@ def mail_action_plan(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_resolver_plan(
     intelligence_path: str,
     max_items: int = 100,
@@ -393,7 +388,7 @@ def mail_resolver_plan(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_provider_surface_plan(
     intelligence_path: str,
     max_items: int = 20,
@@ -413,7 +408,7 @@ def mail_provider_surface_plan(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_resolver_ledger(
     intelligence_path: str,
     ledger_path: str,
@@ -434,7 +429,7 @@ def mail_resolver_ledger(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_github_resolver(
     intelligence_path: str,
     gh_bin: str = "gh",
@@ -461,7 +456,7 @@ def mail_github_resolver(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": False})
+@mcp.tool(annotations={"destructive_hint": False, "idempotent_hint": False})
 def mail_github_resolver_receipts(
     intelligence_path: str,
     ledger_path: str,
@@ -496,7 +491,7 @@ def mail_github_resolver_receipts(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_followup_resolver(
     intelligence_path: str,
     draft_approval_receipt_path: str,
@@ -521,7 +516,7 @@ def mail_followup_resolver(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": False})
+@mcp.tool(annotations={"destructive_hint": False, "idempotent_hint": False})
 def mail_followup_resolver_receipts(
     intelligence_path: str,
     ledger_path: str,
@@ -554,7 +549,7 @@ def mail_followup_resolver_receipts(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_external_resolver(
     intelligence_path: str,
     ledger_path: str,
@@ -578,7 +573,7 @@ def mail_external_resolver(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": False})
+@mcp.tool(annotations={"destructive_hint": False, "idempotent_hint": False})
 def mail_external_resolver_receipts(
     intelligence_path: str,
     ledger_path: str,
@@ -610,7 +605,7 @@ def mail_external_resolver_receipts(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": False})
+@mcp.tool(annotations={"destructive_hint": False, "idempotent_hint": False})
 def mail_resolver_receipt(
     intelligence_path: str,
     ledger_path: str,
@@ -644,7 +639,7 @@ def mail_resolver_receipt(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_action_ledger(
     intelligence_path: str,
     ledger_path: str,
@@ -668,7 +663,7 @@ def mail_action_ledger(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": False})
+@mcp.tool(annotations={"destructive_hint": False, "idempotent_hint": False})
 def mail_action_receipt(
     intelligence_path: str,
     ledger_path: str,
@@ -702,7 +697,7 @@ def mail_action_receipt(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_draft_package(
     intelligence_path: str,
     history_path: str,
@@ -733,7 +728,7 @@ def mail_draft_package(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_draft_approvals(
     intelligence_path: str,
     history_path: str,
@@ -767,7 +762,7 @@ def mail_draft_approvals(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": False})
+@mcp.tool(annotations={"destructive_hint": False, "idempotent_hint": False})
 def mail_draft_approval(
     intelligence_path: str,
     history_path: str,
@@ -806,7 +801,7 @@ def mail_draft_approval(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_delivery_ledger(
     intelligence_path: str,
     history_path: str,
@@ -843,7 +838,7 @@ def mail_delivery_ledger(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": False})
+@mcp.tool(annotations={"destructive_hint": False, "idempotent_hint": False})
 def mail_delivery_receipt(
     intelligence_path: str,
     history_path: str,
@@ -888,7 +883,7 @@ def mail_delivery_receipt(
         raise RuntimeError(e.detail) from e
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
+@mcp.tool(annotations={"read_only_hint": True})
 def mail_evidence_review(
     history_path: str,
     evidence_id: str,
@@ -965,9 +960,15 @@ def _triage(provider, query, limit, *, dry_run, remove_label, tier_routing,
     return TriageResponse(**result)
 
 
-# Hosted Streamable HTTP ASGI app (its own lifespan manages the session manager,
-# so running it directly with uvicorn avoids the parent-lifespan footgun).
-http_app = mcp.streamable_http_app()
+# Hosted Streamable HTTP ASGI app. stateless_http + json_response suit a
+# horizontally-scaled deploy. Serving at this app's root keeps the parent mount
+# at /mcp (instead of accidentally exposing /mcp/mcp).
+http_app = mcp.streamable_http_app(
+    streamable_http_path="/",
+    json_response=True,
+    stateless_http=True,
+    transport_security=_transport_security(),
+)
 
 
 def main() -> None:
@@ -976,7 +977,18 @@ def main() -> None:
         "--transport", choices=["stdio", "streamable-http", "sse"], default="stdio"
     )
     args = parser.parse_args()
-    mcp.run(transport=args.transport)
+    if args.transport == "streamable-http":
+        mcp.run(
+            transport="streamable-http",
+            streamable_http_path="/",
+            json_response=True,
+            stateless_http=True,
+            transport_security=_transport_security(),
+        )
+    elif args.transport == "sse":
+        mcp.run(transport="sse", transport_security=_transport_security())
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

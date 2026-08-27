@@ -1,6 +1,6 @@
 # MCP server (see mcp_server/). Optional, ISOLATED from the core requirements on
-# purpose: the official `mcp` SDK requires Python >=3.10, while the core engine
+# purpose: the official `mcp` SDK v2 requires Python >=3.10, while the core engine
 # stays importable on 3.9+. Install only where you run the MCP server (the deploy
 # image is Python 3.11, so the hosted /mcp endpoint gets this):
 #   pip install -r requirements.txt -r requirements-api.txt -r requirements-mcp.txt
-mcp>=1.27.2,<3
+mcp>=2,<3

@@ -71,6 +71,6 @@ Receipts/ledger are gitignored, local, PII-bearing — never committed.
 
 ## Surfaces (product / API)
 
-`mcp_server/server.py` (FastMCP, dry-run default, gate-enforced) · `api/` (FastAPI: triage / senders /
+`mcp_server/server.py` (MCP SDK v2 `MCPServer`, dry-run default, gate-enforced) · `api/` (FastAPI: triage / senders /
 billing / audit; ACP checkout) · `cloudflare/worker.mjs` · `Dockerfile` / `render.yaml` · PyPI
 trusted-publish (OIDC). Deploy secret: `CLOUDFLARE_API_TOKEN`.

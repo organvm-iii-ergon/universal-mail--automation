@@ -1,7 +1,7 @@
 """Tests for the MCP server tool surface (mcp_server/).
 
-Skipped where the optional `mcp` SDK (Python >=3.10) isn't installed, so the core
-suite still passes on a 3.9 floor.
+Skipped where the optional ``mcp`` SDK is not installed so a core-only install
+can still run the rest of the suite.
 """
 
 import asyncio
@@ -11,6 +11,11 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("mcp")
+
+from fastapi.testclient import TestClient  # noqa: E402
+from mcp.client import Client  # noqa: E402
+from mcp.types import TextContent  # noqa: E402
+from mcp.types.version import LATEST_HANDSHAKE_VERSION  # noqa: E402
 
 from mcp_server.server import (  # noqa: E402
     check_protected_sender,
@@ -100,30 +105,78 @@ def test_tools_registered():
 def test_tools_expose_output_schemas():
     # Pydantic return types give agents machine-checkable verdicts.
     for t in _tools():
-        assert t.outputSchema
+        assert t.output_schema
 
 
 def test_triage_is_marked_destructive_others_readonly():
     by_name = {t.name: t for t in _tools()}
-    assert by_name["check_protected_sender"].annotations.readOnlyHint is True
-    assert by_name["triage_preview"].annotations.readOnlyHint is True
-    assert by_name["mail_intelligence"].annotations.readOnlyHint is True
-    assert by_name["mail_action_plan"].annotations.readOnlyHint is True
-    assert by_name["mail_provider_surface_plan"].annotations.readOnlyHint is True
-    assert by_name["mail_resolver_plan"].annotations.readOnlyHint is True
-    assert by_name["mail_resolver_ledger"].annotations.readOnlyHint is True
-    assert by_name["mail_github_resolver"].annotations.readOnlyHint is True
-    assert by_name["mail_action_ledger"].annotations.readOnlyHint is True
-    assert by_name["mail_draft_package"].annotations.readOnlyHint is True
-    assert by_name["mail_draft_approvals"].annotations.readOnlyHint is True
-    assert by_name["mail_delivery_ledger"].annotations.readOnlyHint is True
-    assert by_name["mail_evidence_review"].annotations.readOnlyHint is True
-    assert by_name["mail_history_export"].annotations.destructiveHint is False
-    assert by_name["mail_resolver_receipt"].annotations.destructiveHint is False
-    assert by_name["mail_action_receipt"].annotations.destructiveHint is False
-    assert by_name["mail_draft_approval"].annotations.destructiveHint is False
-    assert by_name["mail_delivery_receipt"].annotations.destructiveHint is False
-    assert by_name["triage"].annotations.destructiveHint is True
+    assert by_name["check_protected_sender"].annotations.read_only_hint is True
+    assert by_name["triage_preview"].annotations.read_only_hint is True
+    assert by_name["mail_intelligence"].annotations.read_only_hint is True
+    assert by_name["mail_action_plan"].annotations.read_only_hint is True
+    assert by_name["mail_provider_surface_plan"].annotations.read_only_hint is True
+    assert by_name["mail_resolver_plan"].annotations.read_only_hint is True
+    assert by_name["mail_resolver_ledger"].annotations.read_only_hint is True
+    assert by_name["mail_github_resolver"].annotations.read_only_hint is True
+    assert by_name["mail_action_ledger"].annotations.read_only_hint is True
+    assert by_name["mail_draft_package"].annotations.read_only_hint is True
+    assert by_name["mail_draft_approvals"].annotations.read_only_hint is True
+    assert by_name["mail_delivery_ledger"].annotations.read_only_hint is True
+    assert by_name["mail_evidence_review"].annotations.read_only_hint is True
+    assert by_name["mail_history_export"].annotations.destructive_hint is False
+    assert by_name["mail_resolver_receipt"].annotations.destructive_hint is False
+    assert by_name["mail_action_receipt"].annotations.destructive_hint is False
+    assert by_name["mail_draft_approval"].annotations.destructive_hint is False
+    assert by_name["mail_delivery_receipt"].annotations.destructive_hint is False
+    assert by_name["triage"].annotations.destructive_hint is True
+
+
+def test_mcp_v2_in_process_client_lists_and_calls_safe_tool():
+    async def exercise():
+        async with Client(mcp) as client:
+            listed = await client.list_tools()
+            assert "check_protected_sender" in {tool.name for tool in listed.tools}
+
+            result = await client.call_tool(
+                "check_protected_sender",
+                {"sender": "clerk@courts.ca.gov", "subject": "Case notice"},
+            )
+
+        assert result.is_error is False
+        assert result.structured_content is not None
+        assert result.structured_content["protected"] is True
+        assert len(result.content) == 1
+        assert isinstance(result.content[0], TextContent)
+
+    asyncio.run(exercise())
+
+
+def test_mcp_v2_streamable_http_is_mounted_once_at_mcp():
+    from api.app import app
+
+    headers = {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-protocol-version": LATEST_HANDSHAKE_VERSION,
+    }
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": LATEST_HANDSHAKE_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "pytest", "version": "0"},
+        },
+    }
+
+    with TestClient(app, base_url="http://localhost:8000") as client:
+        response = client.post("/mcp", headers=headers, json=initialize)
+        nested_response = client.post("/mcp/mcp", headers=headers, json=initialize)
+
+    assert response.status_code == 200
+    assert response.json()["result"]["serverInfo"]["name"] == "universal-mail"
+    assert nested_response.status_code == 404
 
 
 def test_check_protected_sender_delegates():
