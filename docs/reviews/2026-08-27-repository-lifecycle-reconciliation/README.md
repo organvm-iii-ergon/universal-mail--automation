@@ -58,8 +58,8 @@ are reaped automatically in future.
 ## Local validation
 
 - Repository hygiene predicate: PASS.
-- Hygiene regressions: 37 passed.
-- Full Python suite: 826 passed, 5 skipped.
+- Hygiene regressions: 49 passed.
+- Full Python suite: 838 passed, 5 skipped.
 - Ruff and Actionlint: PASS.
 - `uv lock --check`: PASS.
 - Source distribution and wheel build: PASS.
@@ -73,7 +73,10 @@ protected Python 3.11 and Python 3.12 contexts; the packaging job repeats the
 same predicate before building distributions. The predicate rejects tracked
 virtual environments, compiled Python output, and Outlook token caches, and it
 also requires the Docker build context to exclude credentials, private runtime
-data, mailbox state, and local agent/session material.
+data, mailbox state, environment-secret files, and local agent/session
+material. Public `*.env.example` templates remain source; the generated
+`mail_report.md` mailbox report does not. Ignored Next.js exports, build state,
+and frontend dependency trees are rejected from Git and the Docker context.
 
 ## Admission truth
 

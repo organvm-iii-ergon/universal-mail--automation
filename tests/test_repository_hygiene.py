@@ -45,6 +45,16 @@ from scripts.check_repository_hygiene import (
         ("cache/native.pyd", "Python bytecode"),
         (".outlook_token_cache.json", "OAuth token cache"),
         ("secrets/team_token_cache_prod.json", "OAuth token cache"),
+        ("prod.env", "environment secret file"),
+        ("deploy/prod.env", "environment secret file"),
+        (".env", "environment secret file"),
+        ("nested/.env.production", "environment secret file"),
+        ("ops/prod.env.local", "environment secret file"),
+        ("runtime/mail_report.md", "mailbox report"),
+        ("web/out/index.html", "frontend build output"),
+        ("web/.next/server/app/index.html", "frontend build output"),
+        ("web/node_modules/next/package.json", "frontend dependency output"),
+        (".claude/settings.local.json", "personal agent permission settings"),
     ],
 )
 def test_forbidden_paths_are_classified(path: str, reason: str) -> None:
@@ -61,6 +71,8 @@ def test_forbidden_paths_are_classified(path: str, reason: str) -> None:
         "uv.lock",
         "audit/README.md",
         ".codex/plans/2026-08-27-repository-lifecycle-closeout.md",
+        "prod.env.example",
+        ".env.example",
     ],
 )
 def test_source_and_evidence_paths_are_allowed(path: str) -> None:
@@ -88,6 +100,7 @@ def test_missing_dockerignore_patterns_reports_unsafe_context(tmp_path: Path) ->
     missing = missing_dockerignore_patterns(tmp_path)
     assert "credentials.json" in missing
     assert "*_state.json" in missing
+    assert "*.env" in missing
 
 
 def test_tracked_paths_enumerates_repository_root_from_subdirectory(

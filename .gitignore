@@ -4,6 +4,14 @@ token.pickle
 client_secret_*.json
 *token_cache*.json
 
+# Deployment/runtime environment secrets. Public templates remain tracked.
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!*.env.example
+
 # Local protected-sender list (PII: real lawyer/banks/gov/self) — never commit.
 # Use config/protected_senders.example.txt as the template.
 config/protected_senders.local.txt
@@ -36,6 +44,7 @@ data/
 # must never become source artifacts, even when a particular snapshot is empty.
 *_state.json
 mail_export.tsv
+mail_report.md
 
 # Python
 __pycache__/
@@ -46,6 +55,11 @@ dist/
 env/
 venv/
 .DS_Store
+
+# Node/frontend dependency and build output
+node_modules/
+web/.next/
+web/out/
 
 # Local Claude Code settings (personal permission rules) — never commit.
 .claude/settings.local.json

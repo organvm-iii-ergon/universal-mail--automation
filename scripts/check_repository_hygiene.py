@@ -16,6 +16,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 EXACT_PATHS = {
+    ".claude/settings.local.json": "personal agent permission settings",
     "config/protected_senders.local.txt": "private sender configuration",
 }
 
@@ -25,6 +26,7 @@ FORBIDDEN_BASENAMES = {
     "credentials.json": "credential material",
     "labeler_state.json": "mailbox runtime cursor",
     "mail_export.tsv": "mailbox export",
+    "mail_report.md": "mailbox report",
     "protected_senders.local.txt": "private sender configuration",
     "token.pickle": "credential material",
 }
@@ -53,6 +55,9 @@ GLOB_RULES = (
     ("*.pyc", "Python bytecode"),
     ("*.pyo", "Python bytecode"),
     ("*.pyd", "Python bytecode"),
+    ("node_modules/**", "frontend dependency output"),
+    ("web/.next/**", "frontend build output"),
+    ("web/out/**", "frontend build output"),
     (".worktrees/**", "nested worktree state"),
     (".claude/worktrees/**", "agent worktree state"),
     (".claude/sessions/**", "agent session state"),
@@ -74,9 +79,16 @@ DOCKERIGNORE_REQUIRED_PATTERNS = frozenset(
         "client_secret_*.json",
         "*token_cache*.json",
         "config/protected_senders.local.txt",
+        ".env",
+        ".env.*",
+        "*.env",
+        "*.env.*",
+        "!.env.example",
+        "!*.env.example",
         "*_state.json",
         "audit/",
         "mail_export.tsv",
+        "mail_report.md",
         "data/",
         "*.db",
         "*.db-wal",
@@ -85,6 +97,10 @@ DOCKERIGNORE_REQUIRED_PATTERNS = frozenset(
         ".venv/",
         "env/",
         "venv/",
+        "node_modules/",
+        "web/node_modules/",
+        "web/.next/",
+        "web/out/",
         ".claude/",
         ".codex/",
         ".worktrees/",
@@ -102,6 +118,16 @@ def forbidden_reason(path: str) -> str | None:
     basename = normalized.rsplit("/", 1)[-1]
     if basename in FORBIDDEN_BASENAMES:
         return FORBIDDEN_BASENAMES[basename]
+    is_public_env_example = basename == ".env.example" or basename.endswith(
+        ".env.example"
+    )
+    if not is_public_env_example and (
+        basename == ".env"
+        or basename.startswith(".env.")
+        or basename.endswith(".env")
+        or ".env." in basename
+    ):
+        return "environment secret file"
     for pattern, reason in SENSITIVE_BASENAME_GLOBS:
         if fnmatch.fnmatchcase(basename, pattern):
             return reason

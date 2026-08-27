@@ -5,6 +5,12 @@ token.pickle
 client_secret_*.json
 *token_cache*.json
 config/protected_senders.local.txt
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!*.env.example
 
 # Python bytecode, environments, and generated metadata
 __pycache__/
@@ -20,6 +26,8 @@ build/
 # Node/tooling artifacts
 node_modules/
 web/node_modules/
+web/.next/
+web/out/
 
 # Logs and generated workflow artifacts
 *.log
