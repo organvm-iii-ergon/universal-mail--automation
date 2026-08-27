@@ -1,5 +1,11 @@
 # Plan: Mail.app Seven-State Colored Flags (feat/mailapp-seven-state-flags)
 
+> **Superseded on 2026-08-27.** This file is retained as historical planning
+> evidence and does not describe the shipped contracts or authorize operations.
+> Continue with
+> `2026-08-27-feat-mailapp-seven-state-flags-repair-v2.md`. In particular,
+> `flags apply` and `flags rollback` remain deliberately disabled (exit 89).
+
 **Date**: 2026-08-23
 **Branch**: feat/mailapp-seven-state-flags
 **Base**: main@6d88f2b
