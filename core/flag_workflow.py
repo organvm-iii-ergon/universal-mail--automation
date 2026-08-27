@@ -2722,10 +2722,10 @@ def human_canary_risk_blocker(mutation: PlannedMutation) -> Optional[str]:
     """Return a deterministic safety block for a human canary target.
 
     The classifier remains authoritative for what it has actually detected.
-    This does not infer risk from absent evidence; it refuses only typed
-    high-risk domains and active/deadline-like classifier axes.  Human review
-    of the private shortlist remains necessary for risk classes the current
-    classifier does not deterministically expose.
+    This does not infer risk from classifier uncertainty. It refuses only
+    typed high-risk domains and affirmative active/deadline-like axes. A
+    classifier value of ``unknown`` or ``open_loop`` remains review-required,
+    but may be human-nominated after the private text-risk screen below.
     """
     proof = mutation.classification_proof
     if proof.domain in {"career", "finance", "scheduling"}:
@@ -2740,14 +2740,72 @@ def human_canary_risk_blocker(mutation: PlannedMutation) -> Optional[str]:
         return f"blocked_semantic_type:{proof.semantic_type}"
     if proof.urgency != "none":
         return "blocked_urgency"
-    if proof.next_action_owner != "none":
+    if proof.next_action_owner in {"self", "other", "both"}:
         return "blocked_next_action_owner"
-    if proof.operator_state == "open_loop":
-        return "blocked_open_loop"
     if proof.due_evidence_present:
         return "blocked_due_evidence"
     if proof.follow_up_evidence_present:
         return "blocked_follow_up_evidence"
+    return None
+
+
+def human_canary_text_risk_blocker(
+        sender: str, subject: str) -> Optional[str]:
+    """Return a non-PII category for explicit human-canary text risk.
+
+    The approval-producing CLI holds the private snapshot and invokes this
+    check before it writes an approval artifact. It never emits the matched
+    sender or subject, only a stable blocked category. This deliberately
+    screens affirmative risk evidence without converting absent classifier
+    confidence into a veto on a human-selected reversible test.
+    """
+    if not isinstance(sender, str) or not isinstance(subject, str):
+        raise FlagWorkflowError(
+            "human canary text screening requires string sender and subject"
+        )
+    haystack = f"{sender} {subject}".casefold()
+    blocked_terms = {
+        "housing": (
+            "housing", "shelter", "landlord", "lease", "rent ",
+            "eviction", "apartment",
+        ),
+        "legal": (
+            "legal", "attorney", "lawyer", "court", "hearing",
+        ),
+        "health": (
+            "medical", "health", "doctor", "hospital", "clinic",
+            "therapy", "prescription",
+        ),
+        "benefits_government": (
+            "benefit", "medicaid", "medicare", "snap", "ssi",
+            "government", "social security",
+        ),
+        "finance_deadline": (
+            "payment", "billing", "invoice", "bank", "loan", "tax",
+            "past due", "amount due", "credit card",
+        ),
+        "employment": (
+            "recruiter", "interview", "job ", "hiring", "application",
+            "resume", "career",
+        ),
+        "appointment": (
+            "appointment", "meeting", "calendar", "reservation",
+        ),
+        "security": (
+            "security", "password", "authentication", "authenticate",
+            "login", "verification code", "account recovery",
+        ),
+        "conflict": (
+            "complaint", "dispute", "conflict", "argument",
+        ),
+        "deadline": (
+            "deadline", "due ", "urgent", "today", "tomorrow",
+            "action required", "respond by",
+        ),
+    }
+    for category, terms in blocked_terms.items():
+        if any(term in haystack for term in terms):
+            return f"blocked_text_risk:{category}"
     return None
 
 

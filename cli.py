@@ -2646,6 +2646,7 @@ def cmd_flags_human_canary_approve(args: argparse.Namespace) -> int:
         ApprovalReceipt,
         FlagWorkflowError,
         HumanCanaryTarget,
+        human_canary_text_risk_blocker,
         load_plan,
         load_snapshot,
         validate_plan_snapshot_lineage,
@@ -2687,7 +2688,31 @@ def cmd_flags_human_canary_approve(args: argparse.Namespace) -> int:
             )
         snapshot = load_snapshot(Path(args.snapshot).expanduser())
         plan = load_plan(Path(args.plan).expanduser())
-        validate_plan_snapshot_lineage(plan, snapshot)
+        mutations = validate_plan_snapshot_lineage(plan, snapshot)
+        mutations_by_id = {
+            mutation.mutation_id: mutation for mutation in mutations
+        }
+        messages_by_provider_id = {
+            message.provider_id: message for message in snapshot.messages
+        }
+        for target in targets:
+            mutation = mutations_by_id.get(target.mutation_id)
+            message = (
+                messages_by_provider_id.get(mutation.provider_id)
+                if mutation is not None else None
+            )
+            if message is None:
+                raise FlagWorkflowError(
+                    f"{target.mutation_id}: snapshot message is absent"
+                )
+            blocker = human_canary_text_risk_blocker(
+                message.sender, message.subject
+            )
+            if blocker is not None:
+                raise FlagWorkflowError(
+                    f"{target.mutation_id}: human canary target refused: "
+                    f"{blocker}"
+                )
         approval = ApprovalReceipt.create_human_canary(
             plan_hash=plan["plan_hash"],
             snapshot_sha256=plan["snapshot_sha256"],

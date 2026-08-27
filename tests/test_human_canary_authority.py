@@ -226,6 +226,45 @@ class TestHumanCanaryAuthority:
         assert artifacts.plan["mutations"][0]["auto_eligible"] is False
         assert artifacts.plan["mutations"][0]["review_required"] is True
 
+    def test_classifier_uncertainty_is_review_not_a_human_canary_veto(
+            self, tmp_path):
+        snapshot = fw.build_snapshot(
+            provider_name="mailapp", account="acct", mailbox="INBOX",
+            rows=[_row(
+                "uncertain", color=FlagColor.RED,
+                sender="updates@example.test",
+                subject="Product update notice",
+            )],
+            complete=True, scope_complete=True, status="complete", errors=[],
+            inaccessible_count=0, timeout_count=0, unknown_index_count=0,
+            limit=500, since_days=None, total_matched=1, returned_count=1,
+            hidden_by_limit=0,
+        )
+        plan = fw.build_plan(snapshot)
+        mutation = fw.validate_plan_schema(plan)[0]
+        assert mutation.review_required is True
+        assert mutation.auto_eligible is False
+        assert mutation.classification_proof.next_action_owner == "unknown"
+        assert mutation.classification_proof.operator_state == "open_loop"
+        assert fw.human_canary_risk_blocker(mutation) is None
+
+        approval = fw.ApprovalReceipt.create_human_canary(
+            plan_hash=plan["plan_hash"],
+            snapshot_sha256=snapshot.content_hash,
+            policy_sha256=plan["policy_sha256"],
+            nominated_targets=[fw.HumanCanaryTarget(
+                mutation.mutation_id, mutation.ref_digest, FlagColor.BLUE,
+            )],
+            approving_operator="operator",
+            canary_limit=1,
+        )
+        approval.validate(plan=plan, plan_mutations=[mutation])
+
+    def test_explicit_private_text_risk_is_still_blocked(self):
+        assert fw.human_canary_text_risk_blocker(
+            "notices@example.test", "Password reset required"
+        ) == "blocked_text_risk:security"
+
     def test_human_canary_hard_maximum_is_three(self, tmp_path):
         snapshot, plan, mutations = _review_plan(tmp_path, count=4)
         targets = [
