@@ -25,6 +25,12 @@ from scripts.check_repository_hygiene import find_forbidden, forbidden_reason, t
         ("nested/credentials.json", "credential material"),
         ("runtime/token.pickle", "credential material"),
         ("tmp/client_secret_local.json", "credential material"),
+        ("pkg/.coverage", "coverage database"),
+        ("pkg/pr130.txt", "pull-request scratch marker"),
+        ("pkg/.pytest_cache/v/cache/nodeids", "test-run cache"),
+        ("pkg/htmlcov/index.html", "coverage report"),
+        ("pkg/build/output.whl", "package build output"),
+        ("pkg/project.egg-info/PKG-INFO", "generated package metadata"),
     ],
 )
 def test_forbidden_paths_are_classified(path: str, reason: str) -> None:

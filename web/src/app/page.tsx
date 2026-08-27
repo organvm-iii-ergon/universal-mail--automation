@@ -6,6 +6,10 @@ type LabelerStats = {
   history: LabelCount;
 };
 
+function isMissingStateFile(error: unknown): boolean {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
 export default async function Dashboard() {
   let stats: LabelerStats = { history: {} };
   let error: string | null = null;
@@ -21,7 +25,12 @@ export default async function Dashboard() {
           : {},
     };
   } catch (err: unknown) {
-    error = err instanceof Error ? err.message : 'Unable to load state.';
+    // The static export is built from a clean checkout, where private mailbox
+    // runtime state must be absent. Render the normal empty dashboard there;
+    // reserve the error surface for malformed or unexpectedly unreadable data.
+    if (!isMissingStateFile(err)) {
+      error = err instanceof Error ? err.message : 'Unable to load state.';
+    }
   }
 
   // Pre-calculated mapping based on python core/rules.py

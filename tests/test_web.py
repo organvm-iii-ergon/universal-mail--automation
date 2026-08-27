@@ -8,6 +8,7 @@ from api.app import app
 
 client = TestClient(app)
 WEB_HTML = Path("web/index.html").read_text()
+DASHBOARD_SOURCE = Path("web/src/app/page.tsx").read_text()
 
 
 def test_dashboard_served():
@@ -85,3 +86,11 @@ def test_plan_cards_render_features_from_api():
     assert '"Everything in Free"' in WEB_HTML
     assert '"Scheduled / recurring triage + webhooks"' in WEB_HTML
     assert '"MCP server access + ACP agent-commerce surface"' in WEB_HTML
+
+
+def test_static_dashboard_treats_absent_private_state_as_empty():
+    # labeler_state.json is intentionally untracked. A clean static build must
+    # render the ordinary zero-count dashboard instead of publishing an error.
+    assert "function isMissingStateFile" in DASHBOARD_SOURCE
+    assert "code === 'ENOENT'" in DASHBOARD_SOURCE
+    assert "if (!isMissingStateFile(err))" in DASHBOARD_SOURCE

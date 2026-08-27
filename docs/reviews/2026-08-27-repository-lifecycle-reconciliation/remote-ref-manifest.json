@@ -41,6 +41,15 @@
       "tag": "archive/uma-capture-main-deferred-20260721"
     }
   },
+  "additional_archives": {
+    "codex/uma-literal-mail-union-154": {
+      "branch_sha": "16b62e50e4f7e2341ecebac4e07ceec87d941694",
+      "tag": "archive/uma-postmerge-vox3b-20260710",
+      "patch_id": "d4b20a2b30e26b92e5892ae63515d348c51b5dcf",
+      "patch_equivalent_main_sha": "375932548bbe87348ed140c2a782f259fb7dedc9",
+      "assessment": "post-PR tip preserved by tag; exact patch already landed on main"
+    }
+  },
   "counts": {
     "reap_repeated_capture": 233,
     "reap_terminal_pr": 65,
@@ -2398,7 +2407,7 @@
         }
       ],
       "disposition": "reap_terminal_pr",
-      "evidence": "terminal PR #155 merged"
+      "evidence": "post-PR tip patch-equivalent to main 375932548bbe87348ed140c2a782f259fb7dedc9 and preserved by archive/uma-postmerge-vox3b-20260710"
     },
     {
       "ref": "dependabot/pip/pip-deps-d392708d88",

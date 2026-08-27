@@ -15,15 +15,16 @@ import subprocess
 from collections.abc import Iterable
 
 EXACT_PATHS = {
-    ".coverage": "coverage database",
-    "coverage.xml": "coverage report",
-    "labeler_state.json": "mailbox runtime cursor",
-    "mail_export.tsv": "mailbox export",
     "config/protected_senders.local.txt": "private sender configuration",
 }
 
-SENSITIVE_BASENAMES = {
+FORBIDDEN_BASENAMES = {
+    ".coverage": "coverage database",
+    "coverage.xml": "coverage report",
     "credentials.json": "credential material",
+    "labeler_state.json": "mailbox runtime cursor",
+    "mail_export.tsv": "mailbox export",
+    "protected_senders.local.txt": "private sender configuration",
     "token.pickle": "credential material",
 }
 
@@ -64,17 +65,19 @@ def forbidden_reason(path: str) -> str | None:
     if normalized in EXACT_PATHS:
         return EXACT_PATHS[normalized]
     basename = normalized.rsplit("/", 1)[-1]
-    if basename in SENSITIVE_BASENAMES:
-        return SENSITIVE_BASENAMES[basename]
+    if basename in FORBIDDEN_BASENAMES:
+        return FORBIDDEN_BASENAMES[basename]
     for pattern, reason in SENSITIVE_BASENAME_GLOBS:
         if fnmatch.fnmatchcase(basename, pattern):
             return reason
-    if normalized.endswith(".main"):
+    if basename.endswith(".main"):
         return "merge-conflict scratch file"
-    if re.fullmatch(r"pr\d+\.txt", normalized):
+    if re.fullmatch(r"pr\d+\.txt", basename):
         return "pull-request scratch marker"
     for pattern, reason in GLOB_RULES:
-        if fnmatch.fnmatchcase(normalized, pattern):
+        if fnmatch.fnmatchcase(normalized, pattern) or fnmatch.fnmatchcase(
+            normalized, f"*/{pattern}"
+        ):
             return reason
     return None
 

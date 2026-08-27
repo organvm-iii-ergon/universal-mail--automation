@@ -45,18 +45,27 @@ commits:
 - `archive/uma-capture-snapshot-b-20260718` -> `418dc90339eb9c85dbf168aa365a687fa1ad6fcb`
 - `archive/uma-capture-main-deferred-20260721` -> `7306a0b9655d16dcba0730e7e71716dd44b3e980`
 
+Review found one branch whose tip postdated its linked merged PR:
+`codex/uma-literal-mail-union-154` at
+`16b62e50e4f7e2341ecebac4e07ceec87d941694`. Its stable patch ID exactly
+matches main commit `375932548bbe87348ed140c2a782f259fb7dedc9`, so the content was
+already landed; the distinct historical tip is additionally preserved by
+`archive/uma-postmerge-vox3b-20260710`.
+
 Repository setting `delete_branch_on_merge` is now enabled so merged PR heads
 are reaped automatically in future.
 
 ## Local validation
 
 - Repository hygiene predicate: PASS.
-- Hygiene regressions: 20 passed.
-- Full Python suite: 808 passed, 5 skipped.
+- Hygiene regressions: 26 passed.
+- Full Python suite: 815 passed, 5 skipped.
 - Ruff and Actionlint: PASS.
 - `uv lock --check`: PASS.
 - Source distribution and wheel build: PASS.
 - Twine validation of both distributions: PASS.
+- Web zero-warning lint and static production build: PASS; the clean-checkout
+  export renders the normal zero-count dashboard and no state-load error.
 - Staged-diff whitespace/error check: PASS.
 
 ## Admission truth
