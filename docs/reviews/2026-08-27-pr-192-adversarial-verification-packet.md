@@ -121,7 +121,7 @@ Use isolated fakes to test valid apply/rollback subprocess invocations, assertin
 
 ## Review and CI evidence
 
-The live review ledger contains 62 threads. Every thread has an evidence-backed reply and is resolved, including duplicates and threads made outdated by later repair diffs.
+The live review ledger contains 62 threads, all resolved. Fifty-eight have follow-up replies; four CodeRabbit threads instead self-record their addressed commits in the original comment and have no separate reply. The resolved census includes duplicates and threads made outdated by later repair diffs.
 
 | Thread state | Count |
 | --- | ---: |
