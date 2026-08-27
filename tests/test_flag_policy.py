@@ -3,6 +3,8 @@ mapping rules, explicit precedence cases, evidence-derived deterministic
 confidence, and legacy-color independence (observed flag is NEVER
 classifier input)."""
 
+from dataclasses import replace
+
 import pytest
 
 from core.models import FlagColor
@@ -10,6 +12,7 @@ from core.flag_policy import (
     AUTO_ELIGIBLE_THRESHOLD,
     REVIEW_THRESHOLD,
     classify,
+    is_auto_eligible,
     propose,
     RC_DEADLINE_RED,
     RC_OPERATOR_ACTION_ORANGE,
@@ -133,6 +136,24 @@ class TestPrecedenceCases:
         assert p.proposed_flag is FlagColor.PURPLE
         assert p.reason_code == RC_AMBIGUOUS_PURPLE
         assert p.classification.semantic_type == "conflicting_signals"
+
+    def test_high_confidence_conflict_remains_review_only(self):
+        # PURPLE is a structural human-review state. Current weights keep this
+        # conflict below the threshold; force confidence high to prove a future
+        # weight change still cannot make the semantic type auto-eligible.
+        p = _prop(
+            "Payment receipt: please confirm your appointment is scheduled "
+            "tomorrow; overdue account suspension"
+        )
+        assert p.classification.semantic_type == "conflicting_signals"
+        assert p.proposed_flag is FlagColor.PURPLE
+        assert p.review_required is True
+        assert p.auto_eligible is False
+        high_conflict = replace(
+            p.classification,
+            confidence=AUTO_ELIGIBLE_THRESHOLD,
+        )
+        assert is_auto_eligible(high_conflict) is False
 
 
 # --- Legacy color independence ---------------------------------------------------

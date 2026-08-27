@@ -39,7 +39,7 @@ import fcntl
 import json
 import os
 import stat
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -55,7 +55,7 @@ from core.flag_workflow import (
     sha256_hex,
 )
 from core.models import FlagColor, MessageReference
-from providers.base import ProviderWriteAmbiguous
+from providers.base import ProviderNativeStateDrift, ProviderWriteAmbiguous
 
 TX_LEDGER_SCHEMA = "uma.flags.transactions.v1"
 ROLLBACK_TX_SCHEMA = "uma.flags.rollback.tx.v1"
@@ -833,6 +833,22 @@ class TransactionEngine:
         from providers.flag_codecs import mailapp_index_from_flag
         return mailapp_index_from_flag(color)   # KeyError for UNKNOWN
 
+    def _record_dispatch_drift(
+            self, mutation: PlannedMutation,
+            drift: ProviderNativeStateDrift,
+            expected_state: FlagColor) -> None:
+        """Persist a same-call compare-and-set refusal as a human override."""
+        observed_state = FlagColor.UNKNOWN.value
+        if drift.observed_native is not None:
+            observed_state = self._semantic_for_native(
+                mutation.provider, drift.observed_native
+            ).value
+        self.overrides.detect_override(
+            mutation.ref_digest,
+            automation_expected_state=expected_state.value,
+            human_observed_state=observed_state,
+        )
+
     def _txid(self, plan_hash: str, mutation: PlannedMutation,
               approval: ApprovalReceipt) -> str:
         return "tx-" + sha256_hex({
@@ -1261,6 +1277,38 @@ class TransactionEngine:
                     raise FlagStateAmbiguous(
                         f"post_write_verification_failed:{exc}"
                     ) from exc
+            except ProviderNativeStateDrift as exc:
+                error_code = "native_flag_drift_at_dispatch"
+                result.failed.append({
+                    "mutation_id": m.mutation_id,
+                    "status": ST_BLOCKED,
+                    "error_code": error_code,
+                })
+                result.status = (
+                    "partially_failed" if result.writes_performed else "blocked"
+                )
+                result.blocked_reason = "human_intervention_detected"
+                result.error_code = error_code
+                try:
+                    self._record_dispatch_drift(m, exc, m.observed_flag)
+                    self.ledger.record(TransactionRecord(
+                        transaction_id=txid, plan_sha256=plan_hash,
+                        approval_sha256=approval_sha,
+                        mutation_id=m.mutation_id,
+                        ref_digest=m.ref_digest,
+                        pre_state=m.observed_flag.value,
+                        intended_state=m.proposed_flag.value,
+                        verified_post_state=None, timestamp=_now(),
+                        status=ST_BLOCKED, error_code=error_code))
+                except Exception as persist_exc:
+                    result.status = (
+                        "ambiguous" if result.writes_performed else "blocked"
+                    )
+                    result.blocked_reason = "private_state_failure"
+                    result.error_code = (
+                        f"private_state_failure:{persist_exc}"
+                    )
+                break
             except ProviderRefused as exc:
                 result.failed.append({
                     "mutation_id": m.mutation_id,
@@ -1818,6 +1866,12 @@ class ScopedRollbackEngine(TransactionEngine):
 
         expected_prior_native = self._native_for_semantic(
             mutation.provider, prior_color)
+        # The provider compare-and-set contract reads the expected CURRENT
+        # native state from the reference.  For rollback that state is the
+        # automation-applied value, not the plan's original observation.
+        rollback_ref = replace(
+            ref, observed_native_flag=expected_applied_native
+        )
         # Durable pre-dispatch claim: a process death after provider dispatch
         # but before proof leaves this as the latest row, so retry freezes with
         # zero further writes instead of dispatching the rollback twice.
@@ -1836,9 +1890,38 @@ class ScopedRollbackEngine(TransactionEngine):
         ))
         try:
             if prior_color == FlagColor.NO_FLAG:
-                ok = provider.clear_flag_ref(ref)
+                ok = provider.clear_flag_ref(rollback_ref)
             else:
-                ok = provider.set_flag_color_ref(ref, prior_color)
+                ok = provider.set_flag_color_ref(rollback_ref, prior_color)
+        except ProviderNativeStateDrift as exc:
+            error_code = "human_intervention_detected_at_dispatch"
+            try:
+                self._record_dispatch_drift(
+                    mutation, exc, mutation.proposed_flag
+                )
+                self.ledger.record(TransactionRecord(
+                    transaction_id=receipt.transaction_id,
+                    plan_sha256=receipt.plan_sha256,
+                    approval_sha256=receipt.approval_sha256,
+                    mutation_id=receipt.mutation_id,
+                    ref_digest=receipt.ref_digest,
+                    pre_state=receipt.applied_semantic_flag,
+                    intended_state=receipt.pre_semantic_flag,
+                    verified_post_state=None,
+                    timestamp=_now(),
+                    status=ST_ROLLBACK_BLOCKED,
+                    error_code=error_code,
+                ))
+            except Exception as persist_exc:
+                return RollbackResult(
+                    status="blocked", writes_performed=0,
+                    error_code=f"private_state_failure:{persist_exc}",
+                )
+            return RollbackResult(
+                status="rollback_blocked_by_override",
+                writes_performed=0,
+                error_code=error_code,
+            )
         except ProviderWriteAmbiguous as exc:
             return self._ambiguous_rollback_result(
                 receipt, f"provider_write_ambiguous:{exc}"

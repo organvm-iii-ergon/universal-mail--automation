@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from providers.base import (
     EmailProvider,
     ListMessagesResult,
+    ProviderNativeStateDrift,
     ProviderCapabilities,
     ProviderWriteAmbiguous,
 )
@@ -936,7 +937,7 @@ class MailAppProvider(EmailProvider):
         return flag_from_mailapp_index(int(raw))
 
     def set_flag_color_ref(self, ref: MessageReference, color: FlagColor) -> bool:
-        """Evidence-verified colored write with FULL post-write verification.
+        """Evidence-verified compare-and-set with post-write verification.
 
         UNKNOWN has no native index (KeyError by contract). After the write,
         the message is RE-RESOLVED and both properties must hold:
@@ -948,21 +949,43 @@ class MailAppProvider(EmailProvider):
         """
         self._validate_mailapp_ref(ref)
         index = mailapp_index_from_flag(color)   # KeyError for UNKNOWN
-        self._verify_evidence(ref)
+        expected_native = ref.observed_native_flag
+        if isinstance(expected_native, bool) or not isinstance(
+                expected_native, int):
+            raise FlagStateDriftError(
+                f"{ref}: no durable expected native flag bound; automatic "
+                "mutation is ineligible"
+            )
+        if flag_from_mailapp_index(expected_native) == FlagColor.UNKNOWN:
+            raise FlagStateDriftError(
+                f"{ref}: expected native flag {expected_native!r} is not "
+                "a writable Mail.app state"
+            )
+        pre_fields = self._verify_evidence(ref)
+        pre_native_raw = pre_fields["native_index"]
+        if pre_native_raw is None or int(pre_native_raw) != expected_native:
+            raise ProviderNativeStateDrift(
+                expected_native,
+                None if pre_native_raw is None else int(pre_native_raw),
+            )
         mailbox_ref = self._mailbox_reference(ref.mailbox, ref.account)
         script = (
             '        tell application "Mail"\n'
             f'            set targetMailbox to {mailbox_ref}\n'
             f'            set candidates to (messages of targetMailbox whose id is {ref.provider_id})\n'
             '            if (count of candidates) is 0 then error "NOT_FOUND"\n'
-            '            set flag index of item 1 of candidates to '
+            '            set targetMessage to item 1 of candidates\n'
+            '            set currentFlagIndex to flag index of targetMessage\n'
+            f'            if currentFlagIndex is not {expected_native} then return '
+            '"STATE_DRIFT:" & (currentFlagIndex as string)\n'
+            '            set flag index of targetMessage to '
             f'{index}\n'
             '            return "ok"\n'
             '        end tell\n'
             '        '
         )
         try:
-            self._run_applescript(script)
+            outcome = self._run_applescript(script)
         except ProviderDispatchUnavailable:
             # Process creation failed before osascript could receive the
             # command.  This is an ordinary zero-write provider failure.
@@ -972,6 +995,18 @@ class MailAppProvider(EmailProvider):
             raise ProviderWriteAmbiguous(
                 f"scoped set dispatch failed for {ref}; write may have occurred",
             ) from e
+        if outcome.startswith("STATE_DRIFT:"):
+            observed_text = outcome.partition(":")[2].strip()
+            try:
+                observed_native = int(observed_text)
+            except ValueError:
+                observed_native = None
+            raise ProviderNativeStateDrift(expected_native, observed_native)
+        if outcome != "ok":
+            raise ProviderWriteAmbiguous(
+                f"scoped set returned an unknown outcome for {ref}; "
+                "write may have occurred"
+            )
         # Post-write: re-resolve ALL evidence fields and require the digest
         # to still match, then verify the exact native index.
         try:
@@ -993,13 +1028,13 @@ class MailAppProvider(EmailProvider):
                 f"!= {bound_digest[:12]}…); outcome ambiguous"
             )
         post_native_raw = fields["native_index"]
-        expected_native: Optional[int] = (
+        target_native: Optional[int] = (
             -1 if color == FlagColor.NO_FLAG else int(index)
         )
-        if post_native_raw is None or int(post_native_raw) != expected_native:
+        if post_native_raw is None or int(post_native_raw) != target_native:
             raise ProviderWriteAmbiguous(
                 f"post-write verification failed for {ref}: expected native "
-                f"index {expected_native}, read back {post_native_raw}"
+                f"index {target_native}, read back {post_native_raw}"
             )
         return True
 

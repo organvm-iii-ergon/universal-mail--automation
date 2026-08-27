@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.models import FlagColor, LabelAction, MessageReference
-from providers.base import ProviderWriteAmbiguous
+from providers.base import ProviderNativeStateDrift, ProviderWriteAmbiguous
 from providers.mailapp import (
     MailAppProvider,
     MAILAPP_INDEX_TO_FLAG,
@@ -333,7 +333,8 @@ class _ScopedHarness:
     @staticmethod
     def make_ref(evidence=True):
         base = MessageReference(provider="mailapp", account="acct",
-                                mailbox="INBOX", provider_id="42")
+                                mailbox="INBOX", provider_id="42",
+                                observed_native_flag=0)
         if evidence:
             return base.with_resolved_evidence(
                 "2026-07-01T00:00:00", "vip@bank.example",
@@ -451,6 +452,34 @@ class TestScopedLookup:
 
 
 class TestScopedWrites:
+    def test_same_script_compare_and_set_preserves_intervening_human_state(
+            self):
+        h = _ScopedHarness
+        p = h.prov([h.RESOLVED, "STATE_DRIFT:2"])
+
+        with pytest.raises(ProviderNativeStateDrift) as caught:
+            p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE)
+
+        assert caught.value.expected_native == 0
+        assert caught.value.observed_native == 2
+        assert len(p.calls) == 2       # evidence read + one CAS request
+        cas_script = p.calls[1]
+        assert "set currentFlagIndex to flag index of targetMessage" in cas_script
+        assert "if currentFlagIndex is not 0 then return" in cas_script
+        assert cas_script.index("if currentFlagIndex is not 0") < \
+            cas_script.index("set flag index of targetMessage to 1")
+
+    def test_pre_script_native_drift_is_zero_dispatch_refusal(self):
+        h = _ScopedHarness
+        drifted = h.RESOLVED.replace("0\x1f", "2\x1f", 1)
+        p = h.prov([drifted])
+
+        with pytest.raises(ProviderNativeStateDrift) as caught:
+            p.set_flag_color_ref(h.make_ref(), FlagColor.ORANGE)
+
+        assert caught.value.observed_native == 2
+        assert len(p.calls) == 1
+
     def test_post_write_mismatch_raises(self):
         h = _ScopedHarness
         p = h.prov([h.RESOLVED, "ok", h.RESOLVED])  # re-read still RED

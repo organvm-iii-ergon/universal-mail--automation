@@ -38,7 +38,7 @@ from core.flag_transactions import (
     TransactionEngine,
 )
 from core.models import FlagColor, MessageReference
-from providers.base import ProviderWriteAmbiguous
+from providers.base import ProviderNativeStateDrift, ProviderWriteAmbiguous
 from providers.mailapp import mailapp_index_from_flag
 
 ELIG_SENDER = "billing@corp.example"
@@ -101,6 +101,11 @@ class FakeScopedProvider:
         live = _digest(m.received, m.sender, m.subject)
         if live != ref.evidence_digest:
             raise RuntimeError("evidence drifted at provider boundary")
+        expected_native = ref.observed_native_flag
+        if expected_native is None:
+            raise RuntimeError("missing compare-and-set precondition")
+        if m.native != expected_native:
+            raise ProviderNativeStateDrift(expected_native, m.native)
         m.native = mailapp_index_from_flag(color)
         return True
 
@@ -298,6 +303,31 @@ class TestAllOrZeroPreflight:
         statuses = [e["status"] for e in h.ledger.entries()]
         assert ST_VERIFIED not in statuses
         assert ST_BLOCKED in statuses
+
+    def test_human_change_after_preflight_is_compare_and_set_refusal(
+            self, tmp_path):
+        h = Harness(tmp_path, pids=("1",))
+        mutation = h.mutations[0]
+        real_set = h.provider.set_flag_color_ref
+
+        def change_then_dispatch(ref, color):
+            # Both transaction preflight reads have already passed when the
+            # provider write entry point is reached. Simulate a human choosing
+            # YELLOW in that gap; provider CAS must preserve it.
+            h.provider.messages[mutation.provider_id].native = 2
+            return real_set(ref, color)
+
+        h.provider.set_flag_color_ref = change_then_dispatch
+        result = h.apply()
+
+        assert result.status == "blocked"
+        assert result.writes_performed == 0
+        assert result.error_code == "native_flag_drift_at_dispatch"
+        assert h.provider.messages[mutation.provider_id].native == 2
+        assert h.overrides.is_suppressed(mutation.ref_digest) is True
+        assert h.ledger.latest_status(
+            h.plan["plan_hash"], mutation.mutation_id
+        ) == ST_BLOCKED
 
     def test_one_evidence_mismatch_zero_writes_entire_batch(self, tmp_path):
         h = Harness(tmp_path)
@@ -802,6 +832,33 @@ class TestTransactionBoundRollback:
         )
         assert unlocked_retry.status == "rolled_back"
         assert unlocked_retry.writes_performed == 1
+
+    def test_human_change_after_rollback_preflight_is_cas_refusal(
+            self, tmp_path):
+        h, m, receipt = self._applied(tmp_path)
+        real_set = h.provider.set_flag_color_ref
+
+        def change_then_dispatch(ref, color):
+            # Rollback's live-state gate has passed. A human chooses YELLOW
+            # immediately before dispatch; provider CAS must not restore the
+            # original ORANGE over that choice.
+            h.provider.messages[m.provider_id].native = 2
+            return real_set(ref, color)
+
+        h.provider.set_flag_color_ref = change_then_dispatch
+        result = h.rb_engine.rollback_transaction(
+            receipt=receipt, provider=h.provider
+        )
+
+        assert result.status == "rollback_blocked_by_override"
+        assert result.writes_performed == 0
+        assert result.error_code == \
+            "human_intervention_detected_at_dispatch"
+        assert h.provider.messages[m.provider_id].native == 2
+        assert h.overrides.is_suppressed(m.ref_digest) is True
+        assert h.ledger.latest_status(
+            h.plan["plan_hash"], m.mutation_id
+        ) == ST_ROLLBACK_BLOCKED
 
     def test_tampered_rollback_receipt_rejected(self, tmp_path):
         h, m, receipt = self._applied(tmp_path)

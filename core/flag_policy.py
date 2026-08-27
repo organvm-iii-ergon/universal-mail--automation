@@ -37,7 +37,7 @@ from typing import Any, Dict, Optional, Tuple, cast
 
 from core.models import FlagColor
 
-MIGRATION_POLICY_VERSION = "1.evidence-classifier.2"
+MIGRATION_POLICY_VERSION = "1.evidence-classifier.3"
 
 AUTO_ELIGIBLE_THRESHOLD = 0.80
 REVIEW_THRESHOLD = 0.55
@@ -63,6 +63,15 @@ POLICY_RULES = {
         "auto_eligible": AUTO_ELIGIBLE_THRESHOLD,
         "review": REVIEW_THRESHOLD,
     },
+    # Structural safety invariants.  These are digest-bound so a plan cannot
+    # silently cross a future policy change that makes a human-review state
+    # mutation-eligible.
+    "review_only_semantic_types": [
+        "unclassifiable",
+        "unidentifiable_action",
+        "conflicting_signals",
+    ],
+    "review_only_flags": [FlagColor.PURPLE.value],
     "confidence": {
         "base": 0.30,
         "strong_signal": 0.20,
@@ -534,11 +543,13 @@ def is_auto_eligible(c: Classification) -> bool:
     mail past the threshold. Commit 6 must build preflight on THIS gate,
     not on confidence numbers alone.
     """
+    review_only_types = cast(
+        Tuple[str, ...], tuple(POLICY_RULES["review_only_semantic_types"]),
+    )
     return (
         c.confidence >= AUTO_ELIGIBLE_THRESHOLD
         and not c.marketing_or_bulk
-        and c.semantic_type not in ("unclassifiable",
-                                    "unidentifiable_action")
+        and c.semantic_type not in review_only_types
     )
 
 
@@ -557,8 +568,15 @@ def propose(sender: str, subject: str, observed: FlagColor) -> Proposal:
             confidence=1.0, review_required=False,
             auto_eligible=False, classification=c,
         )
-    auto = is_auto_eligible(c)
-    review_required = not auto or observed == FlagColor.UNKNOWN
+    # PURPLE is the human-judgment queue by contract.  No confidence score
+    # can turn a contradictory evidence set into an automatic mutation.
+    review_only_flags = tuple(POLICY_RULES["review_only_flags"])
+    auto = is_auto_eligible(c) and flag.value not in review_only_flags
+    review_required = (
+        flag.value in review_only_flags
+        or not auto
+        or observed == FlagColor.UNKNOWN
+    )
     return Proposal(
         observed, flag, reason_code, reason,
         confidence=c.confidence, review_required=review_required,

@@ -1649,6 +1649,12 @@ def _mutation_from_dict(d: Dict[str, Any], idx: int) -> PlannedMutation:
     if proposed == FlagColor.UNKNOWN:
         raise FlagWorkflowError(
             f"{prefix}: UNKNOWN is not a writable proposed flag")
+    if proposed == FlagColor.PURPLE and (
+            auto_eligible or not review_required):
+        raise FlagWorkflowError(
+            f"{prefix}: PURPLE is the human-review queue and must have "
+            "review_required=True and auto_eligible=False"
+        )
     if observed == FlagColor.UNKNOWN and auto_eligible:
         raise FlagWorkflowError(
             f"{prefix}: UNKNOWN observations can never be auto_eligible")
@@ -1971,6 +1977,11 @@ def validate_public_plan(raw: Any) -> None:
         if review_required and auto_eligible:
             raise FlagWorkflowError(
                 f"{prefix} cannot require review and be auto-eligible"
+            )
+        if proposed == FlagColor.PURPLE.value and (
+                auto_eligible or not review_required):
+            raise FlagWorkflowError(
+                f"{prefix}: PURPLE must remain review-only"
             )
         if observed == FlagColor.UNKNOWN.value and auto_eligible:
             raise FlagWorkflowError(

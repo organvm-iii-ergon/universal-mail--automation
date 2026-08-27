@@ -57,6 +57,25 @@ class ProviderWriteAmbiguous(RuntimeError):
     """
 
 
+class ProviderNativeStateDrift(RuntimeError):
+    """A scoped provider refused a write before dispatch due to native drift.
+
+    This exception is the compare-and-set refusal boundary.  Providers may
+    raise it only after proving that the live native state does not equal the
+    caller-bound expected state and before issuing the mutation.  Transaction
+    callers can therefore persist a human-override suppression while keeping
+    ``writes_performed`` unchanged.
+    """
+
+    def __init__(self, expected_native: int, observed_native: Optional[int]):
+        self.expected_native = expected_native
+        self.observed_native = observed_native
+        super().__init__(
+            "native flag changed before dispatch "
+            f"(expected {expected_native}, observed {observed_native})"
+        )
+
+
 @dataclass
 class ListMessagesResult:
     """Result from listing messages, including pagination info."""
@@ -319,10 +338,16 @@ class EmailProvider(ABC):
             "subclass must implement get_flag_color_ref")
 
     def set_flag_color_ref(self, ref: MessageReference, color: FlagColor) -> bool:
-        """Evidence-verified scoped write; True only when post-write
-        re-read confirms the expected native value.
+        """Evidence-verified compare-and-set scoped write.
+
+        ``ref.observed_native_flag`` is the mandatory expected-current value.
+        The provider must compare it and perform the write in one provider
+        request.  True is returned only when post-write re-read confirms the
+        expected target value.
 
         Raises:
+            ProviderNativeStateDrift: Live native state differed before the
+                write and the provider proved that no mutation was dispatched.
             ProviderWriteAmbiguous: Dispatch may have crossed the provider's
                 write boundary but the final outcome cannot be proved.
         """

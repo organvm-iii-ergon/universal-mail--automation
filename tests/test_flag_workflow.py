@@ -529,6 +529,17 @@ class TestPlanBuildingAndValidation:
         with pytest.raises(fw.FlagWorkflowError, match="must be a boolean"):
             fw.validate_plan_schema(plan)
 
+    def test_hash_valid_auto_eligible_purple_plan_is_rejected(self):
+        plan = fw.build_plan(self._complete_snapshot())
+        mutation = plan["mutations"][0]
+        mutation["proposed_flag"] = FlagColor.PURPLE.value
+        mutation["review_required"] = False
+        mutation["auto_eligible"] = True
+        plan["plan_hash"] = fw.compute_plan_hash(plan)
+
+        with pytest.raises(fw.FlagWorkflowError, match="PURPLE"):
+            fw.validate_plan_schema(plan)
+
     @pytest.mark.parametrize("field", ["reason", "confidence"])
     def test_validate_requires_reason_and_confidence_keys(self, field):
         plan = fw.build_plan(self._complete_snapshot())

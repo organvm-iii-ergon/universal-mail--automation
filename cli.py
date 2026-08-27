@@ -2164,10 +2164,10 @@ def cmd_flags_doctor(args: argparse.Namespace) -> int:
             # 3. Native mapping source
             print(
                 "\n  Native mapping source: "
-                "providers/mailapp.py MAILAPP_INDEX_TO_FLAG"
+                "providers/flag_codecs.py MAILAPP_INDEX_TO_FLAG"
             )
             print("  Flag Color Mapping (Mail.app flag index):")
-            from providers.mailapp import MAILAPP_INDEX_TO_FLAG
+            from providers.flag_codecs import MAILAPP_INDEX_TO_FLAG
             for index in sorted(MAILAPP_INDEX_TO_FLAG):
                 fc = MAILAPP_INDEX_TO_FLAG[index]
                 print(
@@ -2503,8 +2503,8 @@ def cmd_flags_plan(args: argparse.Namespace) -> int:
     print(f"  Auto-classified (Commit 6 approval+preflight gate applies): "
           f"{auto_eligible}/{len(mutations)}")
     print("  NOTE: no mutation can execute yet — apply remains hard-disabled "
-          "(exit 89) pending approval binding, preflight, idempotency, and "
-          "rollback verification.")
+          "(exit 89) pending admitted CI, an independent exact-head audit, "
+          "and explicit operational authorization.")
     return 0
 
 
