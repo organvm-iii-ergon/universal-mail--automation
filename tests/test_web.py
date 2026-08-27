@@ -68,13 +68,19 @@ def test_checkout_saves_api_key_to_localstorage_before_redirect():
     assert set_pos < href_pos, "api key must be saved before the Stripe redirect"
 
 
-def test_billing_success_shows_api_key_from_localstorage():
-    # On ?billing=success return, the handler reads and displays the saved key,
-    # then clears it so it's shown exactly once.
+def test_billing_success_copies_raw_api_key_and_shows_header_guidance():
+    # On ?billing=success return, the raw key is the copy target while the
+    # Authorization header remains separate guidance. This avoids saving a
+    # value that becomes "Bearer Authorization: Bearer ..." in API clients.
     assert 'localStorage.getItem("uma-pending-key")' in WEB_HTML
     assert 'localStorage.removeItem("uma-pending-key")' in WEB_HTML
-    assert "Authorization: Bearer" in WEB_HTML
-    assert "api-key-reveal" in WEB_HTML
+    assert 'id="apiKeyOut"' in WEB_HTML
+    assert 'aria-label="Raw API key"' in WEB_HTML
+    assert 'value="${escapeHtml(k)}"' in WEB_HTML
+    assert "document.getElementById('apiKeyOut').value" in WEB_HTML
+    assert "Copy API key" in WEB_HTML
+    assert "Authorization: Bearer &lt;your-api-key&gt;" in WEB_HTML
+    assert "Authorization: Bearer ${escapeHtml(k)}" not in WEB_HTML
 
 
 def test_plan_cards_render_features_from_api():
@@ -83,5 +89,8 @@ def test_plan_cards_render_features_from_api():
     # The static fallback SAMPLE_PLANS must also carry features so the plan cards
     # are informative even when the API is unreachable.
     assert '"Everything in Free"' in WEB_HTML
+    assert '"Everything in Pro"' in WEB_HTML
+    assert '"All providers: Gmail, IMAP/iCloud, Outlook, Mail.app"' in WEB_HTML
+    assert '"1-year retained signed-receipt history (compliance export)"' in WEB_HTML
     assert '"Scheduled / recurring triage + webhooks"' in WEB_HTML
     assert '"MCP server access + ACP agent-commerce surface"' in WEB_HTML

@@ -1408,7 +1408,7 @@ function renderPlans(plans, staticCheckout) {
     try {
       const k = localStorage.getItem("uma-pending-key");
       if (k) {
-        keyHtml = `<br><br><strong>Important:</strong> Save your API key now. It will not be shown again.<br><code class="api-key-reveal" style="user-select: all; display: inline-block; margin-top: 6px; padding: 6px 10px; background: #fff; border: 1px solid var(--line-strong); border-radius: var(--radius); font-size: 14px; color: var(--ink);">Authorization: Bearer ${escapeHtml(k)}</code>`;
+        keyHtml = `<br><br><strong>Important:</strong> Save your API key now. It will not be shown again.<br><div class="api-key-reveal" style="display: flex; gap: 8px; align-items: center; margin-top: 6px;"><input id="apiKeyOut" type="text" readonly aria-label="Raw API key" value="${escapeHtml(k)}" style="flex: 1; min-width: 0; padding: 6px 10px; background: #fff; border: 1px solid var(--line-strong); border-radius: var(--radius); font-family: monospace; font-size: 14px; color: var(--ink);" onclick="this.select()" /><button type="button" class="btn btn-secondary" onclick="navigator.clipboard.writeText(document.getElementById('apiKeyOut').value).then(()=>this.textContent='Copied!').catch(()=>{})">Copy API key</button></div><p class="meta">For direct HTTP requests, send it as <code>Authorization: Bearer &lt;your-api-key&gt;</code>.</p>`;
         localStorage.removeItem("uma-pending-key");
       }
     } catch (e) {}
